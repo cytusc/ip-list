@@ -15,6 +15,8 @@
 
 默认并发 5、单 IP 超时 5 秒；单次最多 4096 个去重 IP，覆盖所选网段全部地址，不做抽样。支持停止和刷新恢复，任务最长 30 分钟，结果保存在 Redis 中 24 小时。网段的允许/阻止策略不影响测试。这里测量连通延迟，不测下载带宽。
 
+检测任务只解析和校验一次节点链接，各 IP 使用独立代理实例。工作协程按实际 IP 数量限制，结果采用有界缓冲和预分配内存。Redis 每秒检查停止请求并续租；进度变化时保存快照，无变化时每 10 秒更新心跳，结束时保存最终结果。
+
 已有安装更新后执行 `npm run db:init`，增加节点链接字段并调整唯一约束，不需要新增数据表。
 
 ## 本地启动
@@ -86,6 +88,8 @@ npm run typecheck
 npm run build
 npm test
 go -C backend vet ./...
+# 对比逐 IP 解析与任务复用配置的 CPU / 内存开销，不包含网络延迟
+go -C backend test -run '^$' -bench BenchmarkProbeSetup -benchmem
 ```
 
 真实 PostgreSQL / Redis 集成测试（数据库名必须以 `_test` 结尾）：

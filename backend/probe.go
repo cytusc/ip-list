@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/common/convert"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 // Use mihomo's share-link converter and transport implementations; never rewrite
@@ -128,13 +130,19 @@ func expandPrefixes(cidrs []string) ([]netip.Addr, error) {
 	return ips, nil
 }
 
-func probeIP(ctx context.Context, raw string, ip netip.Addr, target string) (int, error) {
-	config, _, err := parseShare(raw)
-	if err != nil {
+// The template is parsed once per job and remains immutable. Mihomo decodes
+// nested options into fresh structs/maps; only the top-level server is replaced.
+func newProbe(template map[string]any, ip netip.Addr) (C.Proxy, error) {
+	config := maps.Clone(template)
+	config["server"] = ip.String()
+	return adapter.ParseProxy(config)
+}
+
+func probeIP(ctx context.Context, template map[string]any, ip netip.Addr, target string) (int, error) {
+	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	config["server"] = ip.String()
-	proxy, err := adapter.ParseProxy(config)
+	proxy, err := newProbe(template, ip)
 	if err != nil {
 		return 0, errors.New("节点配置加载失败")
 	}

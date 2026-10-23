@@ -175,6 +175,26 @@ func TestIntegration(t *testing.T) {
 	}
 	network["cidr"] = "127.0.0.1/32"
 	request("PUT", "/networks/"+networkID, network, 200)
+	// Waiting on a slow proxy should renew the lease without rewriting results.
+	initial := request("POST", "/scans", scanInput, 202)
+	idleID := initial["id"].(string)
+	time.Sleep(2200 * time.Millisecond)
+	idle := request("GET", "/scans/"+idleID, nil, 200)
+	if idle["status"] != "running" || idle["updated_at"] != initial["updated_at"] {
+		t.Fatal("idle scan rewrote its snapshot", idle)
+	}
+	if rdb.Get(ctx, scanLock).Val() != idleID {
+		t.Fatal("idle scan lost lease")
+	}
+	request("POST", "/scans/"+idleID+"/cancel", nil, 200)
+	if waitScan(idleID)["status"] != "cancelled" {
+		t.Fatal("idle scan failed to cancel")
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && rdb.Exists(ctx, scanLock).Val() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	scanInput["timeout_ms"] = 1000
 	scanID = request("POST", "/scans", scanInput, 202)["id"].(string)
 	completed := waitScan(scanID)

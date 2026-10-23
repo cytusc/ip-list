@@ -20,6 +20,13 @@ import (
 
 const scanLock = "ipfilter:scan:active"
 const scanTTL = 24 * time.Hour
+const scanHeartbeat = 10 * time.Second
+
+// Renew the lease and check cancellation in one Redis round trip.
+const scanControlScript = `
+if redis.call('get',KEYS[1]) ~= ARGV[1] then return -1 end
+redis.call('expire',KEYS[1],45)
+return redis.call('exists',KEYS[2])`
 
 type scanInput struct {
 	NodeID      string   `json:"node_id"`
@@ -86,7 +93,8 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	if _, _, err = parseShare(raw); err != nil {
+	template, _, err := parseShare(raw)
+	if err != nil {
 		apiError(w, 422, "请先为该节点添加有效的 VLESS 链接", nil)
 		return
 	}
@@ -146,7 +154,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 503, "任务保存失败，请重试", nil)
 		return
 	}
-	go a.runScan(job, input, raw, ips)
+	go a.runScan(job, input, template, ips)
 	respond(w, 202, job)
 }
 func (a *app) persistScan(ctx context.Context, job *scanJob) error {
@@ -162,14 +170,17 @@ func (a *app) releaseScan(id string) {
 	defer cancel()
 	_ = a.redis.Eval(ctx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0`, []string{scanLock}, id).Err()
 }
-func (a *app) runScan(job scanJob, input scanInput, raw string, ips []netip.Addr) {
+func (a *app) runScan(job scanJob, input scanInput, template map[string]any, ips []netip.Addr) {
 	ctx, cancel := context.WithTimeout(a.scanContext, 30*time.Minute)
 	defer cancel()
 	defer a.releaseScan(job.ID)
-	work := make(chan netip.Addr)
-	results := make(chan scanResult, input.Concurrency)
+	workerCount := min(input.Concurrency, len(ips))
+	work := make(chan netip.Addr, workerCount)
+	// At most 4096 entries. Redis latency must not stall active network probes.
+	results := make(chan scanResult, len(ips))
+	job.Results = make([]scanResult, 0, len(ips))
 	var workers sync.WaitGroup
-	for i := 0; i < input.Concurrency; i++ {
+	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
@@ -178,7 +189,7 @@ func (a *app) runScan(job scanJob, input scanInput, raw string, ips []netip.Addr
 					return
 				}
 				probeCtx, stop := context.WithTimeout(ctx, time.Duration(input.Timeout)*time.Millisecond)
-				delay, err := probeIP(probeCtx, raw, ip, input.URL)
+				delay, err := probeIP(probeCtx, template, ip, input.URL)
 				stop()
 				result := scanResult{IP: ip.String(), Status: "success", Delay: delay}
 				if err != nil {
@@ -206,13 +217,19 @@ func (a *app) runScan(job scanJob, input scanInput, raw string, ips []netip.Addr
 	go func() { workers.Wait(); close(results) }()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	savedCompleted := job.Completed
 	done := ctx.Done()
 	for {
 		select {
 		case result, ok := <-results:
 			if !ok {
 				if job.Status == "running" {
-					job.Status = "completed"
+					if ctx.Err() != nil {
+						job.Status = "interrupted"
+						job.Error = "服务停止或任务超过 30 分钟，请重新测试"
+					} else {
+						job.Status = "completed"
+					}
 				}
 				finalCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
 				defer stop()
@@ -232,21 +249,25 @@ func (a *app) runScan(job scanJob, input scanInput, raw string, ips []netip.Addr
 			done = nil // Drain workers before releasing the lease.
 		case <-ticker.C:
 			checkCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
-			lease, err := a.redis.Eval(checkCtx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('expire',KEYS[1],45) end return 0`, []string{scanLock}, job.ID).Int()
-			if err != nil || lease != 1 {
+			control, err := a.redis.Eval(checkCtx, scanControlScript, []string{scanLock, scanKey(job.ID) + ":cancel"}, job.ID).Int()
+			if err != nil || control < 0 {
 				job.Status = "interrupted"
-				job.Error = "任务租约失效，请重试"
+				job.Error = "任务租约失效或 Redis 连接中断，请重试"
 				cancel()
-			}
-			requested, err := a.redis.Exists(checkCtx, scanKey(job.ID)+":cancel").Result()
-			if err == nil && requested > 0 && job.Status == "running" {
+			} else if control > 0 && job.Status == "running" {
 				job.Status = "cancelled"
 				cancel()
 			}
-			if err = a.persistScan(checkCtx, &job); err != nil {
-				job.Status = "interrupted"
-				job.Error = "Redis 连接中断，请重试"
-				cancel()
+			// Publish changed progress at most once per second. While waiting for
+			// connections, a heartbeat is sufficient to keep stale-task detection valid.
+			if job.Completed != savedCompleted || job.Status != "running" || time.Since(job.UpdatedAt) >= scanHeartbeat {
+				if err = a.persistScan(checkCtx, &job); err != nil {
+					job.Status = "interrupted"
+					job.Error = "Redis 连接中断，请重试"
+					cancel()
+				} else {
+					savedCompleted = job.Completed
+				}
 			}
 			stop()
 		}

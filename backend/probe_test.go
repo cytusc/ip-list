@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/component/ca"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener/inbound"
@@ -161,16 +163,89 @@ func TestProbeThroughRealMihomoTransports(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			delay, err := probeIP(ctx, raw, addr.Addr(), "http://probe.example/generate_204")
+			template, _, err := parseShare(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := json.Marshal(template)
+			delay, err := probeIP(ctx, template, addr.Addr(), "http://probe.example/generate_204")
 			if err != nil || delay < 1 || tunnel.hits.Load() != 1 {
 				t.Fatalf("probe did not traverse proxy: delay=%d hits=%d err=%v", delay, tunnel.hits.Load(), err)
 			}
 			tunnel.status.Store(503)
-			if delay, err = probeIP(ctx, raw, addr.Addr(), "http://probe.example/generate_204"); err != nil || delay < 1 {
+			if delay, err = probeIP(ctx, template, addr.Addr(), "http://probe.example/generate_204"); err != nil || delay < 1 {
 				t.Fatalf("reachable proxy rejected for HTTP status: delay=%d err=%v", delay, err)
 			}
-			if _, err = probeIP(ctx, strings.Replace(raw, "sni=sni.example", "sni=wrong.example", 1), addr.Addr(), "http://probe.example/"); err == nil {
+			// Reuse one template concurrently; every request must use its own proxy.
+			var workers sync.WaitGroup
+			for i := range 16 {
+				workers.Go(func() {
+					ip := addr.Addr()
+					if i%2 != 0 {
+						ip = netip.MustParseAddr("127.0.0.2")
+					}
+					_, err := probeIP(ctx, template, ip, "http://probe.example/")
+					if (err == nil) != (i%2 == 0) {
+						t.Errorf("concurrent probe to %s: %v", ip, err)
+					}
+				})
+			}
+			workers.Wait()
+			after, _ := json.Marshal(template)
+			if string(before) != string(after) {
+				t.Fatal("shared template was mutated")
+			}
+			if tunnel.hits.Load() != 10 {
+				t.Fatalf("lost requests: %d", tunnel.hits.Load())
+			}
+			wrong := strings.Replace(raw, "sni=sni.example", "sni=wrong.example", 1)
+			if transport == "grpc" {
+				wrong = strings.Replace(wrong, "host=sni.example", "host=wrong.example", 1)
+			}
+			invalid, _, err := parseShare(wrong)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = probeIP(ctx, invalid, addr.Addr(), "http://probe.example/"); err == nil {
 				t.Fatal("bad TLS name accepted")
+			}
+		})
+	}
+}
+
+// Compare the previous per-IP setup with reusing a task's validated template.
+// No network I/O: isolates CPU and allocation costs from WAN latency.
+func BenchmarkProbeSetup(b *testing.B) {
+	for _, transport := range []string{"httpupgrade", "xhttp", "grpc"} {
+		raw := "vless://" + testUUID + "@original.example:443?security=tls&sni=sni.example&host=sni.example&type=" + transport + "&path=%2Fhu&mode=packet-up&serviceName=svc"
+		template, _, err := parseShare(raw)
+		if err != nil {
+			b.Fatal(err)
+		}
+		ip := netip.MustParseAddr("192.0.2.1")
+		b.Run(transport+"/per_ip_parse", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				config, _, err := parseShare(raw)
+				if err != nil {
+					b.Fatal(err)
+				}
+				config["server"] = ip.String()
+				proxy, err := adapter.ParseProxy(config)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = proxy.Close()
+			}
+		})
+		b.Run(transport+"/task_template", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				proxy, err := newProbe(template, ip)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = proxy.Close()
 			}
 		})
 	}
