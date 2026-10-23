@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Activity, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { startScan, cancelScan } from "@/app/actions";
@@ -27,6 +27,7 @@ import {
 
 const labels = {
   running: "测试中",
+  waiting: "等待下轮",
   completed: "已完成",
   cancelled: "已停止",
   interrupted: "已中断",
@@ -49,6 +50,9 @@ export function ProbeManager({
   const [url, setURL] = useState("https://www.gstatic.com/generate_204");
   const [timeout, setTimeoutMs] = useState(5000);
   const [concurrency, setConcurrency] = useState(5);
+  const [interval, setIntervalMinutes] = useState(0);
+  const [fullEvery, setFullEvery] = useState(12);
+  const restored = useRef(false);
   const [job, setJob] = useState<ScanJob | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -58,11 +62,12 @@ export function ProbeManager({
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(1);
   const running = job?.status === "running";
-  const busy = pending || running;
+  const active = running || job?.status === "waiting";
+  const busy = pending || active || !loaded;
   const jobID = job?.id;
   const jobStatus = job?.status;
   useEffect(() => {
-    if (jobStatus && jobStatus !== "running") return;
+    if (jobStatus && jobStatus !== "running" && jobStatus !== "waiting") return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
@@ -76,9 +81,22 @@ export function ProbeManager({
         if (!response.ok) throw new Error(data.error || "读取进度失败");
         if (!disposed) {
           setJob(data);
+          if (!restored.current) {
+            restored.current = true;
+            if (data?.input?.node_id && Array.isArray(data.input.network_ids)) {
+              setNodeID(data.input.node_id);
+              setNetworkIDs(data.input.network_ids);
+              setURL(data.input.url);
+              setTimeoutMs(data.input.timeout_ms);
+              setConcurrency(data.input.concurrency);
+              setIntervalMinutes(data.input.interval_minutes || 0);
+              setFullEvery(data.input.full_every || 12);
+            }
+          }
           setLoaded(true);
           setPollError("");
-          if (data?.status !== "running") setStopping(false);
+          if (data?.status !== "running" && data?.status !== "waiting")
+            setStopping(false);
         }
       } catch (error) {
         if (!disposed) {
@@ -86,7 +104,11 @@ export function ProbeManager({
           setLoaded(true);
         }
       }
-      if (!disposed) timer = setTimeout(poll, 1500);
+      if (!disposed)
+        timer = setTimeout(
+          poll,
+          document.hidden ? 10000 : jobStatus === "waiting" ? 5000 : 1500,
+        );
     }
     void poll();
     return () => {
@@ -138,13 +160,15 @@ export function ProbeManager({
                 url,
                 timeout_ms: timeout,
                 concurrency,
+                interval_minutes: interval,
+                full_every: fullEvery,
               });
               if (result.ok) {
                 setJob(result.job);
                 setFilter("all");
                 setPage(1);
                 setStopping(false);
-                toast.success("测试已开始");
+                toast.success(interval ? "自动巡检已开始" : "测试已开始");
               } else setError(result.error);
             } catch {
               setError("启动请求失败，请稍后重试");
@@ -188,7 +212,8 @@ export function ProbeManager({
               disabled={busy}
             />
             <p className="text-xs leading-5 text-muted-foreground">
-              通过代理连通检测网址并返回延迟即视为可用，不额外限制 HTTP 状态码。测试从后端服务器发起。
+              通过代理连通检测网址并返回延迟即视为可用，不额外限制 HTTP
+              状态码。测试从后端服务器发起。
             </p>
           </div>
         </div>
@@ -246,6 +271,50 @@ export function ProbeManager({
             </p>
           )}
         </fieldset>
+        <div className="space-y-3 rounded-lg bg-slate-50 p-4">
+          <Label htmlFor="patrol-interval">巡检方式</Label>
+          <Select
+            value={String(interval)}
+            onValueChange={(value) => setIntervalMinutes(Number(value))}
+            disabled={busy}
+          >
+            <SelectTrigger id="patrol-interval" className="w-full sm:w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="0">单次检测</SelectItem>
+              <SelectItem value="1">自动巡检 · 间隔 1 分钟</SelectItem>
+              <SelectItem value="5">自动巡检 · 间隔 5 分钟</SelectItem>
+              <SelectItem value="15">自动巡检 · 间隔 15 分钟</SelectItem>
+              <SelectItem value="30">自动巡检 · 间隔 30 分钟</SelectItem>
+              <SelectItem value="60">自动巡检 · 间隔 60 分钟</SelectItem>
+            </SelectContent>
+          </Select>
+          {interval > 0 && (
+            <>
+              <Label htmlFor="patrol-full">每隔多少轮重新扫描全部网段</Label>
+              <Input
+                id="patrol-full"
+                type="number"
+                min={1}
+                max={288}
+                required
+                value={fullEvery}
+                disabled={busy}
+                className="w-32"
+                onChange={(event) => setFullEvery(Number(event.target.value))}
+              />
+              <p className="text-xs leading-5 text-muted-foreground">
+                首轮全量扫描，之后优先复测可用 IP，每隔 {fullEvery}{" "}
+                轮再次全量扫描；设为 1 则每轮全量。没有可用 IP
+                时自动全量扫描。每轮完成后等待 {interval} 分钟，不会重叠执行。
+              </p>
+              <p className="text-xs leading-5 text-muted-foreground">
+                巡检使用启动时的节点和网段配置，离开页面仍会继续；停止后可调整配置。服务重启后需手动重新启动巡检。
+              </p>
+            </>
+          )}
+        </div>
         <div className="flex flex-wrap items-end gap-4">
           <div className="space-y-2">
             <Label htmlFor="probe-timeout">单 IP 超时（毫秒）</Label>
@@ -282,7 +351,13 @@ export function ProbeManager({
             }
           >
             {pending ? <Loader2 className="animate-spin" /> : <Activity />}
-            {pending ? "正在启动…" : running ? "测试进行中" : "开始测试"}
+            {pending
+              ? "正在启动…"
+              : active
+                ? "任务进行中"
+                : interval
+                  ? "开始巡检"
+                  : "开始测试"}
           </Button>
         </div>
         {error && (
@@ -324,7 +399,7 @@ export function ProbeManager({
                   {job.cidrs.join("、")} · {job.url}
                 </p>
               </div>
-              {running && (
+              {active && (
                 <Button
                   variant="outline"
                   disabled={stopping}
@@ -342,10 +417,22 @@ export function ProbeManager({
                     }
                   }}
                 >
-                  {stopping ? "正在停止…" : "停止测试"}
+                  {stopping
+                    ? "正在停止…"
+                    : job.input?.interval_minutes
+                      ? "停止巡检"
+                      : "停止测试"}
                 </Button>
               )}
             </div>
+            <p className="text-xs leading-5 text-muted-foreground">
+              第 {job.round || 1} 轮 ·{" "}
+              {job.scope === "available" ? "复测可用 IP" : "全量扫描"}
+              {job.started_at &&
+                ` · 开始于 ${new Date(job.started_at).toLocaleString()}`}
+              {job.next_run_at &&
+                ` · 下轮 ${new Date(job.next_run_at).toLocaleString()}`}
+            </p>
             <div
               role="status"
               aria-live="polite"
@@ -358,6 +445,19 @@ export function ProbeManager({
               <span className="text-red-700">
                 失败 {job.completed - job.success}
               </span>
+              {job.input?.interval_minutes ? (
+                <span className="text-muted-foreground">
+                  新增{" "}
+                  {job.results.filter((row) => row.change === "new").length} ·
+                  恢复{" "}
+                  {
+                    job.results.filter((row) => row.change === "recovered")
+                      .length
+                  }{" "}
+                  · 本轮失效{" "}
+                  {job.results.filter((row) => row.change === "lost").length}
+                </span>
+              ) : null}
               <span className="text-muted-foreground">
                 未测试 {job.total - job.completed}
               </span>
@@ -374,7 +474,8 @@ export function ProbeManager({
               </p>
             )}
             <p className="text-xs text-muted-foreground">
-              结果按可用优先、延迟升序排列。离开页面不会停止测试；最近一次结果保留
+              结果仅代表当前轮已测试的
+              IP，按可用优先、延迟升序排列。离开页面不会停止任务；停止后的结果保留
               24 小时。
             </p>
           </div>
@@ -422,7 +523,7 @@ export function ProbeManager({
                 <TableHead className="pl-6">连接 IP</TableHead>
                 <TableHead>结果</TableHead>
                 <TableHead>延迟</TableHead>
-                <TableHead>说明</TableHead>
+                <TableHead>变化 / 说明</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -447,6 +548,17 @@ export function ProbeManager({
                       {row.status === "success" ? `${row.delay_ms} ms` : "—"}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
+                      {row.change === "new"
+                        ? "首次可用 · "
+                        : row.change === "lost"
+                          ? "本轮失效 · "
+                          : row.change === "recovered"
+                            ? "恢复可用 · "
+                            : ""}
+                      {row.previous_delay_ms !== undefined &&
+                      row.status === "success"
+                        ? `上次 ${row.previous_delay_ms} ms · `
+                        : ""}
                       {row.error || "代理请求成功"}
                     </TableCell>
                   </TableRow>

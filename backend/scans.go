@@ -29,31 +29,41 @@ redis.call('expire',KEYS[1],45)
 return redis.call('exists',KEYS[2])`
 
 type scanInput struct {
-	NodeID      string   `json:"node_id"`
-	NetworkIDs  []string `json:"network_ids"`
-	URL         string   `json:"url"`
-	Timeout     int      `json:"timeout_ms"`
-	Concurrency int      `json:"concurrency"`
+	NodeID          string   `json:"node_id"`
+	NetworkIDs      []string `json:"network_ids"`
+	URL             string   `json:"url"`
+	Timeout         int      `json:"timeout_ms"`
+	Concurrency     int      `json:"concurrency"`
+	IntervalMinutes int      `json:"interval_minutes"`
+	FullEvery       int      `json:"full_every"`
 }
 type scanResult struct {
-	IP     string `json:"ip"`
-	Status string `json:"status"`
-	Delay  int    `json:"delay_ms"`
-	Error  string `json:"error,omitempty"`
+	IP            string `json:"ip"`
+	Status        string `json:"status"`
+	Delay         int    `json:"delay_ms"`
+	Error         string `json:"error,omitempty"`
+	Change        string `json:"change,omitempty"`
+	PreviousDelay *int   `json:"previous_delay_ms,omitempty"`
 }
 type scanJob struct {
-	ID        string       `json:"id"`
-	UserID    string       `json:"user_id"`
-	NodeName  string       `json:"node_name"`
-	URL       string       `json:"url"`
-	CIDRs     []string     `json:"cidrs"`
-	Status    string       `json:"status"`
-	Total     int          `json:"total"`
-	Completed int          `json:"completed"`
-	Success   int          `json:"success"`
-	Results   []scanResult `json:"results"`
-	Error     string       `json:"error,omitempty"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	ID         string       `json:"id"`
+	Input      scanInput    `json:"input"`
+	Round      int          `json:"round"`
+	Scope      string       `json:"scope"`
+	NextRunAt  *time.Time   `json:"next_run_at,omitempty"`
+	StartedAt  time.Time    `json:"started_at"`
+	FinishedAt *time.Time   `json:"finished_at,omitempty"`
+	UserID     string       `json:"user_id"`
+	NodeName   string       `json:"node_name"`
+	URL        string       `json:"url"`
+	CIDRs      []string     `json:"cidrs"`
+	Status     string       `json:"status"`
+	Total      int          `json:"total"`
+	Completed  int          `json:"completed"`
+	Success    int          `json:"success"`
+	Results    []scanResult `json:"results"`
+	Error      string       `json:"error,omitempty"`
+	UpdatedAt  time.Time    `json:"updated_at"`
 }
 
 func scanKey(id string) string       { return "ipfilter:scan:job:" + id }
@@ -73,6 +83,10 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 422, "网段 ID 无效", nil)
 			return
 		}
+	}
+	if input.IntervalMinutes != 0 && (input.IntervalMinutes < 1 || input.IntervalMinutes > 1440 || input.FullEvery < 1 || input.FullEvery > 288) {
+		apiError(w, 422, "巡检间隔为 1–1440 分钟，全量扫描频率为 1–288 轮", nil)
+		return
 	}
 	if input.Timeout < 1000 || input.Timeout > 15000 || input.Concurrency < 1 || input.Concurrency > 32 {
 		apiError(w, 422, "超时范围 1000–15000 毫秒，并发范围 1–32", nil)
@@ -145,7 +159,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 409, "已有测试正在运行，请等待完成或停止当前任务", nil)
 		return
 	}
-	job := scanJob{ID: id, UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
+	job := scanJob{Input: input, Round: 1, Scope: "full", StartedAt: time.Now().UTC(), ID: id, UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
 	if err = a.persistScan(r.Context(), &job); err == nil {
 		err = a.redis.Set(r.Context(), latestKey(job.UserID), id, scanTTL).Err()
 	}
@@ -170,10 +184,9 @@ func (a *app) releaseScan(id string) {
 	defer cancel()
 	_ = a.redis.Eval(ctx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0`, []string{scanLock}, id).Err()
 }
-func (a *app) runScan(job scanJob, input scanInput, template map[string]any, ips []netip.Addr) {
-	ctx, cancel := context.WithTimeout(a.scanContext, 30*time.Minute)
+func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput, template map[string]any, ips []netip.Addr, previous map[string]scanResult) scanJob {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
-	defer a.releaseScan(job.ID)
 	workerCount := min(input.Concurrency, len(ips))
 	work := make(chan netip.Addr, workerCount)
 	// At most 4096 entries. Redis latency must not stall active network probes.
@@ -191,6 +204,9 @@ func (a *app) runScan(job scanJob, input scanInput, template map[string]any, ips
 				probeCtx, stop := context.WithTimeout(ctx, time.Duration(input.Timeout)*time.Millisecond)
 				delay, err := probeIP(probeCtx, template, ip, input.URL)
 				stop()
+				if ctx.Err() != nil {
+					return
+				}
 				result := scanResult{IP: ip.String(), Status: "success", Delay: delay}
 				if err != nil {
 					result.Status = "failed"
@@ -233,9 +249,18 @@ func (a *app) runScan(job scanJob, input scanInput, template map[string]any, ips
 				}
 				finalCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
 				defer stop()
-				_ = a.persistScan(finalCtx, &job)
-				return
+				finished := time.Now().UTC()
+				job.FinishedAt = &finished
+				if input.IntervalMinutes > 0 && job.Status == "completed" {
+					return job
+				}
+				if err := a.persistScan(finalCtx, &job); err != nil {
+					job.Status = "interrupted"
+					job.Error = "结果保存失败，请重新测试"
+				}
+				return job
 			}
+			result = compareResult(result, previous)
 			job.Results = append(job.Results, result)
 			job.Completed++
 			if result.Status == "success" {
@@ -310,7 +335,7 @@ func (a *app) readScan(w http.ResponseWriter, r *http.Request, id string) *scanJ
 		apiError(w, 404, "测试任务不存在", nil)
 		return nil
 	}
-	if job.Status == "running" && time.Since(job.UpdatedAt) > 50*time.Second {
+	if (job.Status == "running" || job.Status == "waiting") && time.Since(job.UpdatedAt) > 50*time.Second {
 		job.Status = "interrupted"
 		job.Error = "任务进度已中断，请重新测试"
 	}
@@ -340,7 +365,7 @@ func (a *app) cancelScan(w http.ResponseWriter, r *http.Request) {
 	if job == nil {
 		return
 	}
-	if job.Status != "running" {
+	if job.Status != "running" && job.Status != "waiting" {
 		respond(w, 200, map[string]bool{"ok": true})
 		return
 	}

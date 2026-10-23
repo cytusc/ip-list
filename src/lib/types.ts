@@ -30,14 +30,31 @@ export type ScanResult = {
   ip: string;
   status: "success" | "failed";
   delay_ms: number;
+  change?: "new" | "lost" | "recovered";
+  previous_delay_ms?: number;
   error?: string;
 };
+export type ScanInput = {
+  node_id: string;
+  network_ids: string[];
+  url: string;
+  timeout_ms: number;
+  concurrency: number;
+  interval_minutes: number;
+  full_every: number;
+};
 export type ScanJob = {
+  input?: ScanInput;
+  round?: number;
+  scope?: "full" | "available";
+  next_run_at?: string;
+  started_at?: string;
+  finished_at?: string;
   id: string;
   node_name: string;
   url: string;
   cidrs: string[];
-  status: "running" | "completed" | "cancelled" | "interrupted";
+  status: "running" | "waiting" | "completed" | "cancelled" | "interrupted";
   total: number;
   completed: number;
   success: number;

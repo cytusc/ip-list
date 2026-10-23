@@ -84,6 +84,26 @@ test("导入节点、批量测试、刷新恢复和停止", async ({
     await expect(page.getByText("已停止", { exact: true })).toBeVisible({
       timeout: 15000,
     });
+    await expect(page.getByLabel("检测网址")).toHaveValue(
+      "http://probe.example/generate_204",
+    );
+    await expect(page.getByLabel("并发数", { exact: true })).toHaveValue("1");
+    await page.getByLabel("巡检方式", { exact: true }).click();
+    await page
+      .getByRole("option", { name: "自动巡检 · 间隔 5 分钟", exact: true })
+      .click();
+    await page.getByRole("button", { name: "开始巡检", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "停止巡检", exact: true }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByLabel("巡检方式", { exact: true })).toContainText(
+      "间隔 5 分钟",
+    );
+    await page.getByRole("button", { name: "停止巡检", exact: true }).click();
+    await expect(page.getByText("已停止", { exact: true })).toBeVisible({
+      timeout: 15000,
+    });
     await page.screenshot({
       path: testInfo.outputPath("probes-desktop.png"),
       fullPage: true,
@@ -102,7 +122,7 @@ test("导入节点、批量测试、刷新恢复和停止", async ({
     const latest = await request.get(`${apiURL}/scans/latest`);
     if (latest.ok()) {
       const job = await latest.json();
-      if (job?.status === "running")
+      if (job?.status === "running" || job?.status === "waiting")
         await request.post(`${apiURL}/scans/${job.id}/cancel`, { headers });
     }
     if (networkID)
