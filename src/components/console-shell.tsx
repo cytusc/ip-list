@@ -5,6 +5,7 @@ import { useTransition } from "react";
 import {
   ShieldCheck,
   Server,
+  Activity,
   Network,
   LogOut,
   ChevronRight,
@@ -16,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const navigation = [
+  { href: "/probes", label: "连通性测试", icon: Activity },
   { href: "/nodes", label: "节点管理", icon: Server },
   { href: "/networks", label: "网段配置", icon: Network },
 ];
@@ -123,7 +125,7 @@ export function ConsoleShell({
         </header>
         <nav
           aria-label="移动端导航"
-          className="flex gap-2 border-b bg-white px-5 py-3 md:hidden"
+          className="flex flex-wrap gap-2 border-b bg-white px-5 py-3 md:hidden"
         >
           {navigation.map(({ href, label, icon: Icon }) => (
             <Link

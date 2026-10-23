@@ -29,3 +29,9 @@ CREATE TABLE IF NOT EXISTS networks (
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (node_id, cidr)
 );
+
+-- Existing installations: run -init again; existing data is preserved.
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS share_uri text NOT NULL DEFAULT '';
+ALTER TABLE nodes DROP CONSTRAINT IF EXISTS nodes_address_port_key;
+CREATE UNIQUE INDEX IF NOT EXISTS nodes_manual_address_port_key
+  ON nodes(address,port) WHERE share_uri = '';

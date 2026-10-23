@@ -71,3 +71,43 @@ export async function deleteConfig(
     return failure(error);
   }
 }
+
+export async function importNodes(links: string): Promise<ActionResult> {
+  try {
+    await api("/nodes/import", {
+      method: "POST",
+      body: JSON.stringify({ links }),
+    });
+    revalidatePath("/nodes");
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
+}
+export async function startScan(
+  input: unknown,
+): Promise<
+  | { ok: true; job: import("@/lib/types").ScanJob }
+  | { ok: false; error: string }
+> {
+  try {
+    const { data } = await api<import("@/lib/types").ScanJob>("/scans", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return { ok: true, job: data };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof ApiError ? error.message : "任务启动失败，请重试",
+    };
+  }
+}
+export async function cancelScan(id: string): Promise<ActionResult> {
+  try {
+    await api(`/scans/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
+}

@@ -1,0 +1,331 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/redis/go-redis/v9"
+)
+
+const scanLock = "ipfilter:scan:active"
+const scanTTL = 24 * time.Hour
+
+type scanInput struct {
+	NodeID      string   `json:"node_id"`
+	NetworkIDs  []string `json:"network_ids"`
+	URL         string   `json:"url"`
+	Timeout     int      `json:"timeout_ms"`
+	Concurrency int      `json:"concurrency"`
+}
+type scanResult struct {
+	IP     string `json:"ip"`
+	Status string `json:"status"`
+	Delay  int    `json:"delay_ms"`
+	Error  string `json:"error,omitempty"`
+}
+type scanJob struct {
+	ID        string       `json:"id"`
+	UserID    string       `json:"user_id"`
+	NodeName  string       `json:"node_name"`
+	URL       string       `json:"url"`
+	CIDRs     []string     `json:"cidrs"`
+	Status    string       `json:"status"`
+	Total     int          `json:"total"`
+	Completed int          `json:"completed"`
+	Success   int          `json:"success"`
+	Results   []scanResult `json:"results"`
+	Error     string       `json:"error,omitempty"`
+	UpdatedAt time.Time    `json:"updated_at"`
+}
+
+func scanKey(id string) string       { return "ipfilter:scan:job:" + id }
+func latestKey(userID string) string { return "ipfilter:scan:latest:" + userID }
+
+func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
+	var input scanInput
+	if !decode(w, r, &input) {
+		return
+	}
+	if validate.Var(input.NodeID, "uuid") != nil || len(input.NetworkIDs) == 0 || len(input.NetworkIDs) > 64 {
+		apiError(w, 422, "请选择节点和 1–64 个网段", nil)
+		return
+	}
+	for _, id := range input.NetworkIDs {
+		if validate.Var(id, "uuid") != nil {
+			apiError(w, 422, "网段 ID 无效", nil)
+			return
+		}
+	}
+	if input.Timeout < 1000 || input.Timeout > 15000 || input.Concurrency < 1 || input.Concurrency > 32 {
+		apiError(w, 422, "超时范围 1000–15000 毫秒，并发范围 1–32", nil)
+		return
+	}
+	target, err := url.Parse(input.URL)
+	if err != nil || target.Hostname() == "" || (target.Scheme != "http" && target.Scheme != "https") || target.User != nil || target.Fragment != "" || len(input.URL) > 2048 {
+		apiError(w, 422, "检测网址需为有效的 HTTP/HTTPS 地址，不含账号和片段", nil)
+		return
+	}
+	var raw, name string
+	err = a.db.QueryRow(r.Context(), "SELECT share_uri,name FROM nodes WHERE id=$1 AND enabled=true", input.NodeID).Scan(&raw, &name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		apiError(w, 422, "节点不存在或已停用", nil)
+		return
+	}
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	if _, _, err = parseShare(raw); err != nil {
+		apiError(w, 422, "请先为该节点添加有效的 VLESS 链接", nil)
+		return
+	}
+	rows, err := a.db.Query(r.Context(), "SELECT id::text,cidr::text FROM networks WHERE id=ANY($1::uuid[]) AND enabled=true", input.NetworkIDs)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	defer rows.Close()
+	cidrs := []string{}
+	found := map[string]bool{}
+	for rows.Next() {
+		var id, cidr string
+		if err = rows.Scan(&id, &cidr); err != nil {
+			dbError(w, err)
+			return
+		}
+		found[id] = true
+		cidrs = append(cidrs, cidr)
+	}
+	if err = rows.Err(); err != nil {
+		dbError(w, err)
+		return
+	}
+	for _, id := range input.NetworkIDs {
+		if !found[id] {
+			apiError(w, 422, "所选网段已删除或停用，请刷新后重试", nil)
+			return
+		}
+	}
+	ips, err := expandPrefixes(cidrs)
+	if err != nil {
+		apiError(w, 422, err.Error(), nil)
+		return
+	}
+	bytes := make([]byte, 16)
+	if _, err = rand.Read(bytes); err != nil {
+		apiError(w, 500, "无法创建任务", nil)
+		return
+	}
+	id := hex.EncodeToString(bytes)
+	locked, err := a.redis.SetNX(r.Context(), scanLock, id, 45*time.Second).Result()
+	if err != nil {
+		apiError(w, 503, "任务服务暂时不可用", nil)
+		return
+	}
+	if !locked {
+		apiError(w, 409, "已有测试正在运行，请等待完成或停止当前任务", nil)
+		return
+	}
+	job := scanJob{ID: id, UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
+	if err = a.persistScan(r.Context(), &job); err == nil {
+		err = a.redis.Set(r.Context(), latestKey(job.UserID), id, scanTTL).Err()
+	}
+	if err != nil {
+		a.releaseScan(id)
+		apiError(w, 503, "任务保存失败，请重试", nil)
+		return
+	}
+	go a.runScan(job, input, raw, ips)
+	respond(w, 202, job)
+}
+func (a *app) persistScan(ctx context.Context, job *scanJob) error {
+	job.UpdatedAt = time.Now().UTC()
+	data, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	return a.redis.Set(ctx, scanKey(job.ID), data, scanTTL).Err()
+}
+func (a *app) releaseScan(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = a.redis.Eval(ctx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0`, []string{scanLock}, id).Err()
+}
+func (a *app) runScan(job scanJob, input scanInput, raw string, ips []netip.Addr) {
+	ctx, cancel := context.WithTimeout(a.scanContext, 30*time.Minute)
+	defer cancel()
+	defer a.releaseScan(job.ID)
+	work := make(chan netip.Addr)
+	results := make(chan scanResult, input.Concurrency)
+	var workers sync.WaitGroup
+	for i := 0; i < input.Concurrency; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for ip := range work {
+				if ctx.Err() != nil {
+					return
+				}
+				probeCtx, stop := context.WithTimeout(ctx, time.Duration(input.Timeout)*time.Millisecond)
+				delay, err := probeIP(probeCtx, raw, ip, input.URL)
+				stop()
+				result := scanResult{IP: ip.String(), Status: "success", Delay: delay}
+				if err != nil {
+					result.Status = "failed"
+					result.Error = probeError(err)
+				}
+				select {
+				case results <- result:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(work)
+		for _, ip := range ips {
+			select {
+			case work <- ip:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() { workers.Wait(); close(results) }()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	done := ctx.Done()
+	for {
+		select {
+		case result, ok := <-results:
+			if !ok {
+				if job.Status == "running" {
+					job.Status = "completed"
+				}
+				finalCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+				defer stop()
+				_ = a.persistScan(finalCtx, &job)
+				return
+			}
+			job.Results = append(job.Results, result)
+			job.Completed++
+			if result.Status == "success" {
+				job.Success++
+			}
+		case <-done:
+			if job.Status == "running" {
+				job.Status = "interrupted"
+				job.Error = "服务停止或任务超过 30 分钟，请重新测试"
+			}
+			done = nil // Drain workers before releasing the lease.
+		case <-ticker.C:
+			checkCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+			lease, err := a.redis.Eval(checkCtx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('expire',KEYS[1],45) end return 0`, []string{scanLock}, job.ID).Int()
+			if err != nil || lease != 1 {
+				job.Status = "interrupted"
+				job.Error = "任务租约失效，请重试"
+				cancel()
+			}
+			requested, err := a.redis.Exists(checkCtx, scanKey(job.ID)+":cancel").Result()
+			if err == nil && requested > 0 && job.Status == "running" {
+				job.Status = "cancelled"
+				cancel()
+			}
+			if err = a.persistScan(checkCtx, &job); err != nil {
+				job.Status = "interrupted"
+				job.Error = "Redis 连接中断，请重试"
+				cancel()
+			}
+			stop()
+		}
+	}
+}
+func probeError(err error) string {
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+		return "连接或代理请求超时"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "测试已停止"
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "certificate") || strings.Contains(message, "tls") {
+		return "TLS 握手或证书校验失败"
+	}
+	return "代理连接失败（端口、传输握手或上游不可用）"
+}
+func (a *app) readScan(w http.ResponseWriter, r *http.Request, id string) *scanJob {
+	if len(id) != 32 {
+		apiError(w, 404, "测试任务不存在或已过期", nil)
+		return nil
+	}
+	data, err := a.redis.Get(r.Context(), scanKey(id)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		apiError(w, 404, "测试任务不存在或已过期", nil)
+		return nil
+	}
+	if err != nil {
+		apiError(w, 503, "任务服务暂时不可用", nil)
+		return nil
+	}
+	var job scanJob
+	if err = json.Unmarshal(data, &job); err != nil {
+		apiError(w, 503, "任务数据无法读取", nil)
+		return nil
+	}
+	if job.UserID != r.Context().Value(userContextKey{}).(user).ID {
+		apiError(w, 404, "测试任务不存在", nil)
+		return nil
+	}
+	if job.Status == "running" && time.Since(job.UpdatedAt) > 50*time.Second {
+		job.Status = "interrupted"
+		job.Error = "任务进度已中断，请重新测试"
+	}
+	return &job
+}
+func (a *app) getScan(w http.ResponseWriter, r *http.Request) {
+	if job := a.readScan(w, r, r.PathValue("id")); job != nil {
+		respond(w, 200, job)
+	}
+}
+func (a *app) latestScan(w http.ResponseWriter, r *http.Request) {
+	id, err := a.redis.Get(r.Context(), latestKey(r.Context().Value(userContextKey{}).(user).ID)).Result()
+	if errors.Is(err, redis.Nil) {
+		respond(w, 200, nil)
+		return
+	}
+	if err != nil {
+		apiError(w, 503, "任务服务暂时不可用", nil)
+		return
+	}
+	if job := a.readScan(w, r, id); job != nil {
+		respond(w, 200, job)
+	}
+}
+func (a *app) cancelScan(w http.ResponseWriter, r *http.Request) {
+	job := a.readScan(w, r, r.PathValue("id"))
+	if job == nil {
+		return
+	}
+	if job.Status != "running" {
+		respond(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	if err := a.redis.Set(r.Context(), scanKey(job.ID)+":cancel", "1", scanTTL).Err(); err != nil {
+		apiError(w, 503, "停止失败，请重试", nil)
+		return
+	}
+	respond(w, 200, map[string]string{"status": "cancelling"})
+}

@@ -41,6 +41,7 @@ type app struct {
 	redis        *redis.Client
 	sessions     *scs.SessionManager
 	loginLimiter *limiter.Limiter
+	scanContext  context.Context
 	origin       string
 }
 type user struct {
@@ -100,6 +101,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	a.scanContext = ctx
 	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -130,7 +132,7 @@ func newApp(db *pgxpool.Pool, rdb *redis.Client) (*app, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &app{db: db, redis: rdb, sessions: sessions, loginLimiter: limiter.New(store, limiter.Rate{Period: 15 * time.Minute, Limit: 10}), origin: env("APP_ORIGIN", "http://localhost:3000")}
+	a := &app{scanContext: context.Background(), db: db, redis: rdb, sessions: sessions, loginLimiter: limiter.New(store, limiter.Rate{Period: 15 * time.Minute, Limit: 10}), origin: env("APP_ORIGIN", "http://localhost:3000")}
 	return a, nil
 }
 
@@ -191,6 +193,11 @@ func (a *app) routes() http.Handler {
 		mux.Handle("PUT /"+kind+"/{id}", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.save(w, r, kind, r.PathValue("id")) })))
 		mux.Handle("DELETE /"+kind+"/{id}", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.delete(w, r, kind) })))
 	}
+	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
+	mux.Handle("POST /scans", a.protected(http.HandlerFunc(a.startScan)))
+	mux.Handle("GET /scans/latest", a.protected(http.HandlerFunc(a.latestScan)))
+	mux.Handle("GET /scans/{id}", a.protected(http.HandlerFunc(a.getScan)))
+	mux.Handle("POST /scans/{id}/cancel", a.protected(http.HandlerFunc(a.cancelScan)))
 	handler := a.sessions.LoadAndSave(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -339,10 +346,10 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 	var query string
 	var values []any
 	if kind == "nodes" {
-		values = []any{input.Name, input.Address, input.Port, input.Enabled, input.Description}
-		query = "INSERT INTO nodes(name,address,port,enabled,description) VALUES($1,$2,$3,$4,$5)"
+		values = []any{input.Name, input.Address, input.Port, input.Enabled, input.Description, input.ShareURI}
+		query = "INSERT INTO nodes(name,address,port,enabled,description,share_uri) VALUES($1,$2,$3,$4,$5,$6)"
 		if id != "" {
-			query = "UPDATE nodes SET name=$1,address=$2,port=$3,enabled=$4,description=$5,updated_at=now() WHERE id=$6"
+			query = "UPDATE nodes SET name=$1,address=$2,port=$3,enabled=$4,description=$5,share_uri=$6,updated_at=now() WHERE id=$7"
 		}
 	} else {
 		values = []any{input.Name, input.CIDR, input.NodeID, input.Action, input.Enabled, input.Description}

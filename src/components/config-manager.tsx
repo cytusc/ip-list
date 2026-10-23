@@ -49,6 +49,7 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
+import { NodeImport } from "@/components/node-import";
 import { ConfigForm } from "@/components/config-form";
 
 export function ConfigManager({
@@ -152,7 +153,10 @@ export function ConfigManager({
               : "为节点配置 IP 网段，清晰定义允许与阻止策略。"}
           </p>
         </div>
-        {addButton}
+        <div className="flex flex-wrap items-center gap-2">
+          {isNode && <NodeImport />}
+          {addButton}
+        </div>
       </div>
       <div className="mb-8 grid gap-4 sm:grid-cols-3 xl:gap-6">
         {stats.map((stat) => (
@@ -478,7 +482,7 @@ export function ConfigManager({
         <Info className="mt-0.5 size-3.5 shrink-0" />
         {isNode
           ? "节点用于关联网段配置。启用状态表示配置开关，不代表节点实际在线状态。"
-          : "此处维护网段配置；规则下发与流量过滤将在接入 mihomo 内核后实现。"}
+          : "网段可用于批量筛选可用代理 IP；规则下发与流量过滤尚未实现。"}
       </p>
       {editor && (
         <ConfigForm

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -79,6 +80,7 @@ func TestIntegration(t *testing.T) {
 		return result
 	}
 	request("GET", "/nodes", nil, 401)
+	request("GET", "/scans/latest", nil, 401)
 	request("POST", "/auth/login", map[string]string{"username": username, "password": "wrong"}, 401)
 	request("POST", "/auth/login", map[string]string{"username": username, "password": password}, 200)
 	request("GET", "/auth/me", nil, 200)
@@ -101,6 +103,88 @@ func TestIntegration(t *testing.T) {
 	networkID := request("POST", "/networks", network, 201)["id"].(string)
 	request("POST", "/networks", network, 409)
 	request("DELETE", "/nodes/"+nodeID, nil, 409)
+
+	// Multiple transports at the same endpoint must import atomically.
+	firstURI := "vless://" + testUUID + "@same.example:443?security=tls&type=grpc&serviceName=svc#" + username + "-grpc"
+	secondURI := "vless://" + testUUID + "@same.example:443?security=tls&type=xhttp&mode=packet-up#" + username + "-xhttp"
+	request("POST", "/nodes/import", map[string]string{"links": firstURI + "\ninvalid"}, 422)
+	var count int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM nodes WHERE name=$1", username+"-grpc").Scan(&count); err != nil || count != 0 {
+		t.Fatal("partial import", err)
+	}
+	request("POST", "/nodes/import", map[string]string{"links": firstURI + "\n" + secondURI}, 201)
+	defer func() {
+		_, _ = db.Exec(ctx, "DELETE FROM nodes WHERE name=ANY($1)", []string{username + "-grpc", username + "-xhttp"})
+	}()
+
+	// A port accepting TCP but never completing VLESS must not count as success.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
+				_, _ = io.Copy(io.Discard, conn)
+			}()
+		}
+	}()
+	node["share_uri"] = "vless://" + testUUID + "@original.invalid:" + fmt.Sprint(listener.Addr().(*net.TCPAddr).Port) + "?security=none&type=tcp"
+	node["enabled"] = true
+	request("PUT", "/nodes/"+nodeID, node, 200)
+	network["cidr"] = "127.0.0.0/26"
+	request("PUT", "/networks/"+networkID, network, 200)
+	scanInput := map[string]any{"node_id": nodeID, "network_ids": []string{networkID}, "url": "http://probe.example/generate_204", "timeout_ms": 5000, "concurrency": 1}
+	scanID := request("POST", "/scans", scanInput, 202)["id"].(string)
+	request("POST", "/scans", scanInput, 409)
+	if request("GET", "/scans/latest", nil, 200)["id"] != scanID {
+		t.Fatal("latest job lost")
+	}
+	request("POST", "/scans/"+scanID+"/cancel", nil, 200)
+	waitScan := func(id string) map[string]any {
+		t.Helper()
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			result := request("GET", "/scans/"+id, nil, 200)
+			if result["status"] != "running" {
+				return result
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatal("scan did not finish")
+		return nil
+	}
+	cancelled := waitScan(scanID)
+	if cancelled["status"] != "cancelled" || cancelled["success"] != float64(0) || cancelled["completed"].(float64) >= 64 {
+		t.Fatalf("cancellation failed: %v", cancelled)
+	}
+	// Worker closes and releases the lease before the next job.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if rdb.Exists(ctx, scanLock).Val() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	network["cidr"] = "127.0.0.1/32"
+	request("PUT", "/networks/"+networkID, network, 200)
+	scanInput["timeout_ms"] = 1000
+	scanID = request("POST", "/scans", scanInput, 202)["id"].(string)
+	completed := waitScan(scanID)
+	if completed["status"] != "completed" || completed["success"] != float64(0) || completed["completed"] != float64(1) {
+		t.Fatal("TCP incorrectly passed", completed)
+	}
+	network["cidr"] = "2001:db8::/32"
+	request("PUT", "/networks/"+networkID, network, 200)
+	request("POST", "/scans", scanInput, 422)
+
 	network["cidr"], network["action"] = "2001:db8::/32", "allow"
 	request("PUT", "/networks/"+networkID, network, 200)
 	request("GET", "/networks", nil, 200)

@@ -40,6 +40,7 @@ export function ConfigForm({
   const isNode = kind === "nodes";
   const label = isNode ? "节点" : "网段";
   const initial = {
+    share_uri: item && "share_uri" in item ? item.share_uri : "",
     name: item?.name || "",
     address: item && "address" in item ? item.address : "",
     port: item && "port" in item ? String(item.port) : "8080",
@@ -89,8 +90,13 @@ export function ConfigForm({
             }));
         }}
         placeholder={placeholder}
-        required
-        disabled={pending}
+        required={!isNode || !values.share_uri || key === "name"}
+        disabled={
+          pending ||
+          (isNode &&
+            Boolean(values.share_uri) &&
+            (key === "address" || key === "port"))
+        }
         type={key === "port" ? "number" : "text"}
         min={key === "port" ? 1 : undefined}
         max={key === "port" ? 65535 : undefined}
@@ -150,6 +156,7 @@ export function ConfigForm({
             setFields({});
             const data = isNode
               ? {
+                  share_uri: values.share_uri,
                   name: values.name,
                   address: values.address,
                   port: Number(values.port),
@@ -191,6 +198,27 @@ export function ConfigForm({
             "name",
             `${label}名称`,
             isNode ? "例如：上海主节点" : "例如：办公网络",
+          )}
+          {isNode && (
+            <div className="space-y-2">
+              <Label htmlFor="share_uri">VLESS 链接（选填）</Label>
+              <Textarea
+                id="share_uri"
+                value={values.share_uri}
+                disabled={pending}
+                maxLength={8192}
+                onChange={(event) => set("share_uri", event.target.value)}
+                className="break-all font-mono text-xs"
+              />
+              <p className="text-xs text-muted-foreground">
+                用于批量连通性测试；保存时自动从链接提取地址和端口。
+              </p>
+              {fields.share_uri && (
+                <p role="alert" className="text-xs text-destructive">
+                  {fields.share_uri}
+                </p>
+              )}
+            </div>
           )}
           {isNode ? (
             <div className="grid grid-cols-[1fr_110px] items-start gap-4">

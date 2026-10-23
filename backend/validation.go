@@ -3,12 +3,14 @@ package main
 import (
 	"github.com/go-playground/validator/v10"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
 var validate = validator.New()
 
 type ConfigInput struct {
+	ShareURI    string `json:"share_uri"`
 	Name        string `json:"name"`
 	Address     string `json:"address"`
 	Port        int    `json:"port"`
@@ -30,6 +32,16 @@ func (in *ConfigInput) validate(kind string) map[string]string {
 		fields["description"] = "备注最多 500 个字符"
 	}
 	if kind == "nodes" {
+		in.ShareURI = strings.TrimSpace(in.ShareURI)
+		if in.ShareURI != "" {
+			_, u, err := parseShare(in.ShareURI)
+			if err != nil {
+				fields["share_uri"] = err.Error()
+			} else {
+				in.Address = u.Hostname()
+				in.Port, _ = strconv.Atoi(u.Port())
+			}
+		}
 		in.Address = strings.ToLower(strings.TrimSpace(in.Address))
 		_, ipErr := netip.ParseAddr(in.Address)
 		if validate.Var(in.Address, "required,max=253,ip|hostname_rfc1123") != nil || (ipErr != nil && strings.Trim(in.Address, "0123456789.") == "") {
