@@ -72,3 +72,19 @@ export type IPCheck = {
   checked_at: string;
 };
 export type AvailableIP = { ip: string; checks: IPCheck[] };
+
+export type CFTarget = {
+  id: string;
+  name: string;
+  url: string;
+  available_count?: number;
+};
+export type CFDetail = {
+  target: CFTarget;
+  items: {
+    ip: string;
+    http_status: number;
+    checked_at: string;
+  }[];
+  job: ScanJob | null;
+};

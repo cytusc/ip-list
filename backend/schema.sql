@@ -47,3 +47,19 @@ CREATE TABLE IF NOT EXISTS ip_results (
   checked_at timestamptz NOT NULL,
   PRIMARY KEY (node_id, ip)
 );
+
+CREATE TABLE IF NOT EXISTS cf_targets (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ name varchar(100) NOT NULL,
+ url text NOT NULL UNIQUE,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS cf_results (
+ target_id uuid NOT NULL REFERENCES cf_targets(id) ON DELETE CASCADE,
+ ip inet NOT NULL,
+ available boolean NOT NULL,
+ delay_ms integer NOT NULL,
+ http_status integer NOT NULL,
+ checked_at timestamptz NOT NULL,
+ PRIMARY KEY(target_id,ip)
+);

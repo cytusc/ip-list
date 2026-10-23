@@ -145,3 +145,11 @@ npm start
 - [ShellCrash](https://github.com/juewuy/ShellCrash/blob/master/scripts/menus/8_tools.sh)：经代理访问目标并测量耗时。
 - [zashboard](https://github.com/Zephyruso/zashboard/blob/main/src/api/clash.ts)：mihomo delay 测试；参考其 `src/assembly/proxies/latency.ts` 的有限并发和进度反馈。
 - [mihomo v1.19.33](https://github.com/MetaCubeX/mihomo/tree/v1.19.33)：内嵌 Go 内核，采用其 GPL-3.0 许可。
+
+### CF 优选
+
+在「CF 优选」添加 HTTPS 目标地址（例如 `https://sub.bycn.de/`），进入地址详情选择已启用的网段并开始检测。该功能与代理节点检测独立，不需要 VLESS 节点模板；复用网段配置，每轮最多 4096 个去重 IP、32 并发，支持停止和刷新恢复进度。
+
+检测使用 Go 标准库直接连接候选 IP，保留网址原始 Host、TLS SNI 和证书校验，不使用环境 HTTP 代理。HTTP 2xx / 3xx 计为可用，不跟随跳转；403、5xx、证书错误或超时均不计为可用。仅检测可用性，不额外判断 Cloudflare 响应头，不测量延迟或带宽。
+
+每个地址的详情页按 IP 地址排序展示可用 IP、HTTP 状态与检测时间，支持搜索和复制。PostgreSQL 保留每个地址/IP 的最新检测结果；复测失败会移除可用记录，未检测或停止时尚未完成的 IP 保留旧结果。Redis 保存 24 小时的任务进度，服务中断需重新开始检测。升级后运行 `npm run db:init` 创建 `cf_targets`、`cf_results` 表，再重启 Go API。

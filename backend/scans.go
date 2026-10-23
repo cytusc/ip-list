@@ -39,6 +39,7 @@ type scanInput struct {
 	FullEvery       int      `json:"full_every"`
 }
 type scanResult struct {
+	HTTPStatus    int    `json:"http_status,omitempty"`
 	IP            string `json:"ip"`
 	Status        string `json:"status"`
 	Delay         int    `json:"delay_ms"`
@@ -47,6 +48,7 @@ type scanResult struct {
 	PreviousDelay *int   `json:"previous_delay_ms,omitempty"`
 }
 type scanJob struct {
+	TargetID   string       `json:"target_id,omitempty"`
 	Protocol   string       `json:"protocol,omitempty"`
 	ConfigHash string       `json:"-"`
 	ID         string       `json:"id"`
@@ -190,9 +192,12 @@ func (a *app) persistScan(ctx context.Context, job *scanJob) error {
 	return a.redis.Set(ctx, scanKey(job.ID), data, scanTTL).Err()
 }
 func (a *app) releaseScan(id string) {
+	a.releaseLock(scanLock, id)
+}
+func (a *app) releaseLock(key, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_ = a.redis.Eval(ctx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0`, []string{scanLock}, id).Err()
+	_ = a.redis.Eval(ctx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0`, []string{key}, id).Err()
 }
 func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput, template map[string]any, ips []netip.Addr, previous map[string]scanResult) scanJob {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
@@ -212,15 +217,27 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 					return
 				}
 				probeCtx, stop := context.WithTimeout(ctx, time.Duration(input.Timeout)*time.Millisecond)
-				delay, err := probeIP(probeCtx, template, ip, input.URL)
+				var delay, code int
+				var err error
+				if job.TargetID != "" {
+					code, err = probeCF(probeCtx, ip, input.URL, nil)
+				} else {
+					delay, err = probeIP(probeCtx, template, ip, input.URL)
+				}
 				stop()
 				if ctx.Err() != nil {
 					return
 				}
-				result := scanResult{IP: ip.String(), Status: "success", Delay: delay}
+				result := scanResult{IP: ip.String(), Status: "success", Delay: delay, HTTPStatus: code}
 				if err != nil {
 					result.Status = "failed"
 					result.Error = probeError(err)
+					if job.TargetID != "" {
+						result.Error = "HTTPS 请求失败或超时"
+						if code >= 400 {
+							result.Error = "网站返回 HTTP 错误状态"
+						}
+					}
 				}
 				select {
 				case results <- result:
@@ -261,7 +278,7 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 				defer stop()
 				finished := time.Now().UTC()
 				job.FinishedAt = &finished
-				if err := a.saveIPResults(finalCtx, job); err != nil {
+				if err := a.saveScanResults(finalCtx, job); err != nil {
 					job.Status = "interrupted"
 					job.Error = "可用 IP 列表保存失败，请重新测试"
 				}
@@ -288,7 +305,7 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 			done = nil // Drain workers before releasing the lease.
 		case <-ticker.C:
 			checkCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
-			control, err := a.redis.Eval(checkCtx, scanControlScript, []string{scanLock, scanKey(job.ID) + ":cancel"}, job.ID).Int()
+			control, err := a.redis.Eval(checkCtx, scanControlScript, []string{job.lockKey(), scanKey(job.ID) + ":cancel"}, job.ID).Int()
 			if err != nil || control < 0 {
 				job.Status = "interrupted"
 				job.Error = "任务租约失效或 Redis 连接中断，请重试"

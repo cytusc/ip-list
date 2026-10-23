@@ -193,6 +193,11 @@ func (a *app) routes() http.Handler {
 		mux.Handle("PUT /"+kind+"/{id}", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.save(w, r, kind, r.PathValue("id")) })))
 		mux.Handle("DELETE /"+kind+"/{id}", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.delete(w, r, kind) })))
 	}
+	mux.Handle("GET /cf-targets", a.protected(http.HandlerFunc(a.listCFTargets)))
+	mux.Handle("POST /cf-targets", a.protected(http.HandlerFunc(a.createCFTarget)))
+	mux.Handle("GET /cf-targets/{id}", a.protected(http.HandlerFunc(a.getCFTarget)))
+	mux.Handle("DELETE /cf-targets/{id}", a.protected(http.HandlerFunc(a.deleteCFTarget)))
+	mux.Handle("POST /cf-targets/{id}/scans", a.protected(http.HandlerFunc(a.startCFScan)))
 	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
 	mux.Handle("POST /scans", a.protected(http.HandlerFunc(a.startScan)))

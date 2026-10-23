@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTransition } from "react";
 import {
+  Cloud,
   ShieldCheck,
   Server,
   Activity,
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const navigation = [
+  { href: "/cf", label: "CF 优选", icon: Cloud },
   { href: "/probes", label: "连通性测试", icon: Activity },
   { href: "/available-ips", label: "可用 IP", icon: ListChecks },
   { href: "/nodes", label: "节点管理", icon: Server },
@@ -32,7 +34,9 @@ export function ConsoleShell({
 }) {
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
-  const current = navigation.find((item) => item.href === pathname);
+  const current = navigation.find(
+    (item) => item.href === pathname || pathname.startsWith(item.href + "/"),
+  );
   return (
     <div className="min-h-dvh">
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-60 flex-col border-r bg-white md:flex">
@@ -56,17 +60,21 @@ export function ConsoleShell({
               <Link
                 key={href}
                 href={href}
-                aria-current={pathname === href ? "page" : undefined}
+                aria-current={
+                  pathname === href || pathname.startsWith(href + "/")
+                    ? "page"
+                    : undefined
+                }
                 className={cn(
                   "flex h-11 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors hover:bg-muted",
-                  pathname === href
+                  pathname === href || pathname.startsWith(href + "/")
                     ? "bg-accent text-primary hover:bg-accent"
                     : "text-slate-600",
                 )}
               >
                 <Icon className="size-[18px]" />
                 {label}
-                {pathname === href && (
+                {(pathname === href || pathname.startsWith(href + "/")) && (
                   <span className="ml-auto size-1.5 rounded-full bg-primary" />
                 )}
               </Link>
@@ -133,10 +141,14 @@ export function ConsoleShell({
             <Link
               key={href}
               href={href}
-              aria-current={pathname === href ? "page" : undefined}
+              aria-current={
+                pathname === href || pathname.startsWith(href + "/")
+                  ? "page"
+                  : undefined
+              }
               className={cn(
                 "flex items-center gap-2 rounded-md px-4 py-2 text-sm",
-                pathname === href
+                pathname === href || pathname.startsWith(href + "/")
                   ? "bg-accent text-primary"
                   : "text-muted-foreground",
               )}
