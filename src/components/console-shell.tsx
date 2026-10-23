@@ -6,6 +6,7 @@ import {
   ShieldCheck,
   Server,
   Activity,
+  ListChecks,
   Network,
   LogOut,
   ChevronRight,
@@ -18,6 +19,7 @@ import { cn } from "@/lib/utils";
 
 const navigation = [
   { href: "/probes", label: "连通性测试", icon: Activity },
+  { href: "/available-ips", label: "可用 IP", icon: ListChecks },
   { href: "/nodes", label: "节点管理", icon: Server },
   { href: "/networks", label: "网段配置", icon: Network },
 ];

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -46,6 +47,8 @@ type scanResult struct {
 	PreviousDelay *int   `json:"previous_delay_ms,omitempty"`
 }
 type scanJob struct {
+	Protocol   string       `json:"protocol,omitempty"`
+	ConfigHash string       `json:"-"`
 	ID         string       `json:"id"`
 	Input      scanInput    `json:"input"`
 	Round      int          `json:"round"`
@@ -107,7 +110,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	template, _, err := parseShare(raw)
+	template, share, err := parseShare(raw)
 	if err != nil {
 		apiError(w, 422, "请先为该节点添加有效的 VLESS 链接", nil)
 		return
@@ -160,6 +163,13 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := scanJob{Input: input, Round: 1, Scope: "full", StartedAt: time.Now().UTC(), ID: id, UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
+	job.Protocol = share.Query().Get("type")
+	if job.Protocol == "" {
+		job.Protocol = "tcp"
+	}
+	// Configuration identity only, not a security hash. PostgreSQL compares md5(share_uri).
+	fingerprint := md5.Sum([]byte(raw))
+	job.ConfigHash = hex.EncodeToString(fingerprint[:])
 	if err = a.persistScan(r.Context(), &job); err == nil {
 		err = a.redis.Set(r.Context(), latestKey(job.UserID), id, scanTTL).Err()
 	}
@@ -251,6 +261,10 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 				defer stop()
 				finished := time.Now().UTC()
 				job.FinishedAt = &finished
+				if err := a.saveIPResults(finalCtx, job); err != nil {
+					job.Status = "interrupted"
+					job.Error = "可用 IP 列表保存失败，请重新测试"
+				}
 				if input.IntervalMinutes > 0 && job.Status == "completed" {
 					return job
 				}

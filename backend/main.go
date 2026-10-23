@@ -194,6 +194,7 @@ func (a *app) routes() http.Handler {
 		mux.Handle("DELETE /"+kind+"/{id}", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.delete(w, r, kind) })))
 	}
 	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
+	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
 	mux.Handle("POST /scans", a.protected(http.HandlerFunc(a.startScan)))
 	mux.Handle("GET /scans/latest", a.protected(http.HandlerFunc(a.latestScan)))
 	mux.Handle("GET /scans/{id}", a.protected(http.HandlerFunc(a.getScan)))

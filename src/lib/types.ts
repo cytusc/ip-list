@@ -24,7 +24,8 @@ export type Network = {
   updated_at: string;
 };
 export type ActionResult =
-  { ok: true } | { ok: false; error: string; fields?: Record<string, string> };
+  | { ok: true }
+  | { ok: false; error: string; fields?: Record<string, string> };
 
 export type ScanResult = {
   ip: string;
@@ -44,6 +45,7 @@ export type ScanInput = {
   full_every: number;
 };
 export type ScanJob = {
+  protocol?: string;
   input?: ScanInput;
   round?: number;
   scope?: "full" | "available";
@@ -61,3 +63,12 @@ export type ScanJob = {
   results: ScanResult[];
   error?: string;
 };
+
+export type IPCheck = {
+  protocol: string;
+  delay_ms: number;
+  node_id: string;
+  node_name: string;
+  checked_at: string;
+};
+export type AvailableIP = { ip: string; checks: IPCheck[] };

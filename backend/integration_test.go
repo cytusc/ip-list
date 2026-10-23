@@ -81,9 +81,11 @@ func TestIntegration(t *testing.T) {
 	}
 	request("GET", "/nodes", nil, 401)
 	request("GET", "/scans/latest", nil, 401)
+	request("GET", "/available-ips", nil, 401)
 	request("POST", "/auth/login", map[string]string{"username": username, "password": "wrong"}, 401)
 	request("POST", "/auth/login", map[string]string{"username": username, "password": password}, 200)
 	request("GET", "/auth/me", nil, 200)
+	request("GET", "/available-ips", nil, 200)
 	node := map[string]any{"name": username, "address": "node.example.com", "port": 8080, "enabled": true, "description": "integration"}
 	created := request("POST", "/nodes", node, 201)
 	nodeID := created["id"].(string)
@@ -200,6 +202,11 @@ func TestIntegration(t *testing.T) {
 	completed := waitScan(scanID)
 	if completed["status"] != "completed" || completed["success"] != float64(0) || completed["completed"] != float64(1) {
 		t.Fatal("TCP incorrectly passed", completed)
+	}
+	var available bool
+	var protocol string
+	if err = db.QueryRow(ctx, "SELECT available,protocol FROM ip_results WHERE node_id=$1 AND ip='127.0.0.1'", nodeID).Scan(&available, &protocol); err != nil || available || protocol != "tcp" {
+		t.Fatalf("scan did not persist latest IP check: %v %s %v", available, protocol, err)
 	}
 	network["cidr"] = "2001:db8::/32"
 	request("PUT", "/networks/"+networkID, network, 200)

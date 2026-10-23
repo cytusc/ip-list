@@ -35,3 +35,15 @@ ALTER TABLE nodes ADD COLUMN IF NOT EXISTS share_uri text NOT NULL DEFAULT '';
 ALTER TABLE nodes DROP CONSTRAINT IF EXISTS nodes_address_port_key;
 CREATE UNIQUE INDEX IF NOT EXISTS nodes_manual_address_port_key
   ON nodes(address,port) WHERE share_uri = '';
+
+-- Keep only the latest check for each node/IP, rather than a scan history.
+CREATE TABLE IF NOT EXISTS ip_results (
+  node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  ip inet NOT NULL,
+  config_hash varchar(32) NOT NULL,
+  protocol varchar(16) NOT NULL,
+  available boolean NOT NULL,
+  delay_ms integer NOT NULL,
+  checked_at timestamptz NOT NULL,
+  PRIMARY KEY (node_id, ip)
+);

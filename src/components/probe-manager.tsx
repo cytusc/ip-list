@@ -146,6 +146,9 @@ export function ProbeManager({
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           将节点连接地址替换为网段中的 IP，通过代理访问检测网址，找出可用 IP。
         </p>
+        <Link href="/available-ips" className="mt-2 inline-block text-sm text-primary underline underline-offset-4">
+          查看可用 IP 与支持的协议
+        </Link>
       </div>
       <form
         className="space-y-5 rounded-xl border bg-white p-5 sm:p-6"
