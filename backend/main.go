@@ -1,0 +1,391 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/alexedwards/scs/goredisstore"
+	"github.com/alexedwards/scs/v2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
+	"github.com/ulule/limiter/v3"
+	redisstore "github.com/ulule/limiter/v3/drivers/store/redis"
+	"golang.org/x/crypto/bcrypt"
+)
+
+//go:embed schema.sql
+var schema string
+
+const cookieName = "ipfilter_session"
+const sessionTTL = 24 * time.Hour
+
+type app struct {
+	db           *pgxpool.Pool
+	redis        *redis.Client
+	sessions     *scs.SessionManager
+	loginLimiter *limiter.Limiter
+	origin       string
+}
+type user struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+type userContextKey struct{}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func main() {
+	_ = godotenv.Load("../.env")
+	_ = godotenv.Load(".env")
+	initialize := flag.Bool("init", false, "初始化数据库和管理员后退出")
+	flag.Parse()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("请配置 DATABASE_URL")
+	}
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+	startup, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err = db.Ping(startup); err != nil {
+		log.Fatal("PostgreSQL 连接失败: ", err)
+	}
+	if *initialize {
+		if err = initDB(startup, db); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	options, err := redis.ParseURL(env("REDIS_URL", "redis://localhost:6379/0"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	options.DialTimeout = 3 * time.Second
+	options.ReadTimeout = 3 * time.Second
+	options.WriteTimeout = 3 * time.Second
+	options.MaxRetries = 1
+	rdb := redis.NewClient(options)
+	defer rdb.Close()
+	if err = rdb.Ping(startup).Err(); err != nil {
+		log.Fatal("Redis 连接失败: ", err)
+	}
+	a, err := newApp(db, rdb)
+	if err != nil {
+		log.Fatal(err)
+	}
+	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		_ = server.Shutdown(shutdown)
+	}()
+	log.Printf("Go API 已启动：http://%s", server.Addr)
+	if err = server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+func newApp(db *pgxpool.Pool, rdb *redis.Client) (*app, error) {
+	sessions := scs.New()
+	sessions.Store = goredisstore.NewWithPrefix(rdb, "ipfilter:session:")
+	sessions.Lifetime = sessionTTL
+	sessions.Cookie.Name = cookieName
+	sessions.Cookie.Secure = os.Getenv("APP_ENV") == "production"
+	sessions.Cookie.HttpOnly = true
+	sessions.Cookie.SameSite = http.SameSiteLaxMode
+	sessions.Cookie.Persist = true
+	sessions.ErrorFunc = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("会话服务错误: %v", err)
+		apiError(w, 503, "登录服务暂时不可用，请稍后重试", nil)
+	}
+	store, err := redisstore.NewStoreWithOptions(rdb, limiter.StoreOptions{Prefix: "ipfilter:login"})
+	if err != nil {
+		return nil, err
+	}
+	a := &app{db: db, redis: rdb, sessions: sessions, loginLimiter: limiter.New(store, limiter.Rate{Period: 15 * time.Minute, Limit: 10}), origin: env("APP_ORIGIN", "http://localhost:3000")}
+	return a, nil
+}
+
+func initDB(ctx context.Context, db *pgxpool.Pool) error {
+	username, password := env("ADMIN_USERNAME", "admin"), os.Getenv("ADMIN_PASSWORD")
+	if validate.Var(username, "required,min=3,max=64,printascii,excludesall= ") != nil {
+		return fmt.Errorf("用户名需为 3–64 位可打印 ASCII 字符，不含空格")
+	}
+	if utf8Length := len([]rune(password)); utf8Length < 12 || len(password) > 72 {
+		return fmt.Errorf("ADMIN_PASSWORD 需至少 12 个字符且不超过 72 字节")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	if err != nil {
+		return err
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, schema); err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, "INSERT INTO users (username,password_hash) VALUES ($1,$2) ON CONFLICT (username) DO NOTHING", username, string(hash))
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	if result.RowsAffected() == 1 {
+		log.Printf("数据库已初始化，已创建管理员 %s", username)
+	} else {
+		log.Print("数据库已初始化，保留现有管理员密码")
+	}
+	return nil
+}
+
+func (a *app) routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.db.Ping(r.Context()); err != nil {
+			apiError(w, 503, "数据库连接失败", nil)
+			return
+		}
+		if err := a.redis.Ping(r.Context()).Err(); err != nil {
+			apiError(w, 503, "Redis 连接失败", nil)
+			return
+		}
+		respond(w, 200, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("POST /auth/login", a.login)
+	mux.Handle("POST /auth/logout", a.protected(http.HandlerFunc(a.logout)))
+	mux.Handle("GET /auth/me", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { respond(w, 200, r.Context().Value(userContextKey{})) })))
+	for _, kind := range []string{"nodes", "networks"} {
+		mux.Handle("GET /"+kind, a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.list(w, r, kind) })))
+		mux.Handle("POST /"+kind, a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.save(w, r, kind, "") })))
+		mux.Handle("PUT /"+kind+"/{id}", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.save(w, r, kind, r.PathValue("id")) })))
+		mux.Handle("DELETE /"+kind+"/{id}", a.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { a.delete(w, r, kind) })))
+	}
+	handler := a.sessions.LoadAndSave(mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// 浏览器跨站请求不可携带任意 Origin；Next.js 服务端代理也使用相同来源。
+		if r.Method != "GET" && r.Header.Get("Origin") != a.origin {
+			apiError(w, 403, "请求来源不受信任", nil)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		handler.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func respond(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+func apiError(w http.ResponseWriter, status int, message string, fields map[string]string) {
+	respond(w, status, map[string]any{"error": message, "fields": fields})
+}
+func decode(w http.ResponseWriter, r *http.Request, value any) bool {
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		apiError(w, 415, "请使用 JSON 请求", nil)
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		apiError(w, 400, "请求格式错误，请检查字段类型和内容", nil)
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		apiError(w, 400, "请求只能包含一个 JSON 对象", nil)
+		return false
+	}
+	return true
+}
+func dbError(w http.ResponseWriter, err error) {
+	var pgError *pgconn.PgError
+	if errors.As(err, &pgError) {
+		if pgError.Code == "23505" {
+			apiError(w, 409, "配置已存在，请检查节点名称、地址端口或同一节点下的重复网段", nil)
+			return
+		}
+		if pgError.Code == "23503" || pgError.Code == "23001" {
+			apiError(w, 409, "节点仍关联着网段，或所选节点已被删除，请检查关联配置", nil)
+			return
+		}
+	}
+	log.Printf("数据库操作失败: %v", err)
+	apiError(w, 503, "数据库暂时不可用，请稍后重试", nil)
+}
+func (a *app) protected(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := a.sessions.GetString(r.Context(), "user_id")
+		if id == "" {
+			apiError(w, 401, "登录已过期，请重新登录", nil)
+			return
+		}
+		current := user{ID: id, Username: a.sessions.GetString(r.Context(), "username")}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, current)))
+	})
+}
+func (a *app) login(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	input.Username = strings.TrimSpace(input.Username)
+	if input.Username == "" || len(input.Username) > 64 || input.Password == "" || len(input.Password) > 128 {
+		apiError(w, 400, "请输入有效的用户名和密码", nil)
+		return
+	}
+	digest := sha256.Sum256([]byte(strings.ToLower(input.Username)))
+	key := hex.EncodeToString(digest[:])
+	limit, err := a.loginLimiter.Get(r.Context(), key)
+	if err != nil {
+		apiError(w, 503, "登录服务暂时不可用，请稍后重试", nil)
+		return
+	}
+	if limit.Reached {
+		apiError(w, 429, "登录尝试过于频繁，请 15 分钟后重试", nil)
+		return
+	}
+	var current user
+	hash := "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxGJeCsXOBqjXvEoQMikpkKJz.a"
+	err = a.db.QueryRow(r.Context(), "SELECT id::text,username,password_hash FROM users WHERE username=$1", input.Username).Scan(&current.ID, &current.Username, &hash)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		dbError(w, err)
+		return
+	}
+	valid := bcrypt.CompareHashAndPassword([]byte(hash), []byte(input.Password)) == nil
+	if err != nil || !valid {
+		apiError(w, 401, "用户名或密码错误，请检查后重试", nil)
+		return
+	}
+	if err = a.sessions.RenewToken(r.Context()); err != nil {
+		apiError(w, 503, "无法创建登录会话，请重试", nil)
+		return
+	}
+	a.sessions.Put(r.Context(), "user_id", current.ID)
+	a.sessions.Put(r.Context(), "username", current.Username)
+	_, _ = a.loginLimiter.Reset(r.Context(), key)
+	respond(w, 200, current)
+}
+func (a *app) logout(w http.ResponseWriter, r *http.Request) {
+	if err := a.sessions.Destroy(r.Context()); err != nil {
+		apiError(w, 503, "退出失败，请重试", nil)
+		return
+	}
+	respond(w, 200, map[string]bool{"ok": true})
+}
+
+func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
+	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.*, (SELECT count(*)::int FROM networks w WHERE w.node_id=n.id) AS network_count FROM nodes n ORDER BY created_at DESC) t"
+	if kind == "networks" {
+		query = "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT w.*, n.name AS node_name FROM networks w JOIN nodes n ON n.id=w.node_id ORDER BY w.created_at DESC) t"
+	}
+	var data json.RawMessage
+	if err := a.db.QueryRow(r.Context(), query).Scan(&data); err != nil {
+		dbError(w, err)
+		return
+	}
+	respond(w, 200, data)
+}
+func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
+	if id != "" && validate.Var(id, "uuid") != nil {
+		apiError(w, 400, "配置 ID 无效", nil)
+		return
+	}
+	var input ConfigInput
+	if !decode(w, r, &input) {
+		return
+	}
+	if fields := input.validate(kind); len(fields) > 0 {
+		apiError(w, 422, "请检查表单中的内容", fields)
+		return
+	}
+	var query string
+	var values []any
+	if kind == "nodes" {
+		values = []any{input.Name, input.Address, input.Port, input.Enabled, input.Description}
+		query = "INSERT INTO nodes(name,address,port,enabled,description) VALUES($1,$2,$3,$4,$5)"
+		if id != "" {
+			query = "UPDATE nodes SET name=$1,address=$2,port=$3,enabled=$4,description=$5,updated_at=now() WHERE id=$6"
+		}
+	} else {
+		values = []any{input.Name, input.CIDR, input.NodeID, input.Action, input.Enabled, input.Description}
+		query = "INSERT INTO networks(name,cidr,node_id,action,enabled,description) VALUES($1,$2::cidr,$3,$4,$5,$6)"
+		if id != "" {
+			query = "UPDATE networks SET name=$1,cidr=$2::cidr,node_id=$3,action=$4,enabled=$5,description=$6,updated_at=now() WHERE id=$7"
+		}
+	}
+	if id != "" {
+		values = append(values, id)
+	}
+	query += " RETURNING id::text"
+	var savedID string
+	err := a.db.QueryRow(r.Context(), query, values...).Scan(&savedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		apiError(w, 404, "配置已被删除，请刷新列表", nil)
+		return
+	}
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	status := 200
+	if id == "" {
+		status = 201
+	}
+	respond(w, status, map[string]string{"id": savedID})
+}
+func (a *app) delete(w http.ResponseWriter, r *http.Request, kind string) {
+	id := r.PathValue("id")
+	if validate.Var(id, "uuid") != nil {
+		apiError(w, 400, "配置 ID 无效", nil)
+		return
+	}
+	// kind 由路由内部常量传入，用户输入使用参数化查询。
+	result, err := a.db.Exec(r.Context(), "DELETE FROM "+kind+" WHERE id=$1", id)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		apiError(w, 404, "配置已被删除，请刷新列表", nil)
+		return
+	}
+	respond(w, 200, map[string]bool{"ok": true})
+}
