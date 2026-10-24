@@ -85,7 +85,13 @@ export function ProbeManager({
             restored.current = true;
             if (data?.input?.node_id && Array.isArray(data.input.network_ids)) {
               setNodeID(data.input.node_id);
-              setNetworkIDs(data.input.network_ids);
+              setNetworkIDs(
+                data.input.network_ids.filter((id: string) =>
+                  networks.some(
+                    (network) => network.id === id && network.enabled,
+                  ),
+                ),
+              );
               setURL(data.input.url);
               setTimeoutMs(data.input.timeout_ms);
               setConcurrency(data.input.concurrency);
@@ -116,7 +122,7 @@ export function ProbeManager({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [jobID, jobStatus]);
+  }, [jobID, jobStatus, networks]);
   const selected = availableNetworks.filter((network) =>
     networkIDs.includes(network.id),
   );
@@ -146,7 +152,10 @@ export function ProbeManager({
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           将节点连接地址替换为网段中的 IP，通过代理访问检测网址，找出可用 IP。
         </p>
-        <Link href="/available-ips" className="mt-2 inline-block text-sm text-primary underline underline-offset-4">
+        <Link
+          href="/available-ips"
+          className="mt-2 inline-block text-sm text-primary underline underline-offset-4"
+        >
           查看可用 IP 与支持的协议
         </Link>
       </div>
@@ -246,7 +255,9 @@ export function ProbeManager({
                     {network.cidr}
                   </span>
                   <span className="mt-1 block text-xs text-muted-foreground">
-                    所属节点：{network.node_name}
+                    {[network.asn, network.provider]
+                      .filter(Boolean)
+                      .join(" · ") || "未填写归属信息"}
                   </span>
                 </span>
                 <span className="text-xs tabular-nums text-muted-foreground">
@@ -266,7 +277,7 @@ export function ProbeManager({
           <p className="text-xs leading-5 text-muted-foreground">
             已选 {selected.length} 个网段，地址总数上限 {upperCount.toString()}
             （重叠地址自动去重）。每次最多 4096 个
-            IP，包含网段内全部地址；网段的允许/阻止策略不影响此次检测。
+            IP，包含网段内全部地址；同一网段可用于不同节点检测。
           </p>
           {tooLarge && (
             <p role="alert" className="text-sm text-destructive">

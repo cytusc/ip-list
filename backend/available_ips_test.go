@@ -33,8 +33,11 @@ func TestAvailableIPLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{db: db}
-	var ids []string
+	var ids, networkIDs []string
 	defer func() {
+		for _, id := range networkIDs {
+			_, _ = db.Exec(ctx, "DELETE FROM networks WHERE id=$1", id)
+		}
 		for _, id := range ids {
 			_, _ = db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", id)
 		}
@@ -85,6 +88,40 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if items := list(); len(items) != 1 || len(items[0].Checks) != 2 {
 		t.Fatalf("cross-node merge: %+v", items)
 	}
+
+	links := func(want int) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		a.generateIPLinks(w, httptest.NewRequest("GET", "/available-ips/links?ip=192.0.2.91", nil))
+		if want == 0 {
+			if w.Code != 409 {
+				t.Fatalf("stale link generated: %d", w.Code)
+			}
+			return
+		}
+		var result []generatedLink
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil || len(result) != want {
+			t.Fatalf("links response: %d", w.Code)
+		}
+	}
+	links(2)
+	// Prefer more specific metadata; an empty /32 falls back to the annotated /24.
+	for _, cidr := range []string{"192.0.2.0/24", "192.0.2.91/32"} {
+		var networkID string
+		if err = db.QueryRow(ctx, "INSERT INTO networks(name,cidr,asn,provider) VALUES('metadata',$1::cidr,$2,$3) RETURNING id::text", cidr, map[bool]string{true: "AS13335", false: ""}[cidr == "192.0.2.0/24"], map[bool]string{true: "Cloudflare", false: ""}[cidr == "192.0.2.0/24"]).Scan(&networkID); err != nil {
+			t.Fatal(err)
+		}
+		networkIDs = append(networkIDs, networkID)
+	}
+	if got := list()[0]; got.ASN != "AS13335" || got.Provider != "Cloudflare" {
+		t.Fatalf("metadata: %+v", got)
+	}
+	if _, err = db.Exec(ctx, "UPDATE networks SET asn='AS64500',provider='Specific' WHERE cidr='192.0.2.91/32'"); err != nil {
+		t.Fatal(err)
+	}
+	if got := list()[0]; got.ASN != "AS64500" || got.Provider != "Specific" {
+		t.Fatalf("specific metadata: %+v", got)
+	}
 	// Database data remains available without Redis or an in-memory scan job.
 	later := first.FinishedAt.Add(time.Second)
 	first.FinishedAt = &later
@@ -93,6 +130,7 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if items := list(); len(items) != 1 || len(items[0].Checks) != 1 || items[0].Checks[0].Protocol != "grpc" {
 		t.Fatalf("failure did not remove only its own protocol: %+v", items)
 	}
+	links(1)
 	// An older result may not resurrect a protocol after a newer failure.
 	older := later.Add(-2 * time.Second)
 	first.FinishedAt = &older
@@ -115,6 +153,7 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if len(list()) != 0 {
 		t.Fatal("edited node exposed old-config results")
 	}
+	links(0)
 	// A later success can restore the first node, and disabled/deleted nodes disappear.
 	restored := later.Add(time.Second)
 	first.FinishedAt = &restored

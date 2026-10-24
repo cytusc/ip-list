@@ -138,7 +138,7 @@ func (a *app) getCFTarget(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(ip) AS ip,http_status,checked_at FROM cf_results WHERE target_id=$1 AND available ORDER BY ip) r`, id).Scan(&items)
+	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_results s `+networkInfoJoin+` WHERE s.target_id=$1 AND s.available ORDER BY s.ip) r`, id).Scan(&items)
 	if err != nil {
 		dbError(w, err)
 		return

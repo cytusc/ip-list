@@ -100,7 +100,7 @@ func parseShare(raw string) (map[string]any, *url.URL, error) {
 		return nil, nil, errors.New("mihomo 无法加载此节点，请检查传输参数")
 	}
 	_ = proxy.Close()
-	return config, u, nil
+	return config, &normalized, nil
 }
 
 func expandPrefixes(cidrs []string) ([]netip.Addr, error) {
@@ -135,6 +135,9 @@ func expandPrefixes(cidrs []string) ([]netip.Addr, error) {
 func newProbe(template map[string]any, ip netip.Addr) (C.Proxy, error) {
 	config := maps.Clone(template)
 	config["server"] = ip.String()
+	if iface := env("PROBE_INTERFACE", ""); iface != "" {
+		config["interface-name"] = iface
+	}
 	return adapter.ParseProxy(config)
 }
 

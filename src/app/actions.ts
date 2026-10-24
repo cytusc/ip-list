@@ -39,13 +39,18 @@ async function save(
   input: unknown,
 ): Promise<ActionResult> {
   try {
-    await api(`/${kind}${id ? `/${encodeURIComponent(id)}` : ""}`, {
-      method: id ? "PUT" : "POST",
-      body: JSON.stringify(input),
-    });
+    const { data } = await api<{ warning?: string }>(
+      `/${kind}${id ? `/${encodeURIComponent(id)}` : ""}`,
+      {
+        method: id ? "PUT" : "POST",
+        body: JSON.stringify(input),
+      },
+    );
     revalidatePath("/nodes");
     revalidatePath("/networks");
-    return { ok: true };
+    revalidatePath("/available-ips");
+    revalidatePath("/cf", "layout");
+    return { ok: true, warning: data.warning };
   } catch (error) {
     return failure(error);
   }
@@ -66,6 +71,8 @@ export async function deleteConfig(
     await api(`/${kind}/${encodeURIComponent(id)}`, { method: "DELETE" });
     revalidatePath("/nodes");
     revalidatePath("/networks");
+    revalidatePath("/available-ips");
+    revalidatePath("/cf", "layout");
     return { ok: true };
   } catch (error) {
     return failure(error);
@@ -143,6 +150,17 @@ export async function startCFScan(
       { method: "POST", body: JSON.stringify(input) },
     );
     return { ok: true as const, job: data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+export async function generateIPLinks(ip: string) {
+  try {
+    const { data } = await api<import("@/lib/types").GeneratedLink[]>(
+      `/available-ips/links?ip=${encodeURIComponent(ip)}`,
+    );
+    return { ok: true as const, links: data };
   } catch (error) {
     return failure(error);
   }

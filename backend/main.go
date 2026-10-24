@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -199,6 +200,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("DELETE /cf-targets/{id}", a.protected(http.HandlerFunc(a.deleteCFTarget)))
 	mux.Handle("POST /cf-targets/{id}/scans", a.protected(http.HandlerFunc(a.startCFScan)))
 	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
+	mux.Handle("GET /available-ips/links", a.protected(http.HandlerFunc(a.generateIPLinks)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
 	mux.Handle("POST /scans", a.protected(http.HandlerFunc(a.startScan)))
 	mux.Handle("GET /scans/latest", a.protected(http.HandlerFunc(a.latestScan)))
@@ -249,11 +251,11 @@ func dbError(w http.ResponseWriter, err error) {
 	var pgError *pgconn.PgError
 	if errors.As(err, &pgError) {
 		if pgError.Code == "23505" {
-			apiError(w, 409, "配置已存在，请检查节点名称、地址端口或同一节点下的重复网段", nil)
+			apiError(w, 409, "配置已存在，请检查节点名称、地址端口或重复 CIDR 网段", nil)
 			return
 		}
 		if pgError.Code == "23503" || pgError.Code == "23001" {
-			apiError(w, 409, "节点仍关联着网段，或所选节点已被删除，请检查关联配置", nil)
+			apiError(w, 409, "关联配置已变更，请刷新后重试", nil)
 			return
 		}
 	}
@@ -325,9 +327,9 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
-	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.*, (SELECT count(*)::int FROM networks w WHERE w.node_id=n.id) AS network_count FROM nodes n ORDER BY created_at DESC) t"
+	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.* FROM nodes n ORDER BY created_at DESC) t"
 	if kind == "networks" {
-		query = "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT w.*, n.name AS node_name FROM networks w JOIN nodes n ON n.id=w.node_id ORDER BY w.created_at DESC) t"
+		query = "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT w.* FROM networks w ORDER BY w.created_at DESC) t"
 	}
 	var data json.RawMessage
 	if err := a.db.QueryRow(r.Context(), query).Scan(&data); err != nil {
@@ -349,6 +351,41 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 		apiError(w, 422, "请检查表单中的内容", fields)
 		return
 	}
+	warning := ""
+	if kind == "networks" {
+		if id != "" {
+			var oldCIDR string
+			if err := a.db.QueryRow(r.Context(), "SELECT cidr::text FROM networks WHERE id=$1", id).Scan(&oldCIDR); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					apiError(w, 404, "配置已被删除，请刷新列表", nil)
+				} else {
+					dbError(w, err)
+				}
+				return
+			}
+			// Metadata from a previous address range must not follow an edited CIDR.
+			if oldCIDR != input.CIDR {
+				input.ASN, input.Provider = "", ""
+			}
+		}
+		prefix := netip.MustParsePrefix(input.CIDR)
+		if (input.ASN == "" || input.Provider == "") && publicMetadataPrefix(prefix) {
+			metadata, err := a.networkMetadata(r.Context(), prefix)
+			if err != nil {
+				warning = "网段已保存，暂未获取到 ASN 和服务商；可稍后编辑保存重试或手动补充"
+			} else if input.ASN == "" || input.ASN == metadata.ASN {
+				// Preserve manual values; never attach a holder to a different manual ASN.
+				if input.ASN == "" {
+					input.ASN = metadata.ASN
+				}
+				if input.Provider == "" {
+					input.Provider = metadata.Provider
+				}
+			} else {
+				warning = "网段已保存，手填 ASN 与查询结果不同，请手动确认服务商"
+			}
+		}
+	}
 	var query string
 	var values []any
 	if kind == "nodes" {
@@ -358,10 +395,10 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 			query = "UPDATE nodes SET name=$1,address=$2,port=$3,enabled=$4,description=$5,share_uri=$6,updated_at=now() WHERE id=$7"
 		}
 	} else {
-		values = []any{input.Name, input.CIDR, input.NodeID, input.Action, input.Enabled, input.Description}
-		query = "INSERT INTO networks(name,cidr,node_id,action,enabled,description) VALUES($1,$2::cidr,$3,$4,$5,$6)"
+		values = []any{input.Name, input.CIDR, input.Enabled, input.Description, input.ASN, input.Provider}
+		query = "INSERT INTO networks(name,cidr,enabled,description,asn,provider) VALUES($1,$2::cidr,$3,$4,$5,$6)"
 		if id != "" {
-			query = "UPDATE networks SET name=$1,cidr=$2::cidr,node_id=$3,action=$4,enabled=$5,description=$6,updated_at=now() WHERE id=$7"
+			query = "UPDATE networks SET name=$1,cidr=$2::cidr,enabled=$3,description=$4,asn=$5,provider=$6,updated_at=now() WHERE id=$7"
 		}
 	}
 	if id != "" {
@@ -382,7 +419,7 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 	if id == "" {
 		status = 201
 	}
-	respond(w, status, map[string]string{"id": savedID})
+	respond(w, status, map[string]string{"id": savedID, "warning": warning})
 }
 func (a *app) delete(w http.ResponseWriter, r *http.Request, kind string) {
 	id := r.PathValue("id")

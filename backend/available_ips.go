@@ -16,8 +16,10 @@ type ipCheck struct {
 }
 
 type availableIP struct {
-	IP     string    `json:"ip"`
-	Checks []ipCheck `json:"checks"`
+	ASN      string    `json:"asn"`
+	Provider string    `json:"provider"`
+	IP       string    `json:"ip"`
+	Checks   []ipCheck `json:"checks"`
 }
 
 // One bulk write per round; completed probes also survive a manual stop.
@@ -45,8 +47,8 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 
 func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `
- SELECT host(s.ip),s.protocol,s.delay_ms,n.id::text,n.name,s.checked_at
- FROM ip_results s JOIN nodes n ON n.id=s.node_id
+ SELECT host(s.ip),s.protocol,s.delay_ms,n.id::text,n.name,s.checked_at,COALESCE(info.asn,''),COALESCE(info.provider,'')
+ FROM ip_results s JOIN nodes n ON n.id=s.node_id `+networkInfoJoin+`
  WHERE s.available AND n.enabled AND s.config_hash=md5(n.share_uri)
  ORDER BY s.ip,s.protocol,s.delay_ms,n.name`)
 	if err != nil {
@@ -56,14 +58,14 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []availableIP{}
 	for rows.Next() {
-		var ip string
+		var ip, asn, provider string
 		var check ipCheck
-		if err = rows.Scan(&ip, &check.Protocol, &check.Delay, &check.NodeID, &check.NodeName, &check.CheckedAt); err != nil {
+		if err = rows.Scan(&ip, &check.Protocol, &check.Delay, &check.NodeID, &check.NodeName, &check.CheckedAt, &asn, &provider); err != nil {
 			dbError(w, err)
 			return
 		}
 		if len(items) == 0 || items[len(items)-1].IP != ip {
-			items = append(items, availableIP{IP: ip, Checks: []ipCheck{}})
+			items = append(items, availableIP{IP: ip, ASN: asn, Provider: provider, Checks: []ipCheck{}})
 		}
 		last := &items[len(items)-1]
 		last.Checks = append(last.Checks, check)
@@ -74,3 +76,11 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, 200, items)
 }
+
+// IP ownership metadata is shared across node templates. Prefer the most
+// specific enabled range with metadata; leave unknown information empty.
+const networkInfoJoin = ` LEFT JOIN LATERAL (
+ SELECT w.asn,w.provider FROM networks w
+ WHERE w.enabled AND s.ip <<= w.cidr AND (w.asn<>'' OR w.provider<>'')
+ ORDER BY masklen(w.cidr) DESC,w.updated_at DESC,w.id LIMIT 1
+) info ON true `

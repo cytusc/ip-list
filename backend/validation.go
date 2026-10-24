@@ -10,6 +10,8 @@ import (
 var validate = validator.New()
 
 type ConfigInput struct {
+	ASN         string `json:"asn"`
+	Provider    string `json:"provider"`
 	ShareURI    string `json:"share_uri"`
 	Name        string `json:"name"`
 	Address     string `json:"address"`
@@ -17,8 +19,6 @@ type ConfigInput struct {
 	Enabled     bool   `json:"enabled"`
 	Description string `json:"description"`
 	CIDR        string `json:"cidr"`
-	NodeID      string `json:"node_id"`
-	Action      string `json:"action"`
 }
 
 func (in *ConfigInput) validate(kind string) map[string]string {
@@ -51,6 +51,20 @@ func (in *ConfigInput) validate(kind string) map[string]string {
 			fields["port"] = "端口范围为 1–65535"
 		}
 	} else {
+		in.ASN = strings.ToUpper(strings.TrimSpace(in.ASN))
+		in.Provider = strings.TrimSpace(in.Provider)
+		if in.ASN != "" {
+			number := strings.TrimPrefix(in.ASN, "AS")
+			value, err := strconv.ParseUint(number, 10, 32)
+			if err != nil || value == 0 || strings.Trim(number, "0123456789") != "" {
+				fields["asn"] = "请输入 1–4294967295 的 ASN，例如 AS13335"
+			} else {
+				in.ASN = "AS" + strconv.FormatUint(value, 10)
+			}
+		}
+		if validate.Var(in.Provider, "max=100") != nil {
+			fields["provider"] = "服务商名称最多 100 个字符"
+		}
 		in.CIDR = strings.TrimSpace(in.CIDR)
 		prefix, err := netip.ParsePrefix(in.CIDR)
 		if err != nil || prefix != prefix.Masked() || strings.Contains(in.CIDR, "%") {
@@ -58,12 +72,7 @@ func (in *ConfigInput) validate(kind string) map[string]string {
 		} else {
 			in.CIDR = prefix.String()
 		}
-		if validate.Var(in.NodeID, "required,uuid") != nil {
-			fields["node_id"] = "请选择所属节点"
-		}
-		if in.Action != "allow" && in.Action != "deny" {
-			fields["action"] = "请选择允许或阻止"
-		}
+
 	}
 	return fields
 }

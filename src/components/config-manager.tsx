@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState, useTransition } from "react";
 import {
   Server,
@@ -13,10 +12,8 @@ import {
   ChevronRight,
   CircleCheck,
   CirclePause,
-  Layers,
   Info,
   Loader2,
-  ArrowUpRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import { deleteConfig } from "@/app/actions";
@@ -56,19 +53,16 @@ export function ConfigManager({
   kind,
   nodes,
   networks,
-  initialNodeFilter = "all",
 }: {
   kind: "nodes" | "networks";
   nodes: Node[];
   networks: Network[];
-  initialNodeFilter?: string;
 }) {
   const isNode = kind === "nodes";
   const label = isNode ? "节点" : "网段";
   const items = isNode ? nodes : networks;
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
-  const [nodeFilter, setNodeFilter] = useState(initialNodeFilter);
   const [page, setPage] = useState(1);
   const [editor, setEditor] = useState<{ item: Node | Network | null } | null>(
     null,
@@ -81,13 +75,10 @@ export function ConfigManager({
     const text =
       "address" in item
         ? `${item.name} ${item.address} ${item.description}`
-        : `${item.name} ${item.cidr} ${item.node_name} ${item.description}`;
+        : `${item.name} ${item.cidr} ${item.description} ${item.asn} ${item.provider}`;
     return (
       text.toLowerCase().includes(term) &&
-      (status === "all" || item.enabled === (status === "enabled")) &&
-      (isNode ||
-        nodeFilter === "all" ||
-        ("node_id" in item && item.node_id === nodeFilter))
+      (status === "all" || item.enabled === (status === "enabled"))
     );
   });
   const pageCount = Math.max(1, Math.ceil(filtered.length / 10));
@@ -110,28 +101,16 @@ export function ConfigManager({
       icon: CircleCheck,
       color: "bg-emerald-50 text-emerald-600",
     },
-    isNode
-      ? {
-          title: "关联网段",
-          value: nodes.reduce((sum, node) => sum + node.network_count, 0),
-          description: "分配至各节点的网段配置",
-          icon: Layers,
-          color: "bg-violet-50 text-violet-600",
-        }
-      : {
-          title: "阻止策略",
-          value: networks.filter((item) => item.action === "deny").length,
-          description: "使用阻止策略的网段",
-          icon: CirclePause,
-          color: "bg-amber-50 text-amber-600",
-        },
+    {
+      title: `已停用${label}`,
+      value: items.length - enabledCount,
+      description: "保留配置，暂不参与检测",
+      icon: CirclePause,
+      color: "bg-amber-50 text-amber-600",
+    },
   ];
   const addButton = (
-    <Button
-      onClick={() => setEditor({ item: null })}
-      disabled={!isNode && !nodes.length}
-      className="h-10"
-    >
+    <Button onClick={() => setEditor({ item: null })} className="h-10">
       <Plus className="size-4" />
       新增{label}
     </Button>
@@ -150,7 +129,7 @@ export function ConfigManager({
           <p className="mt-2 text-sm text-muted-foreground">
             {isNode
               ? "集中管理接入节点，维护节点地址与基础配置。"
-              : "为节点配置 IP 网段，清晰定义允许与阻止策略。"}
+              : "统一维护 IP 地址池、ASN 与服务商，检测时按需选择。"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -189,19 +168,6 @@ export function ConfigManager({
           </div>
         ))}
       </div>
-      {!isNode && !nodes.length && (
-        <div className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-800">
-          <Info className="size-4" />
-          配置网段前，请先创建一个节点。
-          <Link
-            href="/nodes"
-            className="inline-flex items-center gap-1 font-medium underline underline-offset-4"
-          >
-            前往节点管理
-            <ArrowUpRight className="size-3" />
-          </Link>
-        </div>
-      )}
       <section className="overflow-hidden rounded-xl border bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-6 py-5">
           <div className="flex items-center gap-2.5">
@@ -236,30 +202,6 @@ export function ConfigManager({
             />
           </div>
           <div className="flex flex-wrap gap-2">
-            {!isNode && (
-              <Select
-                value={nodeFilter}
-                onValueChange={(value) => {
-                  setNodeFilter(value);
-                  setPage(1);
-                }}
-              >
-                <SelectTrigger
-                  className="w-36 bg-white"
-                  aria-label="按节点筛选"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部节点</SelectItem>
-                  {nodes.map((node) => (
-                    <SelectItem key={node.id} value={node.id}>
-                      {node.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
             <Select
               value={status}
               onValueChange={(value) => {
@@ -283,8 +225,7 @@ export function ConfigManager({
             <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
               <TableHead className="pl-6">{label}名称</TableHead>
               <TableHead>{isNode ? "节点地址" : "CIDR 网段"}</TableHead>
-              <TableHead>{isNode ? "关联网段" : "所属节点"}</TableHead>
-              {!isNode && <TableHead>策略</TableHead>}
+              {!isNode && <TableHead>ASN / 服务商</TableHead>}
               <TableHead>状态</TableHead>
               <TableHead className="hidden xl:table-cell">更新时间</TableHead>
               <TableHead className="pr-6 text-right">操作</TableHead>
@@ -319,32 +260,12 @@ export function ConfigManager({
                     ? `${item.address.includes(":") ? `[${item.address}]` : item.address}:${item.port}`
                     : item.cidr}
                 </TableCell>
-                <TableCell>
-                  {"network_count" in item ? (
-                    <Link
-                      href={`/networks?node=${item.id}`}
-                      className="rounded-md border px-2 py-1 text-xs text-slate-600 hover:border-primary hover:text-primary"
-                    >
-                      {item.network_count} 个网段
-                    </Link>
-                  ) : (
-                    <span className="text-xs text-slate-600">
-                      {item.node_name}
-                    </span>
-                  )}
-                </TableCell>
-                {"action" in item && (
-                  <TableCell>
-                    <Badge
-                      variant="outline"
-                      className={
-                        item.action === "allow"
-                          ? "border-blue-100 bg-blue-50 text-blue-700"
-                          : "border-amber-100 bg-amber-50 text-amber-800"
-                      }
-                    >
-                      {item.action === "allow" ? "允许" : "阻止"}
-                    </Badge>
+                {"asn" in item && (
+                  <TableCell className="max-w-48 whitespace-normal text-xs">
+                    <p className="font-mono">{item.asn || "—"}</p>
+                    <p className="mt-1 break-words text-muted-foreground">
+                      {item.provider || "未填写"}
+                    </p>
                   </TableCell>
                 )}
                 <TableCell>
@@ -419,8 +340,8 @@ export function ConfigManager({
               {items.length
                 ? "尝试更换关键词，或清除筛选条件。"
                 : isNode
-                  ? "添加第一个节点，随后就可以为它配置 IP 网段。"
-                  : "添加 IPv4 或 IPv6 网段，并选择对应的节点和策略。"}
+                  ? "添加第一个节点，用于测试网段内 IP 的代理可用性。"
+                  : "添加 IPv4 或 IPv6 网段，供代理节点和 CF 检测复用。"}
             </p>
             {items.length ? (
               <Button
@@ -429,7 +350,6 @@ export function ConfigManager({
                 onClick={() => {
                   setSearch("");
                   setStatus("all");
-                  setNodeFilter("all");
                 }}
               >
                 清除筛选
@@ -438,7 +358,6 @@ export function ConfigManager({
               <Button
                 variant="outline"
                 size="sm"
-                disabled={!isNode && !nodes.length}
                 onClick={() => setEditor({ item: null })}
               >
                 <Plus />
@@ -481,13 +400,12 @@ export function ConfigManager({
       <p className="mt-5 flex items-start gap-2 text-xs leading-5 text-muted-foreground">
         <Info className="mt-0.5 size-3.5 shrink-0" />
         {isNode
-          ? "节点用于关联网段配置。启用状态表示配置开关，不代表节点实际在线状态。"
-          : "网段可用于批量筛选可用代理 IP；规则下发与流量过滤尚未实现。"}
+          ? "节点与网段独立维护，在连通性测试中按需组合。启用状态不代表在线状态。"
+          : "网段可用于代理节点与 CF 检测；ASN 和服务商信息会展示在可用 IP 列表中。"}
       </p>
       {editor && (
         <ConfigForm
           kind={kind}
-          nodes={nodes}
           item={editor.item}
           onClose={() => setEditor(null)}
         />
@@ -506,7 +424,7 @@ export function ConfigManager({
             <AlertDialogDescription>
               删除后无法恢复。
               {isNode
-                ? "如节点关联了网段，请先删除或迁移对应的网段配置。"
+                ? "对应节点的检测结果也将移除。"
                 : "该网段的配置将被永久移除。"}
             </AlertDialogDescription>
           </AlertDialogHeader>

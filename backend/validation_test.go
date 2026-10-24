@@ -16,7 +16,7 @@ func TestNetworkCIDR(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.cidr, func(t *testing.T) {
-			in := ConfigInput{Name: "test", CIDR: tc.cidr, NodeID: "a46ca4a7-c293-4a8e-b178-980307e6ed4d", Action: "deny"}
+			in := ConfigInput{Name: "test", CIDR: tc.cidr}
 			fields := in.validate("networks")
 			if (fields["cidr"] == "") != tc.valid {
 				t.Errorf("CIDR %s: fields=%v", tc.cidr, fields)

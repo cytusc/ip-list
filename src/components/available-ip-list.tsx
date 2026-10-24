@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { NodeLinksDialog } from "@/components/node-links-dialog";
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,7 @@ export function AvailableIPList({
 }: {
   initialItems: AvailableIP[];
 }) {
+  const [linkIP, setLinkIP] = useState<string | null>(null);
   const [items, setItems] = useState(initialItems);
   const [search, setSearch] = useState("");
   const [protocol, setProtocol] = useState("all");
@@ -51,6 +53,9 @@ export function AvailableIPList({
   const filtered = items.filter(
     (item) =>
       (item.ip.includes(search.trim()) ||
+        `${item.asn || ""} ${item.provider || ""}`
+          .toLowerCase()
+          .includes(search.trim().toLowerCase()) ||
         item.checks.some((c) =>
           c.node_name.toLowerCase().includes(search.trim().toLowerCase()),
         )) &&
@@ -128,6 +133,13 @@ export function AvailableIPList({
 
   return (
     <div className="space-y-6">
+      {linkIP && (
+        <NodeLinksDialog
+          key={linkIP}
+          ip={linkIP}
+          onClose={() => setLinkIP(null)}
+        />
+      )}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">可用 IP</h1>
@@ -186,8 +198,8 @@ export function AvailableIPList({
           <div className="relative flex-1 sm:max-w-sm">
             <Search className="pointer-events-none absolute top-3 left-3 size-4 text-muted-foreground" />
             <Input
-              aria-label="搜索 IP 或节点"
-              placeholder="搜索 IP 或节点名称"
+              aria-label="搜索 IP、节点、ASN 或服务商"
+              placeholder="搜索 IP、节点、ASN 或服务商"
               className="pl-9"
               value={search}
               onChange={(e) => {
@@ -220,10 +232,12 @@ export function AvailableIPList({
           <TableHeader>
             <TableRow>
               <TableHead className="pl-5">IP 地址</TableHead>
+              <TableHead>ASN / 服务商</TableHead>
               <TableHead>支持的协议 · 延迟</TableHead>
               <TableHead className="hidden pr-5 md:table-cell">
                 最近测通
               </TableHead>
+              <TableHead>节点链接</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -238,6 +252,12 @@ export function AvailableIPList({
                 <TableRow key={item.ip}>
                   <TableCell className="max-w-44 break-all whitespace-normal pl-5 align-top font-mono text-sm">
                     {item.ip}
+                  </TableCell>
+                  <TableCell className="max-w-44 whitespace-normal align-top text-xs">
+                    <p className="font-mono">{item.asn || "—"}</p>
+                    <p className="mt-1 break-words text-muted-foreground">
+                      {item.provider || "未填写"}
+                    </p>
                   </TableCell>
                   <TableCell className="whitespace-normal">
                     <div className="flex flex-wrap gap-2">
@@ -273,12 +293,22 @@ export function AvailableIPList({
                   <TableCell className="hidden pr-5 text-xs text-muted-foreground md:table-cell">
                     {formatTime(latest.checked_at)}
                   </TableCell>
+                  <TableCell className="align-top">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setLinkIP(item.ip)}
+                      aria-label={`生成 ${item.ip} 节点`}
+                    >
+                      生成节点
+                    </Button>
+                  </TableCell>
                 </TableRow>
               );
             })}
             {!visible.length && (
               <TableRow>
-                <TableCell colSpan={3} className="h-44 text-center">
+                <TableCell colSpan={5} className="h-44 text-center">
                   <p className="font-medium">
                     {items.length ? "没有匹配的 IP" : "暂无可用 IP"}
                   </p>

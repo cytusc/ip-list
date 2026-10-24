@@ -57,8 +57,6 @@ test("导入节点、批量测试、刷新恢复和停止", async ({
       data: {
         name,
         cidr: "127.0.0.0/26",
-        node_id: nodeID,
-        action: "deny",
         enabled: true,
         description: "browser test",
       },
@@ -69,6 +67,8 @@ test("导入节点、批量测试、刷新恢复和停止", async ({
     await page.getByLabel("测试节点", { exact: true }).click();
     await page.getByRole("option", { name, exact: true }).click();
     await page.getByRole("checkbox", { name: new RegExp(name) }).check();
+    await page.getByLabel("巡检方式", { exact: true }).click();
+    await page.getByRole("option", { name: "单次检测", exact: true }).click();
     await page.getByLabel("检测网址").fill("http://probe.example/generate_204");
     await page.getByLabel("单 IP 超时（毫秒）").fill("15000");
     await page.getByLabel("并发数", { exact: true }).fill("1");

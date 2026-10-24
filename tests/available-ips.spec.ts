@@ -21,6 +21,8 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
   const fixtures = [
     {
       ip: "192.0.2.25",
+      asn: "AS13335",
+      provider: "Cloudflare",
       checks: [
         {
           protocol: "httpupgrade",
@@ -69,6 +71,8 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
   const row = page.getByRole("row").filter({ hasText: "192.0.2.25" });
   await expect(row).toHaveCount(1);
   await expect(row).toContainText("HTTPUpgrade");
+  await expect(row).toContainText("AS13335");
+  await expect(row).toContainText("Cloudflare");
   await expect(row).toContainText("42 ms");
   await expect(row).toContainText("68 ms");
   await expect(
@@ -79,18 +83,22 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
   await page.getByRole("option", { name: "gRPC", exact: true }).click();
   await expect(row).toHaveCount(0);
   await expect(page.getByRole("table")).toContainText(fixtures[1].ip);
-  await page.getByLabel("搜索 IP 或节点").fill("不匹配");
+  await page.getByLabel("搜索 IP、节点、ASN 或服务商").fill("不匹配");
   await expect(page.getByText("没有匹配的 IP", { exact: true })).toBeVisible();
-  await page.getByLabel("搜索 IP 或节点").fill("");
+  await page.getByLabel("搜索 IP、节点、ASN 或服务商").fill("");
   await page.getByLabel("协议筛选", { exact: true }).click();
   await page.getByRole("option", { name: "全部协议", exact: true }).click();
   fail = true;
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "测试服务暂时不可用" })).toContainText("测试服务暂时不可用");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "测试服务暂时不可用" }),
+  ).toContainText("测试服务暂时不可用");
   await expect(row).toBeVisible();
   fail = false;
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "测试服务暂时不可用" })).toHaveCount(0);
+  await expect(
+    page.getByRole("alert").filter({ hasText: "测试服务暂时不可用" }),
+  ).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath("available-ips-desktop.png"),
     fullPage: true,

@@ -90,7 +90,6 @@ func TestIntegration(t *testing.T) {
 	created := request("POST", "/nodes", node, 201)
 	nodeID := created["id"].(string)
 	defer func() {
-		_, _ = db.Exec(ctx, "DELETE FROM networks WHERE node_id=$1", nodeID)
 		_, _ = db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", nodeID)
 	}()
 	request("POST", "/nodes", node, 409)
@@ -99,12 +98,12 @@ func TestIntegration(t *testing.T) {
 	node["port"], node["enabled"] = 9090, false
 	request("PUT", "/nodes/"+nodeID, node, 200)
 	request("GET", "/nodes", nil, 200)
-	network := map[string]any{"name": "office", "cidr": "192.168.8.1/24", "node_id": nodeID, "action": "deny", "enabled": true, "description": ""}
+	network := map[string]any{"name": "office", "cidr": "192.168.8.1/24", "enabled": true, "description": ""}
 	request("POST", "/networks", network, 422)
 	network["cidr"] = "192.168.8.0/24"
 	networkID := request("POST", "/networks", network, 201)["id"].(string)
 	request("POST", "/networks", network, 409)
-	request("DELETE", "/nodes/"+nodeID, nil, 409)
+	defer func() { _, _ = db.Exec(ctx, "DELETE FROM networks WHERE id=$1", networkID) }()
 
 	// Multiple transports at the same endpoint must import atomically.
 	firstURI := "vless://" + testUUID + "@same.example:443?security=tls&type=grpc&serviceName=svc#" + username + "-grpc"
@@ -212,11 +211,12 @@ func TestIntegration(t *testing.T) {
 	request("PUT", "/networks/"+networkID, network, 200)
 	request("POST", "/scans", scanInput, 422)
 
-	network["cidr"], network["action"] = "2001:db8::/32", "allow"
+	network["cidr"] = "2001:db8::/32"
 	request("PUT", "/networks/"+networkID, network, 200)
 	request("GET", "/networks", nil, 200)
-	request("DELETE", "/networks/"+networkID, nil, 200)
 	request("DELETE", "/nodes/"+nodeID, nil, 200)
+	request("PUT", "/networks/"+networkID, network, 200)
+	request("DELETE", "/networks/"+networkID, nil, 200)
 	request("DELETE", "/nodes/"+nodeID, nil, 404)
 	req, _ := http.NewRequest("POST", server.URL+"/nodes", strings.NewReader(`{}`))
 	req.Header.Set("Origin", "https://untrusted.example")

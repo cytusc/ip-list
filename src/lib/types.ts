@@ -9,22 +9,20 @@ export type Node = {
   description: string;
   created_at: string;
   updated_at: string;
-  network_count: number;
 };
 export type Network = {
+  asn: string;
+  provider: string;
   id: string;
   name: string;
   cidr: string;
-  node_id: string;
-  node_name: string;
-  action: "allow" | "deny";
   enabled: boolean;
   description: string;
   created_at: string;
   updated_at: string;
 };
 export type ActionResult =
-  | { ok: true }
+  | { ok: true; warning?: string }
   | { ok: false; error: string; fields?: Record<string, string> };
 
 export type ScanResult = {
@@ -71,7 +69,18 @@ export type IPCheck = {
   node_name: string;
   checked_at: string;
 };
-export type AvailableIP = { ip: string; checks: IPCheck[] };
+export type AvailableIP = {
+  ip: string;
+  asn?: string;
+  provider?: string;
+  checks: IPCheck[];
+};
+export type GeneratedLink = {
+  node_id: string;
+  node_name: string;
+  protocol: string;
+  uri: string;
+};
 
 export type CFTarget = {
   id: string;
@@ -83,6 +92,8 @@ export type CFDetail = {
   target: CFTarget;
   items: {
     ip: string;
+    asn?: string;
+    provider?: string;
     http_status: number;
     checked_at: string;
   }[];

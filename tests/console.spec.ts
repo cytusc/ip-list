@@ -42,8 +42,8 @@ test("登录、节点与网段配置的完整流程", async ({ page }, testInfo)
   dialog = page.getByRole("dialog");
   await dialog.getByLabel("网段名称").fill("办公网段");
   await dialog.getByLabel("CIDR 网段").fill("192.168.12.1/24");
-  await dialog.getByLabel("所属节点").click();
-  await page.getByRole("option", { name, exact: true }).click();
+  await dialog.getByLabel("ASN").fill("13335");
+  await dialog.getByLabel("服务商").fill("Cloudflare");
   await dialog.getByRole("button", { name: "保存配置" }).click();
   await expect(
     dialog.getByText("主机位需为 0", { exact: false }),
@@ -64,10 +64,7 @@ test("登录、节点与网段配置的完整流程", async ({ page }, testInfo)
     .click();
   await page.getByRole("button", { name: `删除${name}`, exact: true }).click();
   await page.getByRole("button", { name: "确认删除", exact: true }).click();
-  await expect(page.getByRole("alertdialog").getByRole("alert")).toContainText(
-    "关联",
-  );
-  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).not.toBeVisible();
   await page
     .getByRole("navigation", { name: "主导航", exact: true })
     .getByRole("link", { name: "网段配置" })
@@ -79,9 +76,6 @@ test("登录、节点与网段配置的完整流程", async ({ page }, testInfo)
     .getByRole("navigation", { name: "主导航", exact: true })
     .getByRole("link", { name: "节点管理" })
     .click();
-  await page.getByRole("button", { name: `删除${name}`, exact: true }).click();
-  await page.getByRole("button", { name: "确认删除", exact: true }).click();
-  await expect(page.getByRole("alertdialog")).not.toBeVisible();
   await expect(page.getByRole("table")).not.toContainText(name);
   await page.getByRole("button", { name: "退出登录" }).click();
   await expect(page).toHaveURL(/\/login$/);

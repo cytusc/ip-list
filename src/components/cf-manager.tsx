@@ -225,33 +225,38 @@ export function CFDetailView({
           });
         }}
       >
-        <fieldset disabled={active || pending} className="space-y-3">
+        <fieldset disabled={active || pending} className="min-w-0 space-y-3">
           <legend className="mb-3 text-sm font-medium">检测网段</legend>
-          <div className="grid max-h-60 gap-2 overflow-auto rounded-lg border p-3 sm:grid-cols-2">
-            {networks
-              .filter((n) => n.enabled)
-              .map((n) => (
-                <label key={n.id} className="flex items-start gap-2 text-sm">
-                  <input
-                    className="mt-1"
-                    type="checkbox"
-                    checked={selected.includes(n.id)}
-                    onChange={(e) =>
-                      setSelected((old) =>
-                        e.target.checked
-                          ? [...old, n.id]
-                          : old.filter((v) => v !== n.id),
-                      )
-                    }
-                  />
-                  <span>
-                    {n.name}
-                    <span className="block font-mono text-xs text-muted-foreground">
-                      {n.cidr}
+          <div className="max-h-60 min-w-0 overflow-y-auto rounded-lg border p-3">
+            <div className="grid auto-rows-max gap-2 sm:grid-cols-2">
+              {networks
+                .filter((n) => n.enabled)
+                .map((n) => (
+                  <label
+                    key={n.id}
+                    className="flex min-w-0 cursor-pointer items-start gap-3 rounded-md border p-3 text-sm hover:bg-muted/50 has-checked:border-primary/40 has-checked:bg-primary/5 has-disabled:cursor-not-allowed has-disabled:opacity-60"
+                  >
+                    <input
+                      className="mt-0.5 size-4 shrink-0 accent-primary"
+                      type="checkbox"
+                      checked={selected.includes(n.id)}
+                      onChange={(e) =>
+                        setSelected((old) =>
+                          e.target.checked
+                            ? [...old, n.id]
+                            : old.filter((v) => v !== n.id),
+                        )
+                      }
+                    />
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                      {n.name}
+                      <span className="block font-mono text-xs text-muted-foreground">
+                        {n.cidr}
+                      </span>
                     </span>
-                  </span>
-                </label>
-              ))}
+                  </label>
+                ))}
+            </div>
           </div>
           {!networks.some((n) => n.enabled) && (
             <p className="text-sm text-muted-foreground">
@@ -386,6 +391,7 @@ export function CFDetailView({
           <TableHeader>
             <TableRow>
               <TableHead>IP 地址</TableHead>
+              <TableHead>ASN / 服务商</TableHead>
               <TableHead>HTTP</TableHead>
               <TableHead>检测时间</TableHead>
               <TableHead>操作</TableHead>
@@ -396,6 +402,12 @@ export function CFDetailView({
               <TableRow key={item.ip}>
                 <TableCell className="max-w-52 break-all whitespace-normal font-mono">
                   {item.ip}
+                </TableCell>
+                <TableCell className="max-w-44 whitespace-normal text-xs">
+                  <p className="font-mono">{item.asn || "—"}</p>
+                  <p className="mt-1 break-words text-muted-foreground">
+                    {item.provider || "未填写"}
+                  </p>
                 </TableCell>
                 <TableCell>{item.http_status}</TableCell>
                 <TableCell>

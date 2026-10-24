@@ -250,3 +250,24 @@ func BenchmarkProbeSetup(b *testing.B) {
 		})
 	}
 }
+
+// The selected physical interface must reach mihomo, without changing the
+// reusable node template or the Host/SNI used for each substituted address.
+func TestProbeInterface(t *testing.T) {
+	t.Setenv("PROBE_INTERFACE", "test-egress")
+	template, _, err := parseShare("vless://" + testUUID + "@original.example:443?security=tls&type=xhttp&host=front.example&sni=front.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := newProbe(template, netip.MustParseAddr("192.0.2.7"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	if proxy.ProxyInfo().Interface != "test-egress" {
+		t.Fatal("probe ignored interface binding")
+	}
+	if template["server"] != "original.example" || template["interface-name"] != nil {
+		t.Fatal("probe modified shared template")
+	}
+}

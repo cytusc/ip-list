@@ -18,22 +18,13 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 export function ConfigForm({
   kind,
-  nodes,
   item,
   onClose,
 }: {
   kind: "nodes" | "networks";
-  nodes: Node[];
   item: Node | Network | null;
   onClose: () => void;
 }) {
@@ -44,9 +35,9 @@ export function ConfigForm({
     name: item?.name || "",
     address: item && "address" in item ? item.address : "",
     port: item && "port" in item ? String(item.port) : "8080",
+    asn: item && "asn" in item ? item.asn : "",
+    provider: item && "provider" in item ? item.provider : "",
     cidr: item && "cidr" in item ? item.cidr : "",
-    node_id: item && "node_id" in item ? item.node_id : "",
-    action: item && "action" in item ? item.action : "deny",
     enabled: item?.enabled ?? true,
     description: item?.description || "",
   };
@@ -55,7 +46,11 @@ export function ConfigForm({
   const [error, setError] = useState("");
   const [pending, startTransition] = useTransition();
   const set = (key: keyof typeof values, value: string | boolean) => {
-    setValues((previous) => ({ ...previous, [key]: value }));
+    setValues((previous) => ({
+      ...previous,
+      ...(key === "cidr" ? { asn: "", provider: "" } : {}),
+      [key]: value,
+    }));
     setFields((previous) => ({ ...previous, [key]: "" }));
   };
   function close() {
@@ -144,8 +139,8 @@ export function ConfigForm({
           </DialogTitle>
           <DialogDescription>
             {isNode
-              ? "填写节点的基础信息，用于关联和管理网段配置。"
-              : "指定 IP 网段及所属节点，选择对应的访问策略。"}
+              ? "填写节点基础信息和用于连通性测试的分享链接。"
+              : "维护独立 IP 地址池，可用于代理节点和 CF 网站检测。"}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -166,15 +161,11 @@ export function ConfigForm({
               : {
                   name: values.name,
                   cidr: values.cidr,
-                  node_id: values.node_id,
-                  action: values.action,
+                  asn: values.asn,
+                  provider: values.provider,
                   enabled: values.enabled,
                   description: values.description,
                 };
-            if (!isNode && !values.node_id) {
-              setFields({ node_id: "请选择所属节点" });
-              return;
-            }
             startTransition(async () => {
               try {
                 const result = await (isNode ? saveNode : saveNetwork)(
@@ -182,7 +173,8 @@ export function ConfigForm({
                   data,
                 );
                 if (result.ok) {
-                  toast.success(`${label}已${item ? "更新" : "创建"}`);
+                  if (result.warning) toast.warning(result.warning);
+                  else toast.success(`${label}已${item ? "更新" : "创建"}`);
                   onClose();
                 } else {
                   setError(result.error);
@@ -238,59 +230,41 @@ export function ConfigForm({
                 "192.168.1.0/24",
                 "支持 IPv4 / IPv6，请填写网络地址，主机位需为 0。",
               )}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="node_id">
-                    所属节点<span className="text-destructive">*</span>
-                  </Label>
-                  <Select
-                    value={values.node_id}
-                    onValueChange={(value) => set("node_id", value)}
-                    disabled={pending}
-                  >
-                    <SelectTrigger
-                      id="node_id"
-                      aria-invalid={Boolean(fields.node_id)}
+              <p className="text-xs text-muted-foreground">
+                保存时自动查询 ASN 和所属机构，也可手动填写。修改 CIDR
+                后会重新查询。
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {(
+                  [
+                    ["asn", "ASN", "留空自动获取"],
+                    ["provider", "服务商", "留空自动获取"],
+                  ] as const
+                ).map(([key, title, placeholder]) => (
+                  <div key={key} className="space-y-2">
+                    <Label htmlFor={key}>{title}</Label>
+                    <Input
+                      id={key}
+                      value={values[key]}
+                      placeholder={placeholder}
+                      maxLength={key === "asn" ? 12 : 100}
+                      disabled={pending}
+                      onChange={(e) => set(key, e.target.value)}
+                      aria-invalid={Boolean(fields[key])}
                       aria-describedby={
-                        fields.node_id ? "node_id-error" : undefined
+                        fields[key] ? `${key}-error` : undefined
                       }
-                      className="h-10 w-full"
-                    >
-                      <SelectValue placeholder="请选择节点" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {nodes.map((node) => (
-                        <SelectItem key={node.id} value={node.id}>
-                          {node.name}
-                          {!node.enabled ? "（已停用）" : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {fields.node_id && (
-                    <p id="node_id-error" className="text-xs text-destructive">
-                      {fields.node_id}
-                    </p>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="action">
-                    访问策略<span className="text-destructive">*</span>
-                  </Label>
-                  <Select
-                    value={values.action}
-                    onValueChange={(value) => set("action", value)}
-                    disabled={pending}
-                  >
-                    <SelectTrigger id="action" className="h-10 w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="deny">阻止</SelectItem>
-                      <SelectItem value="allow">允许</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+                    />
+                    {fields[key] && (
+                      <p
+                        id={`${key}-error`}
+                        className="text-xs text-destructive"
+                      >
+                        {fields[key]}
+                      </p>
+                    )}
+                  </div>
+                ))}
               </div>
             </>
           )}
