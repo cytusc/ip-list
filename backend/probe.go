@@ -95,6 +95,9 @@ func parseShare(raw string) (map[string]any, *url.URL, error) {
 		opts["v2ray-http-upgrade"] = true
 	}
 	config["name"] = "ipguard-probe" // Keep credentials and user labels out of kernel logs.
+	if env("PROBE_KERNEL", "mihomo") == "xray" {
+		return config, &normalized, nil
+	}
 	proxy, err := adapter.ParseProxy(config)
 	if err != nil {
 		return nil, nil, errors.New("mihomo 无法加载此节点，请检查传输参数")
@@ -144,6 +147,9 @@ func newProbe(template map[string]any, ip netip.Addr) (C.Proxy, error) {
 func probeIP(ctx context.Context, template map[string]any, ip netip.Addr, target string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	if env("PROBE_KERNEL", "mihomo") == "xray" {
+		return probeXray(ctx, template, ip, target)
 	}
 	proxy, err := newProbe(template, ip)
 	if err != nil {

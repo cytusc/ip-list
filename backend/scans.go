@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"iter"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -248,6 +249,11 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 	ctx, cancel := scanRoundContext(parent, job.TargetID != "")
 	defer cancel()
 	workerCount := min(input.Concurrency, total)
+	// External Xray processes need a smaller memory budget than embedded probes.
+	// Limit workers before starting each IP's timeout, so queued IPs still run.
+	if job.TargetID == "" && env("PROBE_KERNEL", "mihomo") == "xray" {
+		workerCount = min(workerCount, 8)
+	}
 	work := make(chan netip.Addr, workerCount)
 	// Bound queue allocation even when a CF job spans a large address range.
 	results := make(chan scanResult, min(total, 4096))
@@ -275,6 +281,11 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 				}
 				result := scanResult{IP: ip.String(), Status: "success", Delay: delay, HTTPStatus: code}
 				if err != nil {
+					if env("PROBE_DEBUG", "") == "1" {
+						// Keep test URL query parameters out of diagnostic logs.
+						detail := strings.ReplaceAll(err.Error(), input.URL, "[test-url]")
+						log.Printf("probe failed job=%s protocol=%s ip=%s error=%q", job.ID, job.Protocol, ip, detail)
+					}
 					result.Status = "failed"
 					result.Error = probeError(err)
 					if job.TargetID != "" {
@@ -397,11 +408,18 @@ func probeError(err error) string {
 		return "测试已停止"
 	}
 	message := strings.ToLower(err.Error())
+	if strings.HasPrefix(err.Error(), "Xray ") {
+		return "Xray 启动或节点配置加载失败"
+	}
+	if strings.Contains(message, "unexpected response version") {
+		return "VLESS 响应版本无效（代理握手失败）"
+	}
 	if strings.Contains(message, "certificate") || strings.Contains(message, "tls") {
 		return "TLS 握手或证书校验失败"
 	}
 	return "代理连接失败（端口、传输握手或上游不可用）"
 }
+
 var (
 	errScanNotFound = errors.New("scan not found")
 	errScanBroken   = errors.New("scan unreadable")

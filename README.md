@@ -172,3 +172,5 @@ npm start
 升级运行后端 `-init` 会将旧网段迁移为独立配置，移除节点关联和访问策略；相同 CIDR 合并，保留备注和补充信息，任一副本启用则保留启用状态。若原任务选择了合并删除的网段，需重新选择。
 
 本机启用 Clash 等 TUN 代理时，代理节点扫描可能经过已有代理，不能据此保证本地直连可用。可设置 `PROBE_INTERFACE=en0`（替换为实际物理网卡名）并重启 Go API，使用 mihomo 的网卡绑定功能指定检测出口；再重新扫描以更新旧结果。该配置不改变 CF 检测出口。
+
+代理检测可设置 `PROBE_KERNEL=xray`，并通过 `XRAY_BIN` 指定已安装的 Xray 可执行文件（默认 `/usr/local/bin/xray`）。重启 Go API 后，正常扫描任务中的 HTTPUpgrade、XHTTP、gRPC、WS 和 TCP 请求将由 Xray 执行，停用 mihomo 检测路径；CF 检测保持原有直连方式。每个 IP 使用独立的 Xray 进程和私有 Unix socket，进程在检测结束、超时或取消时回收；超时包含进程启动时间，只有实际代理 HTTP 请求成功才记录可用。此方式会增加并发扫描的进程与内存开销，实际最多并行检测 8 个 IP，排队时间不占用单个 IP 的超时。设置 `PROBE_KERNEL=mihomo` 后重启可回退。现阶段保留 mihomo 的分享链接转换器以兼容已有配置。
