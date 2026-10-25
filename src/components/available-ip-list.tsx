@@ -42,6 +42,7 @@ export function AvailableIPList({
   const [protocol, setProtocol] = useState("all");
   const [page, setPage] = useState(1);
   const [refreshing, setRefreshing] = useState(false);
+  const [locationVersion, setLocationVersion] = useState(0);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const inFlight = useRef(false);
@@ -102,6 +103,7 @@ export function AvailableIPList({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       setItems(data);
+      setLocationVersion((version) => version + 1);
       setError("");
     } catch (error) {
       setError(
@@ -250,7 +252,7 @@ export function AvailableIPList({
                     {item.ip}
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
-                    <IPLocationCell ip={item.ip} />
+                    <IPLocationCell key={`${item.ip}:${locationVersion}`} ip={item.ip} />
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
                     <p className="font-mono">{item.asn || "—"}</p>

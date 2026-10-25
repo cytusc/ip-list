@@ -66,8 +66,12 @@ func lookupIPLocation(ctx context.Context, client *http.Client, origin, ip strin
 		var payload struct {
 			OK   bool `json:"ok"`
 			Data struct {
-				IP string `json:"ip"`
-				ipLocation
+				IP  string `json:"ip"`
+				Geo map[string]struct {
+					Country string `json:"country_code"`
+					Region  string `json:"subdivisions"`
+					City    string `json:"city"`
+				} `json:"geo"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
@@ -75,13 +79,19 @@ func lookupIPLocation(ctx context.Context, client *http.Client, origin, ip strin
 		}
 		returned, err := netip.ParseAddr(payload.Data.IP)
 		requested, _ := netip.ParseAddr(ip)
-		location := payload.Data.ipLocation
-		location.Country = strings.ToUpper(strings.TrimSpace(location.Country))
-		if !payload.OK || err != nil || returned != requested || len(location.Country) != 2 ||
-			location.Country[0] < 'A' || location.Country[0] > 'Z' || location.Country[1] < 'A' || location.Country[1] > 'Z' {
+		if !payload.OK || err != nil || returned != requested {
 			return ipLocation{}, errors.New("IPPure 返回的归属地信息无效")
 		}
-		return location, nil
+		// IPPure returns locations per database, rather than top-level fields.
+		// Prefer IP2Location's detailed record; fall back without mixing sources.
+		for _, source := range []string{"IP2Location", "DB-IP", "MaxMind"} {
+			geo := payload.Data.Geo[source]
+			country := strings.ToUpper(strings.TrimSpace(geo.Country))
+			if len(country) == 2 && country[0] >= 'A' && country[0] <= 'Z' && country[1] >= 'A' && country[1] <= 'Z' {
+				return ipLocation{Country: country, Region: strings.TrimSpace(geo.Region), City: strings.TrimSpace(geo.City)}, nil
+			}
+		}
+		return ipLocation{}, errors.New("IPPure 未返回有效的归属地信息")
 	}
 	return ipLocation{}, errors.New("IPPure 签名验证失败")
 }
@@ -92,7 +102,7 @@ func (a *app) availableIPLocation(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusBadRequest, map[string]string{"error": "请输入公网 IP 地址"})
 		return
 	}
-	key := "ipfilter:ip-location:v1:" + ip.String()
+	key := "ipfilter:ip-location:v2:" + ip.String()
 	if a.redis != nil {
 		cacheCtx, cancel := context.WithTimeout(r.Context(), 150*time.Millisecond)
 		raw, err := a.redis.Get(cacheCtx, key).Bytes()

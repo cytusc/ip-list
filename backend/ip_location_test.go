@@ -18,10 +18,13 @@ func TestIPLocationSignedLookup(t *testing.T) {
 		name, payload string
 		wantError     bool
 	}{
-		{"location", `{"ok":true,"data":{"ip":"8.8.8.8","country":"us","region":"California","city":"Mountain View"}}`, false},
-		{"wrong IP", `{"ok":true,"data":{"ip":"1.1.1.1","country":"US"}}`, true},
+		{"location", `{"ok":true,"data":{"ip":"8.8.8.8","geo":{"IP2Location":{"country_code":"us","subdivisions":"California","city":"Mountain View"},"DB-IP":{"country_code":"US","city":"Other city"},"MaxMind":{"country_code":"US","city":""}}}}`, false},
+		{"DB-IP fallback", `{"ok":true,"data":{"ip":"8.8.8.8","geo":{"IP2Location":{"country_code":"??"},"DB-IP":{"country_code":"US","subdivisions":"California","city":"Mountain View"}}}}`, false},
+		{"MaxMind fallback", `{"ok":true,"data":{"ip":"8.8.8.8","geo":{"MaxMind":{"country_code":"US","subdivisions":"California","city":"Mountain View"}}}}`, false},
+		{"wrong IP", `{"ok":true,"data":{"ip":"1.1.1.1","geo":{"IP2Location":{"country_code":"US"}}}}`, true},
 		{"upstream failure", `{"ok":false}`, true},
-		{"invalid country", `{"ok":true,"data":{"ip":"8.8.8.8","country":"??"}}`, true},
+		{"invalid country", `{"ok":true,"data":{"ip":"8.8.8.8","geo":{"IP2Location":{"country_code":"??"}}}}`, true},
+		{"missing geo", `{"ok":true,"data":{"ip":"8.8.8.8"}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
