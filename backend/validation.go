@@ -54,12 +54,11 @@ func (in *ConfigInput) validate(kind string) map[string]string {
 		in.ASN = strings.ToUpper(strings.TrimSpace(in.ASN))
 		in.Provider = strings.TrimSpace(in.Provider)
 		if in.ASN != "" {
-			number := strings.TrimPrefix(in.ASN, "AS")
-			value, err := strconv.ParseUint(number, 10, 32)
-			if err != nil || value == 0 || strings.Trim(number, "0123456789") != "" {
-				fields["asn"] = "请输入 1–4294967295 的 ASN，例如 AS13335"
+			value, err := normalizeASNs(in.ASN)
+			if err != nil {
+				fields["asn"] = "请输入有效 ASN，多个用逗号分隔，例如 AS906, AS32519"
 			} else {
-				in.ASN = "AS" + strconv.FormatUint(value, 10)
+				in.ASN = value
 			}
 		}
 		if validate.Var(in.Provider, "max=100") != nil {

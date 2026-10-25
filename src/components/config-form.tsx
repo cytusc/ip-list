@@ -231,8 +231,8 @@ export function ConfigForm({
                 "支持 IPv4 / IPv6，请填写网络地址，主机位需为 0。",
               )}
               <p className="text-xs text-muted-foreground">
-                保存时自动查询 ASN 和所属机构，也可手动填写。修改 CIDR
-                后会重新查询。
+                根据网段自动查询 ASN 和所属机构；修改 CIDR 后会重新查询，
+                缺失数据由后台自动补全。以下信息可按需手动修正。
               </p>
               <div className="grid gap-4 sm:grid-cols-2">
                 {(
@@ -247,7 +247,7 @@ export function ConfigForm({
                       id={key}
                       value={values[key]}
                       placeholder={placeholder}
-                      maxLength={key === "asn" ? 12 : 100}
+                      maxLength={key === "asn" ? 255 : 100}
                       disabled={pending}
                       onChange={(e) => set(key, e.target.value)}
                       aria-invalid={Boolean(fields[key])}

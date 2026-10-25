@@ -104,6 +104,7 @@ func main() {
 	}
 	a.scanContext = ctx
 	go a.resumeNodeSchedules(ctx)
+	go a.maintainNetworkMetadata(ctx)
 	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -379,7 +380,7 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 		if (input.ASN == "" || input.Provider == "") && publicMetadataPrefix(prefix) {
 			metadata, err := a.networkMetadata(r.Context(), prefix)
 			if err != nil {
-				warning = "网段已保存，暂未获取到 ASN 和服务商；可稍后编辑保存重试或手动补充"
+				warning = "网段已保存，暂未获取到 ASN 和服务商；后台会自动重试，也可手动补充"
 			} else if input.ASN == "" || input.ASN == metadata.ASN {
 				// Preserve manual values; never attach a holder to a different manual ASN.
 				if input.ASN == "" {

@@ -117,6 +117,7 @@ INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
  WHERE cf_ip_pool.checked_at<excluded.checked_at;
 
 ALTER TABLE networks ADD COLUMN IF NOT EXISTS asn varchar(12) NOT NULL DEFAULT '';
+ALTER TABLE networks ALTER COLUMN asn TYPE varchar(255);
 ALTER TABLE networks ADD COLUMN IF NOT EXISTS provider varchar(100) NOT NULL DEFAULT '';
 
 -- Migrate node-bound ranges once. Keep the oldest ID so existing selections

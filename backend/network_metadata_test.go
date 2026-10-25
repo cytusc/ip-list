@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,7 +17,7 @@ func TestNetworkMetadataLookup(t *testing.T) {
 		want                  bool
 	}{
 		{"single", `{"status":"ok","data":{"asns":["36002"],"prefix":"103.26.8.0/24"}}`, `{"status":"ok","data":{"holder":"Example Networks"}}`, true},
-		{"multiple", `{"status":"ok","data":{"asns":["36002","13335"],"prefix":"103.26.8.0/24"}}`, "", false},
+		{"multiple", `{"status":"ok","data":{"asns":["36002","13335"],"prefix":"103.26.8.0/24"}}`, `{"status":"ok","data":{"holder":"Example Networks"}}`, true},
 		{"partial", `{"status":"ok","data":{"asns":["36002"],"prefix":"103.26.8.0/25"}}`, "", false},
 		{"unrelated", `{"status":"ok","data":{"asns":["36002"],"prefix":"103.26.9.0/24"}}`, "", false},
 		{"unannounced", `{"status":"ok","data":{"asns":[],"prefix":""}}`, "", false},
@@ -30,7 +31,7 @@ func TestNetworkMetadataLookup(t *testing.T) {
 					}
 					fmt.Fprint(w, tc.network)
 				} else {
-					if r.URL.Query().Get("resource") != "AS36002" {
+					if r.URL.Query().Get("resource") != "AS36002" && !(tc.name == "multiple" && r.URL.Query().Get("resource") == "AS13335") {
 						t.Error("wrong ASN")
 					}
 					fmt.Fprint(w, tc.holder)
@@ -41,10 +42,28 @@ func TestNetworkMetadataLookup(t *testing.T) {
 			if (err == nil) != tc.want {
 				t.Fatalf("unexpected outcome: %+v %v", got, err)
 			}
-			if tc.want && (got.ASN != "AS36002" || got.Provider != "Example Networks") {
+			wantASN := "AS36002"
+			if tc.name == "multiple" {
+				wantASN = "AS13335, AS36002"
+			}
+			if tc.want && (got.ASN != wantASN || got.Provider != "Example Networks") {
 				t.Fatal(got)
 			}
 		})
+	}
+}
+
+func TestNormalizeASNs(t *testing.T) {
+	for _, raw := range []string{"AS32519, 906,AS906", "as906, as32519"} {
+		got, err := normalizeASNs(raw)
+		if err != nil || got != "AS906, AS32519" {
+			t.Fatalf("%q: %q %v", raw, got, err)
+		}
+	}
+	for _, raw := range []string{"", "AS0", "AS4294967296", "AS906,", "AS906 / AS32519", strings.Repeat("AS4294967295,", 30)} {
+		if _, err := normalizeASNs(raw); err == nil {
+			t.Fatalf("accepted %q", raw)
+		}
 	}
 }
 
