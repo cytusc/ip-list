@@ -13,7 +13,7 @@ func (a *app) runScan(job scanJob, input scanInput, template map[string]any, ips
 }
 
 func (a *app) runPatrol(job scanJob, input scanInput, template map[string]any, all []netip.Addr, interval time.Duration) {
-	defer a.releaseScan(job.ID)
+	defer a.releaseLock(job.lockKey(), job.ID)
 	previous := make(map[string]scanResult, len(all))
 	targets := all
 	for {
@@ -31,6 +31,36 @@ func (a *app) runPatrol(job scanJob, input scanInput, template map[string]any, a
 			return
 		}
 		job.Round++
+		if a.db != nil && job.Protocol != "" {
+			for {
+				cidrs, err := a.protocolRanges(a.scanContext, input.NetworkIDs, job.Protocol)
+				if err != nil {
+					job.Status = "interrupted"
+					job.Error = "读取协议网段失败"
+					a.savePatrol(&job)
+					return
+				}
+				if len(cidrs) > 0 {
+					all, err = expandPrefixes(cidrs)
+					if err != nil {
+						job.Status = "interrupted"
+						job.Error = err.Error()
+						a.savePatrol(&job)
+						return
+					}
+					job.CIDRs = cidrs
+					break
+				}
+				// Keep the schedule visible and cancellable while all its ranges are disabled.
+				next := time.Now().UTC().Add(interval)
+				job.Status = "waiting"
+				job.NextRunAt = &next
+				job.Error = "当前协议池的所选网段均已禁用，恢复网段后自动继续"
+				if !a.waitPatrol(&job) {
+					return
+				}
+			}
+		}
 		targets, job.Scope = patrolTargets(all, previous, job.Round, input.FullEvery)
 		job.Status = "running"
 		job.Total, job.Completed, job.Success = len(targets), 0, 0
@@ -105,7 +135,7 @@ func (a *app) waitPatrol(job *scanJob) bool {
 		// Check the lease and stop flag before launching a new round, too.
 		if job.Status == "waiting" {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			control, err := a.redis.Eval(ctx, scanControlScript, []string{scanLock, scanKey(job.ID) + ":cancel"}, job.ID).Int()
+			control, err := a.redis.Eval(ctx, scanControlScript, []string{job.lockKey(), scanKey(job.ID) + ":cancel"}, job.ID).Int()
 			cancel()
 			if err != nil || control < 0 {
 				job.Status, job.Error = "interrupted", "任务租约失效或 Redis 连接中断，请重新启动巡检"

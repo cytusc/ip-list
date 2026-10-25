@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { deleteConfig } from "@/app/actions";
 import type { Node, Network } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { protocolLabels } from "@/lib/protocol";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -75,10 +76,13 @@ export function ConfigManager({
     const text =
       "address" in item
         ? `${item.name} ${item.address} ${item.description}`
-        : `${item.name} ${item.cidr} ${item.description} ${item.asn} ${item.provider}`;
+        : `${item.name} ${item.cidr} ${item.description} ${item.asn} ${item.provider} ${(item.disabled_protocols || []).map((protocol) => protocolLabels[protocol] || protocol).join(" ")}`;
     return (
       text.toLowerCase().includes(term) &&
-      (status === "all" || item.enabled === (status === "enabled"))
+      (status === "all" ||
+        (status === "pool-disabled"
+          ? "cidr" in item && !!item.disabled_protocols?.length
+          : item.enabled === (status === "enabled")))
     );
   });
   const pageCount = Math.max(1, Math.ceil(filtered.length / 10));
@@ -95,14 +99,14 @@ export function ConfigManager({
       color: "bg-blue-50 text-blue-600",
     },
     {
-      title: `已启用${label}`,
+      title: isNode ? "已启用节点" : "全局启用网段",
       value: enabledCount,
       description: `当前标记为启用的${label}`,
       icon: CircleCheck,
       color: "bg-emerald-50 text-emerald-600",
     },
     {
-      title: `已停用${label}`,
+      title: isNode ? "已停用节点" : "全局停用网段",
       value: items.length - enabledCount,
       description: "保留配置，暂不参与检测",
       icon: CirclePause,
@@ -129,7 +133,7 @@ export function ConfigManager({
           <p className="mt-2 text-sm text-muted-foreground">
             {isNode
               ? "集中管理接入节点，维护节点地址与基础配置。"
-              : "统一维护 IP 地址池、ASN 与服务商，检测时按需选择。"}
+              : "统一维护网段与协议池状态。整段检测均失败时，仅在对应协议池禁用，可在连通性测试中恢复。"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -216,6 +220,9 @@ export function ConfigManager({
                 <SelectItem value="all">全部状态</SelectItem>
                 <SelectItem value="enabled">已启用</SelectItem>
                 <SelectItem value="disabled">已停用</SelectItem>
+                {!isNode && (
+                  <SelectItem value="pool-disabled">协议池已禁用</SelectItem>
+                )}
               </SelectContent>
             </Select>
           </div>
@@ -226,7 +233,7 @@ export function ConfigManager({
               <TableHead className="pl-6">{label}名称</TableHead>
               <TableHead>{isNode ? "节点地址" : "CIDR 网段"}</TableHead>
               {!isNode && <TableHead>ASN / 服务商</TableHead>}
-              <TableHead>状态</TableHead>
+              <TableHead>{isNode ? "状态" : "全局 / 协议池状态"}</TableHead>
               <TableHead className="hidden xl:table-cell">更新时间</TableHead>
               <TableHead className="pr-6 text-right">操作</TableHead>
             </TableRow>
@@ -286,6 +293,25 @@ export function ConfigManager({
                     />
                     {item.enabled ? "已启用" : "已停用"}
                   </Badge>
+                  {"cidr" in item && !!item.disabled_protocols?.length && (
+                    <div className="mt-1.5 flex max-w-72 flex-wrap gap-1">
+                      {item.disabled_protocols.map((protocol) => (
+                        <Badge
+                          key={protocol}
+                          variant="outline"
+                          title="当前协议池已禁用"
+                          className="text-[11px] font-normal"
+                          style={{
+                            backgroundColor: "#991b1b",
+                            borderColor: "#991b1b",
+                            color: "#ffffff",
+                          }}
+                        >
+                          {protocolLabels[protocol] || protocol}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="hidden text-xs text-muted-foreground xl:table-cell">
                   {new Date(item.updated_at).toLocaleString("zh-CN", {

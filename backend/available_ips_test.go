@@ -33,8 +33,10 @@ func TestAvailableIPLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{db: db}
+	_, _ = db.Exec(ctx, "DELETE FROM node_ip_pool WHERE ip IN ('192.0.2.91','2001:db8::91')")
 	var ids, networkIDs []string
 	defer func() {
+		_, _ = db.Exec(ctx, "DELETE FROM node_ip_pool WHERE ip IN ('192.0.2.91','2001:db8::91')")
 		for _, id := range networkIDs {
 			_, _ = db.Exec(ctx, "DELETE FROM networks WHERE id=$1", id)
 		}
@@ -52,7 +54,7 @@ func TestAvailableIPLifecycle(t *testing.T) {
 		ids = append(ids, id)
 		fingerprint := md5.Sum([]byte(raw))
 		now := time.Now().UTC()
-		return scanJob{Input: scanInput{NodeID: id}, Protocol: protocol, ConfigHash: hex.EncodeToString(fingerprint[:]), FinishedAt: &now}
+		return scanJob{Input: scanInput{NodeID: id}, Protocol: "vless/" + protocol, ConfigHash: hex.EncodeToString(fingerprint[:]), FinishedAt: &now}
 	}
 	save := func(j scanJob) {
 		t.Helper()
@@ -127,7 +129,7 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	first.FinishedAt = &later
 	first.Results[0].Status = "failed"
 	save(first)
-	if items := list(); len(items) != 1 || len(items[0].Checks) != 1 || items[0].Checks[0].Protocol != "grpc" {
+	if items := list(); len(items) != 1 || len(items[0].Checks) != 1 || items[0].Checks[0].Protocol != "vless/grpc" {
 		t.Fatalf("failure did not remove only its own protocol: %+v", items)
 	}
 	links(1)
@@ -144,16 +146,16 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if len(list()) != 1 {
 		t.Fatal("empty canceled round removed existing results")
 	}
-	// Configuration edits invalidate old evidence and reject a finishing old scan.
+	// Editing a sample keeps its shared protocol pool available.
 	if _, err = db.Exec(ctx, "UPDATE nodes SET share_uri=share_uri || '&sni=changed.example' WHERE id=$1", second.Input.NodeID); err != nil {
 		t.Fatal(err)
 	}
 	second.Results = []scanResult{{IP: "192.0.2.91", Status: "success", Delay: 20}}
 	save(second)
-	if len(list()) != 0 {
-		t.Fatal("edited node exposed old-config results")
+	if len(list()) != 1 {
+		t.Fatal("editing a node removed its protocol pool")
 	}
-	links(0)
+	links(1)
 	// A later success can restore the first node, and disabled/deleted nodes disappear.
 	restored := later.Add(time.Second)
 	first.FinishedAt = &restored
@@ -164,9 +166,10 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if _, err = db.Exec(ctx, "UPDATE nodes SET enabled=false WHERE id=$1", first.Input.NodeID); err != nil {
 		t.Fatal(err)
 	}
-	if len(list()) != 0 {
-		t.Fatal("disabled node remained visible")
+	if len(list()) != 1 {
+		t.Fatal("disabling a sample removed shared results")
 	}
+	links(1)
 	if _, err = db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", first.Input.NodeID); err != nil {
 		t.Fatal(err)
 	}

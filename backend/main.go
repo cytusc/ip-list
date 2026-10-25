@@ -103,6 +103,7 @@ func main() {
 		log.Fatal(err)
 	}
 	a.scanContext = ctx
+	go a.resumeNodeSchedules(ctx)
 	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -201,6 +202,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("POST /cf-targets/{id}/scans", a.protected(http.HandlerFunc(a.startCFScan)))
 	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
 	mux.Handle("GET /available-ips/links", a.protected(http.HandlerFunc(a.generateIPLinks)))
+	mux.Handle("DELETE /protocol-networks/{id}", a.protected(http.HandlerFunc(a.restoreProtocolNetwork)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
 	mux.Handle("POST /scans", a.protected(http.HandlerFunc(a.startScan)))
 	mux.Handle("GET /scans/latest", a.protected(http.HandlerFunc(a.latestScan)))
@@ -329,7 +331,7 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
 	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.* FROM nodes n ORDER BY created_at DESC) t"
 	if kind == "networks" {
-		query = "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT w.* FROM networks w ORDER BY w.created_at DESC) t"
+		query = "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT w.*,COALESCE((SELECT json_agg(p.protocol) FROM protocol_networks p WHERE p.network_id=w.id AND p.cidr=w.cidr),'[]'::json) AS disabled_protocols FROM networks w ORDER BY w.created_at DESC) t"
 	}
 	var data json.RawMessage
 	if err := a.db.QueryRow(r.Context(), query).Scan(&data); err != nil {

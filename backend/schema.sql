@@ -46,6 +46,26 @@ CREATE TABLE IF NOT EXISTS ip_results (
   PRIMARY KEY (node_id, ip)
 );
 
+ALTER TABLE ip_results ALTER COLUMN protocol TYPE varchar(32);
+
+-- Shared protocol pools survive sample-node edits and deletion.
+CREATE TABLE IF NOT EXISTS node_ip_pool (
+ protocol varchar(32) NOT NULL,
+ ip inet NOT NULL,
+ available boolean NOT NULL,
+ delay_ms integer NOT NULL,
+ checked_at timestamptz NOT NULL,
+ PRIMARY KEY(protocol,ip)
+);
+INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at)
+ SELECT DISTINCT ON (protocol,ip) protocol,ip,available,delay_ms,checked_at FROM (
+ SELECT CASE WHEN protocol LIKE '%/%' THEN protocol ELSE 'vless/'||protocol END AS protocol,
+ ip,available,delay_ms,checked_at,node_id FROM ip_results
+ ) legacy ORDER BY protocol,ip,checked_at DESC,node_id
+ ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,
+ delay_ms=excluded.delay_ms,checked_at=excluded.checked_at
+ WHERE node_ip_pool.checked_at<excluded.checked_at;
+
 CREATE TABLE IF NOT EXISTS cf_targets (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  name varchar(100) NOT NULL,
@@ -61,6 +81,22 @@ CREATE TABLE IF NOT EXISTS cf_results (
  checked_at timestamptz NOT NULL,
  PRIMARY KEY(target_id,ip)
 );
+
+-- CF domains are probe samples; their results feed one independent IP pool.
+-- Keep legacy per-domain rows so upgrading preserves the original data.
+CREATE TABLE IF NOT EXISTS cf_ip_pool (
+ ip inet PRIMARY KEY,
+ available boolean NOT NULL,
+ delay_ms integer NOT NULL,
+ http_status integer NOT NULL,
+ checked_at timestamptz NOT NULL
+);
+INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
+ SELECT DISTINCT ON (ip) ip,available,delay_ms,http_status,checked_at
+ FROM cf_results ORDER BY ip,checked_at DESC,target_id
+ ON CONFLICT(ip) DO UPDATE SET available=excluded.available,
+ delay_ms=excluded.delay_ms,http_status=excluded.http_status,checked_at=excluded.checked_at
+ WHERE cf_ip_pool.checked_at<excluded.checked_at;
 
 ALTER TABLE networks ADD COLUMN IF NOT EXISTS asn varchar(12) NOT NULL DEFAULT '';
 ALTER TABLE networks ADD COLUMN IF NOT EXISTS provider varchar(100) NOT NULL DEFAULT '';
@@ -89,3 +125,37 @@ BEGIN
  END IF;
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS networks_cidr_key ON networks(cidr);
+
+CREATE TABLE IF NOT EXISTS protocol_networks (
+ protocol varchar(32) NOT NULL,
+ network_id uuid NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+ cidr cidr NOT NULL,
+ checked_at timestamptz NOT NULL,
+ PRIMARY KEY(protocol,network_id)
+);
+CREATE TABLE IF NOT EXISTS node_scan_schedules (
+ protocol varchar(32) PRIMARY KEY,
+ job_id text NOT NULL,
+ job jsonb NOT NULL,
+ enabled boolean NOT NULL DEFAULT true,
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Upgrade existing pools once: every address must have a result and none may
+-- be available. The migration marker preserves subsequent manual restores.
+CREATE TABLE IF NOT EXISTS app_migrations (
+ name text PRIMARY KEY,
+ applied_at timestamptz NOT NULL DEFAULT now()
+);
+WITH upgrade AS (
+ INSERT INTO app_migrations(name) VALUES('backfill_empty_protocol_networks_v1')
+ ON CONFLICT DO NOTHING RETURNING name
+)
+INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
+ SELECT s.protocol,w.id,w.cidr,max(s.checked_at)
+ FROM networks w JOIN node_ip_pool s ON s.ip <<= w.cidr
+ CROSS JOIN upgrade
+ GROUP BY s.protocol,w.id,w.cidr
+ HAVING NOT bool_or(s.available)
+ AND count(*)=power(2::numeric,(CASE family(w.cidr) WHEN 4 THEN 32 ELSE 128 END)-masklen(w.cidr))
+ ON CONFLICT(protocol,network_id) DO NOTHING;

@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -112,37 +114,35 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	template, share, err := parseShare(raw)
+	template, _, err := parseShare(raw)
 	if err != nil {
 		apiError(w, 422, "请先为该节点添加有效的 VLESS 链接", nil)
 		return
 	}
-	rows, err := a.db.Query(r.Context(), "SELECT id::text,cidr::text FROM networks WHERE id=ANY($1::uuid[]) AND enabled=true", input.NetworkIDs)
+	protocol := nodePoolProtocol(raw)
+	rows, err := a.db.Query(r.Context(), `SELECT w.id::text,w.cidr::text FROM networks w WHERE w.id=ANY($1::uuid[]) AND w.enabled
+ AND NOT EXISTS(SELECT 1 FROM protocol_networks p WHERE p.network_id=w.id AND p.cidr=w.cidr AND p.protocol=$2)`, input.NetworkIDs, protocol)
 	if err != nil {
 		dbError(w, err)
 		return
 	}
 	defer rows.Close()
 	cidrs := []string{}
-	found := map[string]bool{}
 	for rows.Next() {
 		var id, cidr string
 		if err = rows.Scan(&id, &cidr); err != nil {
 			dbError(w, err)
 			return
 		}
-		found[id] = true
 		cidrs = append(cidrs, cidr)
 	}
 	if err = rows.Err(); err != nil {
 		dbError(w, err)
 		return
 	}
-	for _, id := range input.NetworkIDs {
-		if !found[id] {
-			apiError(w, 422, "所选网段已删除或停用，请刷新后重试", nil)
-			return
-		}
+	if len(cidrs) == 0 {
+		apiError(w, 422, "所选网段在当前协议池中均已禁用或删除，请恢复网段后重试", nil)
+		return
 	}
 	ips, err := expandPrefixes(cidrs)
 	if err != nil {
@@ -155,7 +155,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := hex.EncodeToString(bytes)
-	locked, err := a.redis.SetNX(r.Context(), scanLock, id, 45*time.Second).Result()
+	locked, err := a.redis.SetNX(r.Context(), scanLock+":"+protocol, id, 45*time.Second).Result()
 	if err != nil {
 		apiError(w, 503, "任务服务暂时不可用", nil)
 		return
@@ -165,10 +165,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := scanJob{Input: input, Round: 1, Scope: "full", StartedAt: time.Now().UTC(), ID: id, UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
-	job.Protocol = share.Query().Get("type")
-	if job.Protocol == "" {
-		job.Protocol = "tcp"
-	}
+	job.Protocol = protocol
 	// Configuration identity only, not a security hash. PostgreSQL compares md5(share_uri).
 	fingerprint := md5.Sum([]byte(raw))
 	job.ConfigHash = hex.EncodeToString(fingerprint[:])
@@ -176,8 +173,21 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		err = a.redis.Set(r.Context(), latestKey(job.UserID), id, scanTTL).Err()
 	}
 	if err != nil {
-		a.releaseScan(id)
+		a.releaseLock(job.lockKey(), id)
 		apiError(w, 503, "任务保存失败，请重试", nil)
+		return
+	}
+	if input.IntervalMinutes > 0 {
+		data, _ := json.Marshal(job)
+		if _, err = a.db.Exec(r.Context(), `INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES($1,$2,$3)
+   ON CONFLICT(protocol) DO UPDATE SET job_id=excluded.job_id,job=excluded.job,enabled=true,updated_at=now()`, job.Protocol, job.ID, data); err != nil {
+			a.releaseLock(job.lockKey(), id)
+			dbError(w, err)
+			return
+		}
+	} else if _, err = a.db.Exec(r.Context(), "UPDATE node_scan_schedules SET enabled=false,updated_at=now() WHERE protocol=$1", job.Protocol); err != nil {
+		a.releaseLock(job.lockKey(), id)
+		dbError(w, err)
 		return
 	}
 	go a.runScan(job, input, template, ips)
@@ -189,7 +199,30 @@ func (a *app) persistScan(ctx context.Context, job *scanJob) error {
 	if err != nil {
 		return err
 	}
-	return a.redis.Set(ctx, scanKey(job.ID), data, scanTTL).Err()
+	if job.TargetID != "" {
+		// Long-running CF tasks must remain discoverable beyond the snapshot TTL.
+		_, err = a.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(ctx, scanKey(job.ID), data, scanTTL)
+			pipe.Set(ctx, cfLatestKey, job.ID, scanTTL)
+			return nil
+		})
+		return err
+	}
+	if a.db != nil && job.Input.IntervalMinutes > 0 && job.Protocol != "" {
+		// An explicit stop disables the schedule; shutdown/interruption keeps it resumable.
+		if _, err = a.db.Exec(ctx, `UPDATE node_scan_schedules SET job=$2,enabled=enabled AND $3,updated_at=now() WHERE protocol=$1 AND job_id=$4`, job.Protocol, data, job.Status != "cancelled", job.ID); err != nil {
+			return err
+		}
+	}
+	_, err = a.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Set(ctx, scanKey(job.ID), data, scanTTL)
+		pipe.Set(ctx, latestKey(job.UserID), job.ID, scanTTL)
+		if job.Protocol != "" {
+			pipe.Set(ctx, latestKey(job.UserID)+":"+job.Protocol, job.ID, scanTTL)
+		}
+		return nil
+	})
+	return err
 }
 func (a *app) releaseScan(id string) {
 	a.releaseLock(scanLock, id)
@@ -200,13 +233,17 @@ func (a *app) releaseLock(key, id string) {
 	_ = a.redis.Eval(ctx, `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) end return 0`, []string{key}, id).Err()
 }
 func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput, template map[string]any, ips []netip.Addr, previous map[string]scanResult) scanJob {
-	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
+	return a.runScanTargets(parent, job, input, template, len(ips), slices.Values(ips), previous)
+}
+
+func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInput, template map[string]any, total int, targets iter.Seq[netip.Addr], previous map[string]scanResult) scanJob {
+	ctx, cancel := scanRoundContext(parent, job.TargetID != "")
 	defer cancel()
-	workerCount := min(input.Concurrency, len(ips))
+	workerCount := min(input.Concurrency, total)
 	work := make(chan netip.Addr, workerCount)
-	// At most 4096 entries. Redis latency must not stall active network probes.
-	results := make(chan scanResult, len(ips))
-	job.Results = make([]scanResult, 0, len(ips))
+	// Bound queue allocation even when a CF job spans a large address range.
+	results := make(chan scanResult, min(total, 4096))
+	job.Results = make([]scanResult, 0, min(total, 4096))
 	var workers sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
@@ -249,7 +286,7 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 	}
 	go func() {
 		defer close(work)
-		for _, ip := range ips {
+		for ip := range targets {
 			select {
 			case work <- ip:
 			case <-ctx.Done():
@@ -269,7 +306,7 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 				if job.Status == "running" {
 					if ctx.Err() != nil {
 						job.Status = "interrupted"
-						job.Error = "服务停止或任务超过 30 分钟，请重新测试"
+						job.Error = scanRoundInterruptedMessage(job.TargetID != "")
 					} else {
 						job.Status = "completed"
 					}
@@ -300,7 +337,7 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 		case <-done:
 			if job.Status == "running" {
 				job.Status = "interrupted"
-				job.Error = "服务停止或任务超过 30 分钟，请重新测试"
+				job.Error = scanRoundInterruptedMessage(job.TargetID != "")
 			}
 			done = nil // Drain workers before releasing the lease.
 		case <-ticker.C:
@@ -328,6 +365,20 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 			stop()
 		}
 	}
+}
+
+func scanRoundContext(parent context.Context, cf bool) (context.Context, context.CancelFunc) {
+	if cf {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, 30*time.Minute)
+}
+
+func scanRoundInterruptedMessage(cf bool) string {
+	if cf {
+		return "服务停止，请重新测试"
+	}
+	return "服务停止或任务超过 30 分钟，请重新测试"
 }
 func probeError(err error) string {
 	var netErr net.Error
@@ -378,7 +429,11 @@ func (a *app) getScan(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (a *app) latestScan(w http.ResponseWriter, r *http.Request) {
-	id, err := a.redis.Get(r.Context(), latestKey(r.Context().Value(userContextKey{}).(user).ID)).Result()
+	key := latestKey(r.Context().Value(userContextKey{}).(user).ID)
+	if protocol := r.URL.Query().Get("protocol"); protocol != "" {
+		key += ":" + protocol
+	}
+	id, err := a.redis.Get(r.Context(), key).Result()
 	if errors.Is(err, redis.Nil) {
 		respond(w, 200, nil)
 		return
@@ -395,6 +450,12 @@ func (a *app) cancelScan(w http.ResponseWriter, r *http.Request) {
 	job := a.readScan(w, r, r.PathValue("id"))
 	if job == nil {
 		return
+	}
+	if job.TargetID == "" && job.Input.IntervalMinutes > 0 {
+		if _, err := a.db.Exec(r.Context(), "UPDATE node_scan_schedules SET enabled=false WHERE protocol=$1 AND job_id=$2", job.Protocol, job.ID); err != nil {
+			dbError(w, err)
+			return
+		}
 	}
 	if job.Status != "running" && job.Status != "waiting" {
 		respond(w, 200, map[string]bool{"ok": true})

@@ -143,7 +143,16 @@ func TestIntegration(t *testing.T) {
 	network["cidr"] = "127.0.0.0/26"
 	request("PUT", "/networks/"+networkID, network, 200)
 	scanInput := map[string]any{"node_id": nodeID, "network_ids": []string{networkID}, "url": "http://probe.example/generate_204", "timeout_ms": 5000, "concurrency": 1}
+	// A new one-off scan supersedes a dormant patrol for the same pool.
+	if _, err = db.Exec(ctx, "INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES('vless/tcp','old-patrol','{}')"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = db.Exec(ctx, "DELETE FROM node_scan_schedules WHERE protocol='vless/tcp'") }()
 	scanID := request("POST", "/scans", scanInput, 202)["id"].(string)
+	var scheduleEnabled bool
+	if err = db.QueryRow(ctx, "SELECT enabled FROM node_scan_schedules WHERE protocol='vless/tcp'").Scan(&scheduleEnabled); err != nil || scheduleEnabled {
+		t.Fatal("one-off scan did not replace old patrol", err)
+	}
 	request("POST", "/scans", scanInput, 409)
 	if request("GET", "/scans/latest", nil, 200)["id"] != scanID {
 		t.Fatal("latest job lost")
@@ -169,7 +178,7 @@ func TestIntegration(t *testing.T) {
 	// Worker closes and releases the lease before the next job.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if rdb.Exists(ctx, scanLock).Val() == 0 {
+		if rdb.Exists(ctx, scanLock+":vless/tcp").Val() == 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -184,7 +193,7 @@ func TestIntegration(t *testing.T) {
 	if idle["status"] != "running" || idle["updated_at"] != initial["updated_at"] {
 		t.Fatal("idle scan rewrote its snapshot", idle)
 	}
-	if rdb.Get(ctx, scanLock).Val() != idleID {
+	if rdb.Get(ctx, scanLock+":vless/tcp").Val() != idleID {
 		t.Fatal("idle scan lost lease")
 	}
 	request("POST", "/scans/"+idleID+"/cancel", nil, 200)
@@ -192,7 +201,7 @@ func TestIntegration(t *testing.T) {
 		t.Fatal("idle scan failed to cancel")
 	}
 	deadline = time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && rdb.Exists(ctx, scanLock).Val() != 0 {
+	for time.Now().Before(deadline) && rdb.Exists(ctx, scanLock+":vless/tcp").Val() != 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
 
@@ -204,7 +213,7 @@ func TestIntegration(t *testing.T) {
 	}
 	var available bool
 	var protocol string
-	if err = db.QueryRow(ctx, "SELECT available,protocol FROM ip_results WHERE node_id=$1 AND ip='127.0.0.1'", nodeID).Scan(&available, &protocol); err != nil || available || protocol != "tcp" {
+	if err = db.QueryRow(ctx, "SELECT available,protocol FROM ip_results WHERE node_id=$1 AND ip='127.0.0.1'", nodeID).Scan(&available, &protocol); err != nil || available || protocol != "vless/tcp" {
 		t.Fatalf("scan did not persist latest IP check: %v %s %v", available, protocol, err)
 	}
 	network["cidr"] = "2001:db8::/32"

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
+	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -17,17 +19,59 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"go4.org/netipx"
 )
 
 const cfLock = "ipfilter:cf:active"
+
+// Merge overlapping prefixes before counting or iterating. Large ranges stay
+// compact in memory; the worker queue pulls addresses only as they are needed.
+func cfScanTargets(cidrs []string) (int, iter.Seq[netip.Addr], error) {
+	var builder netipx.IPSetBuilder
+	for _, cidr := range cidrs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil || prefix != prefix.Masked() || prefix.Addr().Is4In6() {
+			return 0, nil, errors.New("网段无效")
+		}
+		builder.AddPrefix(prefix)
+	}
+	set, err := builder.IPSet()
+	if err != nil {
+		return 0, nil, err
+	}
+	prefixes := set.Prefixes()
+	count := new(big.Int)
+	for _, prefix := range prefixes {
+		count.Add(count, new(big.Int).Lsh(big.NewInt(1), uint(prefix.Addr().BitLen()-prefix.Bits())))
+	}
+	if count.Sign() == 0 {
+		return 0, nil, errors.New("请选择至少一个网段")
+	}
+	if !count.IsInt64() || uint64(count.Int64()) > uint64(^uint(0)>>1) {
+		return 0, nil, errors.New("网段地址数量超出系统可表示范围")
+	}
+	return int(count.Int64()), func(yield func(netip.Addr) bool) {
+		for _, prefix := range prefixes {
+			for ip := prefix.Addr(); ip.IsValid() && prefix.Contains(ip); ip = ip.Next() {
+				if !yield(ip) {
+					return
+				}
+			}
+		}
+	}, nil
+}
 
 func (j scanJob) lockKey() string {
 	if j.TargetID != "" {
 		return cfLock
 	}
+	if j.Protocol != "" {
+		return scanLock + ":" + j.Protocol
+	}
 	return scanLock
 }
-func cfLatest(id string) string { return "ipfilter:cf:latest:" + id }
+
+const cfLatestKey = "ipfilter:cf:latest"
 
 // Keep the original URL (Host and SNI), pin only the TCP endpoint. Never use
 // environment proxies or follow redirects to an untested address.
@@ -72,17 +116,16 @@ func (a *app) saveScanResults(ctx context.Context, j scanJob) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(ctx, `INSERT INTO cf_results(target_id,ip,available,delay_ms,http_status,checked_at)
- SELECT t.id,r.ip::inet,r.status='success',0,COALESCE(r.http_status,0),$3
- FROM jsonb_to_recordset($2::jsonb) r(ip text,status text,http_status integer)
- JOIN cf_targets t ON t.id=$1::uuid
- ON CONFLICT(target_id,ip) DO UPDATE SET available=excluded.available,delay_ms=excluded.delay_ms,http_status=excluded.http_status,checked_at=excluded.checked_at
- WHERE cf_results.checked_at<=excluded.checked_at`, j.TargetID, string(data), j.FinishedAt)
+	_, err = a.db.Exec(ctx, `INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
+ SELECT r.ip::inet,r.status='success',0,COALESCE(r.http_status,0),$2
+ FROM jsonb_to_recordset($1::jsonb) r(ip text,status text,http_status integer)
+ ON CONFLICT(ip) DO UPDATE SET available=excluded.available,delay_ms=excluded.delay_ms,http_status=excluded.http_status,checked_at=excluded.checked_at
+ WHERE cf_ip_pool.checked_at<=excluded.checked_at`, string(data), j.FinishedAt)
 	return err
 }
 func (a *app) listCFTargets(w http.ResponseWriter, r *http.Request) {
 	var data json.RawMessage
-	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(t),'[]') FROM (SELECT t.*,(SELECT count(*) FROM cf_results r WHERE r.target_id=t.id AND available) AS available_count FROM cf_targets t ORDER BY created_at DESC) t`).Scan(&data)
+	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(t),'[]') FROM (SELECT t.*,(SELECT count(*) FROM cf_ip_pool WHERE available) AS available_count FROM cf_targets t ORDER BY created_at DESC) t`).Scan(&data)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -138,13 +181,13 @@ func (a *app) getCFTarget(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_results s `+networkInfoJoin+` WHERE s.target_id=$1 AND s.available ORDER BY s.ip) r`, id).Scan(&items)
+	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_ip_pool s `+networkInfoJoin+` WHERE s.available ORDER BY s.ip) r`).Scan(&items)
 	if err != nil {
 		dbError(w, err)
 		return
 	}
 	var job *scanJob
-	jobID, err := a.redis.Get(r.Context(), cfLatest(id)).Result()
+	jobID, err := a.redis.Get(r.Context(), cfLatestKey).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		apiError(w, 503, "任务服务暂时不可用", nil)
 		return
@@ -246,7 +289,7 @@ func (a *app) startCFScan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ips, err := expandPrefixes(cidrs)
+	total, targets, err := cfScanTargets(cidrs)
 	if err != nil {
 		apiError(w, 422, err.Error(), nil)
 		return
@@ -267,15 +310,16 @@ func (a *app) startCFScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in := scanInput{NetworkIDs: input.NetworkIDs, URL: raw, Timeout: input.Timeout, Concurrency: input.Concurrency}
-	job := scanJob{ID: jobID, TargetID: id, Input: in, StartedAt: time.Now().UTC(), UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: raw, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
-	if err = a.persistScan(r.Context(), &job); err == nil {
-		err = a.redis.Set(r.Context(), cfLatest(id), jobID, scanTTL).Err()
-	}
+	job := scanJob{ID: jobID, TargetID: id, Input: in, StartedAt: time.Now().UTC(), UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: raw, CIDRs: cidrs, Status: "running", Total: total, Results: []scanResult{}}
+	err = a.persistScan(r.Context(), &job)
 	if err != nil {
 		a.releaseLock(cfLock, jobID)
 		apiError(w, 503, "任务保存失败", nil)
 		return
 	}
-	go func() { defer a.releaseLock(cfLock, jobID); a.runScanRound(a.scanContext, job, in, nil, ips, nil) }()
+	go func() {
+		defer a.releaseLock(cfLock, jobID)
+		a.runScanTargets(a.scanContext, job, in, nil, total, targets, nil)
+	}()
 	respond(w, 202, job)
 }

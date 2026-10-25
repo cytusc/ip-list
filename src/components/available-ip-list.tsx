@@ -25,13 +25,7 @@ import {
 import type { AvailableIP } from "@/lib/types";
 import { toast } from "sonner";
 
-const protocolLabels: Record<string, string> = {
-  httpupgrade: "HTTPUpgrade",
-  xhttp: "XHTTP",
-  grpc: "gRPC",
-  ws: "WebSocket",
-  tcp: "TCP",
-};
+import { protocolLabels } from "@/lib/protocol";
 const pageSize = 20;
 const formatTime = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
@@ -144,9 +138,9 @@ export function AvailableIPList({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">可用 IP</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            汇总各节点最近一次测通的
-            IP，协议仅代表对应节点配置下已测通。每轮结束后更新，页面每 10
-            秒自动刷新。
+            按协议与传输方式共用 IP
+            池。同池所有节点可复用检测结果，新增节点无需重测。每轮结束后更新，页面每
+            10 秒自动刷新。
           </p>
         </div>
         <Button asChild variant="outline">
@@ -171,7 +165,7 @@ export function AvailableIPList({
               </span>
             </h2>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              复测失败后移除对应协议；未测试的协议不显示。延迟为最近一次成功测量值。
+              复测失败只移除对应协议池中的 IP；延迟来自该池最近一次成功检测。
             </p>
           </div>
           <div className="flex gap-2">
@@ -280,7 +274,7 @@ export function AvailableIPList({
                               </span>
                             </Badge>
                             <p className="max-w-56 break-words text-xs leading-5 text-muted-foreground">
-                              {checks.map((c) => c.node_name).join("、")}
+                              同协议与传输方式的所有节点共用
                             </p>
                           </div>
                         );

@@ -62,7 +62,7 @@ export function NodeLinksDialog({
         <DialogHeader>
           <DialogTitle>生成节点链接</DialogTitle>
           <DialogDescription className="break-all">
-            {ip} · 使用最近测通的节点配置，保留认证、协议和 TLS
+            {ip} · 使用对应协议池内所有已启用节点的配置，保留认证、协议和 TLS
             参数，可复制到代理客户端导入。
           </DialogDescription>
         </DialogHeader>

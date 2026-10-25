@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 )
 
 type generatedLink struct {
@@ -31,10 +32,28 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "请输入有效的 IP 地址", nil)
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT n.id::text,n.name,s.protocol,n.share_uri
- FROM ip_results s JOIN nodes n ON n.id=s.node_id
- WHERE s.ip=$1::inet AND s.available AND n.enabled AND s.config_hash=md5(n.share_uri)
- ORDER BY s.protocol,n.name,n.id`, ip.String())
+	poolRows, err := a.db.Query(r.Context(), "SELECT protocol FROM node_ip_pool WHERE ip=$1::inet AND available", ip.String())
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	protocols := map[string]bool{}
+	for poolRows.Next() {
+		var protocol string
+		if err = poolRows.Scan(&protocol); err != nil {
+			poolRows.Close()
+			dbError(w, err)
+			return
+		}
+		protocols[protocol] = true
+	}
+	err = poolRows.Err()
+	poolRows.Close()
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	rows, err := a.db.Query(r.Context(), `SELECT id::text,name,share_uri FROM nodes WHERE enabled AND share_uri<>'' ORDER BY name,id`)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -44,9 +63,13 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var link generatedLink
 		var raw string
-		if err = rows.Scan(&link.NodeID, &link.NodeName, &link.Protocol, &raw); err != nil {
+		if err = rows.Scan(&link.NodeID, &link.NodeName, &raw); err != nil {
 			dbError(w, err)
 			return
+		}
+		link.Protocol = nodePoolProtocol(raw)
+		if !protocols[link.Protocol] {
+			continue
 		}
 		link.URI, err = nodeLink(raw, link.NodeName, ip)
 		if err != nil {
@@ -64,4 +87,17 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 200, links)
+}
+
+// Current imports support VLESS; transport is the protocol-pool boundary.
+func nodePoolProtocol(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "vless" {
+		return ""
+	}
+	protocol := u.Query().Get("type")
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	return u.Scheme + "/" + protocol
 }

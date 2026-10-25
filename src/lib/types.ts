@@ -11,6 +11,7 @@ export type Node = {
   updated_at: string;
 };
 export type Network = {
+  disabled_protocols?: string[];
   asn: string;
   provider: string;
   id: string;

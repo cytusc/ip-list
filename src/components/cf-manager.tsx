@@ -9,6 +9,7 @@ import {
   startCFScan,
   cancelScan,
 } from "@/app/actions";
+import { NetworkSelector } from "@/components/network-selector";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,25 +22,54 @@ import {
   TableRow,
   TableCell,
 } from "@/components/ui/table";
-import type { CFTarget, CFDetail, Network } from "@/lib/types";
+import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import type { CFTarget, CFDetail, Network, ScanJob } from "@/lib/types";
+import { networkAddressCount } from "@/lib/network";
 
-export function CFTargetList({ items }: { items: CFTarget[] }) {
+export function CFTargetList({
+  items,
+  networks,
+  initial,
+}: {
+  items: CFTarget[];
+  networks: Network[];
+  initial: CFDetail | null;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState("");
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">CF 优选</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          添加目标网站，从已配置网段中筛选 HTTPS 可用 IP。
-        </p>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="w-full min-w-0 sm:min-w-64 sm:flex-1">
+          <h1 className="text-2xl font-semibold">CF 优选</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            配置检测域名，从已配置网段中筛选 HTTPS 可用
+            IP。所有域名共用检测结果，新增域名可直接使用已有 IP 池。
+          </p>
+        </div>
+        <CFScanConfig items={items} networks={networks} initial={initial} />
       </div>
       <form
-        className="grid gap-4 rounded-xl border bg-white p-5 sm:grid-cols-2"
+        className="grid items-end gap-3 rounded-xl border bg-white p-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto]"
         onSubmit={(e) => {
           e.preventDefault();
-          const form = new FormData(e.currentTarget);
+          const element = e.currentTarget;
+          const form = new FormData(element);
           setError("");
           start(async () => {
             try {
@@ -51,7 +81,9 @@ export function CFTargetList({ items }: { items: CFTarget[] }) {
                 setError(result.error);
                 return;
               }
-              router.push(`/cf/${result.id}`);
+              element.reset();
+              router.refresh();
+              toast.success("已添加域名，可直接使用共用 IP 池");
             } catch {
               setError("添加失败，请重试");
             }
@@ -80,7 +112,10 @@ export function CFTargetList({ items }: { items: CFTarget[] }) {
           />
         </div>
         {error && (
-          <p role="alert" className="text-sm text-destructive sm:col-span-2">
+          <p
+            role="alert"
+            className="order-last text-sm text-destructive sm:col-span-3"
+          >
             {error}
           </p>
         )}
@@ -88,28 +123,28 @@ export function CFTargetList({ items }: { items: CFTarget[] }) {
           {pending ? "添加中…" : "添加地址"}
         </Button>
       </form>
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="divide-y overflow-hidden rounded-xl border bg-white">
         {items.map((item) => (
           <Link
             key={item.id}
             href={`/cf/${item.id}`}
-            className="rounded-xl border bg-white p-5 transition-colors hover:border-primary focus-visible:outline-primary"
+            className="grid gap-2 px-4 py-3 sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-6 transition-colors hover:bg-muted/50 focus-visible:outline-primary"
           >
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="font-medium">{item.name}</h2>
               <Badge variant="secondary">
-                {item.available_count ?? 0} 个可用 IP
+                共用 {item.available_count ?? 0} 个 IP
               </Badge>
             </div>
-            <p className="mt-3 break-all text-sm text-muted-foreground">
+            <p className="min-w-0 flex-1 break-all text-sm text-muted-foreground">
               {item.url}
             </p>
-            <p className="mt-4 text-sm text-primary">查看详情与检测 →</p>
+            <span className="text-sm text-primary">查看 IP →</span>
           </Link>
         ))}
       </div>
       {!items.length && (
-        <p className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
+        <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
           还没有目标地址，添加后即可选择网段检测。
         </p>
       )}
@@ -124,27 +159,270 @@ const statusText = {
   interrupted: "已中断",
   waiting: "等待中",
 };
-export function CFDetailView({
-  initial,
+function ScanProgress({ job }: { job: ScanJob | null }) {
+  return (
+    <>
+      {job && (
+        <div className="space-y-3 rounded-xl border bg-white p-5">
+          <p className="break-all text-xs text-muted-foreground">
+            共用检测任务 · 检测域名：{job.url}
+          </p>
+          <div className="flex flex-wrap justify-between gap-2 text-sm">
+            <span role="status">
+              {statusText[job.status]} · {job.completed} / {job.total}
+            </span>
+            <span>
+              本轮可用 {job.success} · 失败 {job.completed - job.success}
+            </span>
+          </div>
+          <progress
+            aria-label="检测进度"
+            className="h-2 w-full accent-primary"
+            max={job.total || 1}
+            value={job.completed}
+          />
+          {job.error && <p className="text-sm text-destructive">{job.error}</p>}
+        </div>
+      )}
+    </>
+  );
+}
+
+function CFScanConfig({
+  items,
   networks,
+  initial,
 }: {
-  initial: CFDetail;
+  items: CFTarget[];
   networks: Network[];
+  initial: CFDetail | null;
 }) {
   const router = useRouter();
-  const [detail, setDetail] = useState(initial);
+  const [job, setJob] = useState<ScanJob | null>(initial?.job ?? null);
+  const [id, setID] = useState(
+    items.find((item) => item.url === initial?.job?.url)?.id ??
+      items[0]?.id ??
+      "",
+  );
+  const targetID = items.some((item) => item.id === id)
+    ? id
+    : (items[0]?.id ?? "");
   const [selected, setSelected] = useState<string[]>(
-    initial.job?.input?.network_ids ?? [],
+    initial?.job?.input?.network_ids ?? [],
   );
   const [timeout, setTimeoutValue] = useState(
-    initial.job?.input?.timeout_ms ?? 5000,
+    initial?.job?.input?.timeout_ms ?? 5000,
   );
   const [concurrency, setConcurrency] = useState(
-    initial.job?.input?.concurrency ?? 16,
+    initial?.job?.input?.concurrency ?? 16,
   );
-  const [error, setError] = useState("");
   const [pending, start] = useTransition();
   const [stopping, setStopping] = useState(false);
+  const [error, setError] = useState("");
+  const active = job?.status === "running";
+  const selectedNetworks = networks.filter(
+    (network) => network.enabled && selected.includes(network.id),
+  );
+  const addressUpperCount = selectedNetworks.reduce(
+    (sum, network) => sum + networkAddressCount(network.cidr),
+    BigInt(0),
+  );
+  useEffect(() => {
+    if (!targetID) return;
+    const controller = new AbortController();
+    let disposed = false;
+    const refresh = async () => {
+      if (document.hidden) return;
+      try {
+        const response = await fetch(`/api/cf/${targetID}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        if (!disposed) {
+          setJob(data.job);
+          if (data.job?.status !== "running") {
+            setStopping(false);
+            if (active) router.refresh();
+          }
+        }
+      } catch (error) {
+        if (!disposed)
+          setError(error instanceof Error ? error.message : "刷新失败，请重试");
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, active ? 1500 : 10000);
+    return () => {
+      disposed = true;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [targetID, active, router]);
+  return (
+    <div className="shrink-0 space-y-2">
+      <Dialog>
+        <DialogTrigger asChild>
+          <Button variant="outline">网段与检测配置</Button>
+        </DialogTrigger>
+        <DialogContent className="max-h-[90dvh] overflow-x-hidden overflow-y-auto [&>*]:min-w-0 sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>统一检测配置</DialogTitle>
+            <DialogDescription>
+              配置一次，所有域名共用筛选出的可用 IP。新增域名无需重新检测。
+            </DialogDescription>
+          </DialogHeader>
+          {!items.length && (
+            <p className="text-sm text-muted-foreground">
+              请先在列表添加一个检测域名。
+            </p>
+          )}
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setError("");
+              start(async () => {
+                try {
+                  const result = await startCFScan(targetID, {
+                    network_ids: selected,
+                    timeout_ms: timeout,
+                    concurrency,
+                  });
+                  if (!result.ok) {
+                    setError(result.error);
+                    return;
+                  }
+                  setJob(result.job);
+                  setStopping(false);
+                } catch {
+                  setError("启动失败，请重试");
+                }
+              });
+            }}
+          >
+            <fieldset
+              disabled={active || pending || !items.length}
+              className="min-w-0 space-y-3"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="cf-target">检测域名</Label>
+                <Select
+                  value={targetID}
+                  onValueChange={setID}
+                  disabled={active || pending}
+                >
+                  <SelectTrigger
+                    id="cf-target"
+                    className="w-full min-w-0 [&_[data-slot=select-value]]:truncate [&_[data-slot=select-value]]:block"
+                  >
+                    <SelectValue placeholder="请先添加域名" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {items.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name} · {item.url}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-sm font-medium">检测网段</p>
+              <NetworkSelector
+                networks={networks}
+                value={selected}
+                onChange={setSelected}
+                disabled={active || pending}
+              />
+              <p className="text-xs text-muted-foreground">
+                已选 {selectedNetworks.length} 个网段，地址总数上限{" "}
+                {addressUpperCount.toString()}
+                （重叠地址自动去重）。检测覆盖所选网段的全部地址。
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="cf-timeout">超时（毫秒）</Label>
+                  <Input
+                    id="cf-timeout"
+                    type="number"
+                    min={1000}
+                    max={15000}
+                    required
+                    value={timeout}
+                    onChange={(e) => setTimeoutValue(Number(e.target.value))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="cf-concurrency">并发数</Label>
+                  <Input
+                    id="cf-concurrency"
+                    type="number"
+                    min={1}
+                    max={32}
+                    required
+                    value={concurrency}
+                    onChange={(e) => setConcurrency(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+            </fieldset>
+            <p className="text-xs leading-5 text-muted-foreground">
+              使用所选域名检测候选 IP，保留域名与证书校验。HTTP 2xx / 3xx
+              计为可用，不跟随跳转。结果更新至所有域名共用的 IP 池。
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                type="submit"
+                disabled={active || pending || !selected.length || !targetID}
+              >
+                {pending ? "处理中…" : "开始检测"}
+              </Button>
+              {active && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending || stopping}
+                  onClick={() =>
+                    start(async () => {
+                      try {
+                        const result = await cancelScan(job!.id);
+                        if (!result.ok) setError(result.error);
+                        else setStopping(true);
+                      } catch {
+                        setError("停止失败，请重试");
+                      }
+                    })
+                  }
+                >
+                  {stopping ? "正在停止…" : "停止检测"}
+                </Button>
+              )}
+            </div>
+          </form>
+
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <ScanProgress job={job} />
+        </DialogContent>
+      </Dialog>
+      {job && (
+        <p role="status" className="text-xs text-muted-foreground">
+          共用检测：{statusText[job.status]} · {job.completed} / {job.total}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function CFDetailView({ initial }: { initial: CFDetail }) {
+  const router = useRouter();
+  const [detail, setDetail] = useState(initial);
+  const [error, setError] = useState("");
+  const [pending, start] = useTransition();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -165,7 +443,6 @@ export function CFDetailView({
         if (!disposed) {
           setDetail(data);
           setError("");
-          if (data.job?.status !== "running") setStopping(false);
         }
       } catch (e) {
         if (!disposed)
@@ -191,9 +468,9 @@ export function CFDetailView({
     }
   }
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <Link href="/cf" className="text-sm text-primary">
-        ← 返回 CF 优选
+        ← 返回 CF 优选 · 统一检测配置
       </Link>
       <div>
         <h1 className="text-2xl font-semibold">{detail.target.name}</h1>
@@ -201,135 +478,6 @@ export function CFDetailView({
           {detail.target.url}
         </p>
       </div>
-      <form
-        className="space-y-5 rounded-xl border bg-white p-5"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setError("");
-          start(async () => {
-            try {
-              const result = await startCFScan(id, {
-                network_ids: selected,
-                timeout_ms: timeout,
-                concurrency,
-              });
-              if (!result.ok) {
-                setError(result.error);
-                return;
-              }
-              setDetail((old) => ({ ...old, job: result.job }));
-              setStopping(false);
-            } catch {
-              setError("启动失败，请重试");
-            }
-          });
-        }}
-      >
-        <fieldset disabled={active || pending} className="min-w-0 space-y-3">
-          <legend className="mb-3 text-sm font-medium">检测网段</legend>
-          <div className="max-h-60 min-w-0 overflow-y-auto rounded-lg border p-3">
-            <div className="grid auto-rows-max gap-2 sm:grid-cols-2">
-              {networks
-                .filter((n) => n.enabled)
-                .map((n) => (
-                  <label
-                    key={n.id}
-                    className="flex min-w-0 cursor-pointer items-start gap-3 rounded-md border p-3 text-sm hover:bg-muted/50 has-checked:border-primary/40 has-checked:bg-primary/5 has-disabled:cursor-not-allowed has-disabled:opacity-60"
-                  >
-                    <input
-                      className="mt-0.5 size-4 shrink-0 accent-primary"
-                      type="checkbox"
-                      checked={selected.includes(n.id)}
-                      onChange={(e) =>
-                        setSelected((old) =>
-                          e.target.checked
-                            ? [...old, n.id]
-                            : old.filter((v) => v !== n.id),
-                        )
-                      }
-                    />
-                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                      {n.name}
-                      <span className="block font-mono text-xs text-muted-foreground">
-                        {n.cidr}
-                      </span>
-                    </span>
-                  </label>
-                ))}
-            </div>
-          </div>
-          {!networks.some((n) => n.enabled) && (
-            <p className="text-sm text-muted-foreground">
-              暂无启用网段，请先到
-              <Link className="text-primary" href="/networks">
-                网段配置
-              </Link>
-              添加。
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            已选 {selected.length} 个网段，每次最多检测 4096 个去重 IP。
-          </p>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="cf-timeout">超时（毫秒）</Label>
-              <Input
-                id="cf-timeout"
-                type="number"
-                min={1000}
-                max={15000}
-                required
-                value={timeout}
-                onChange={(e) => setTimeoutValue(Number(e.target.value))}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="cf-concurrency">并发数</Label>
-              <Input
-                id="cf-concurrency"
-                type="number"
-                min={1}
-                max={32}
-                required
-                value={concurrency}
-                onChange={(e) => setConcurrency(Number(e.target.value))}
-              />
-            </div>
-          </div>
-        </fieldset>
-        <p className="text-xs leading-5 text-muted-foreground">
-          保留目标域名与证书校验，通过候选 IP 发起 HTTPS 请求。HTTP 2xx / 3xx
-          计为可用，不跟随跳转。仅检测可用性。
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <Button
-            type="submit"
-            disabled={active || pending || !selected.length}
-          >
-            {pending ? "处理中…" : "开始检测"}
-          </Button>
-          {active && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={pending || stopping}
-              onClick={() =>
-                start(async () => {
-                  try {
-                    const result = await cancelScan(detail.job!.id);
-                    if (!result.ok) setError(result.error);
-                    else setStopping(true);
-                  } catch {
-                    setError("停止失败，请重试");
-                  }
-                })
-              }
-            >
-              {stopping ? "正在停止…" : "停止检测"}
-            </Button>
-          )}
-        </div>
-      </form>
       {error && (
         <p
           role="alert"
@@ -338,33 +486,11 @@ export function CFDetailView({
           {error}
         </p>
       )}
-      {detail.job && (
-        <div className="space-y-3 rounded-xl border bg-white p-5">
-          <div className="flex flex-wrap justify-between gap-2 text-sm">
-            <span role="status">
-              {statusText[detail.job.status]} · {detail.job.completed} /{" "}
-              {detail.job.total}
-            </span>
-            <span>
-              本轮可用 {detail.job.success} · 失败{" "}
-              {detail.job.completed - detail.job.success}
-            </span>
-          </div>
-          <progress
-            aria-label="检测进度"
-            className="h-2 w-full accent-primary"
-            max={detail.job.total || 1}
-            value={detail.job.completed}
-          />
-          {detail.job.error && (
-            <p className="text-sm text-destructive">{detail.job.error}</p>
-          )}
-        </div>
-      )}
+      <ScanProgress job={detail.job} />
       <section className="space-y-4 rounded-xl border bg-white p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold">
-            可用 IP <Badge variant="secondary">{detail.items.length}</Badge>
+            共用可用 IP <Badge variant="secondary">{detail.items.length}</Badge>
           </h2>
           <Button
             variant="outline"
@@ -375,7 +501,8 @@ export function CFDetailView({
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          按 IP 地址排序。每轮结束后更新；复测失败的 IP 会移除，未检测的 IP
+          所有域名共用此 IP 池，新增域名无需重新检测。按 IP
+          地址排序，每轮结束后更新；复测失败的 IP 会移除，未检测的 IP
           保留上次结果。
         </p>
         <Input
@@ -433,7 +560,7 @@ export function CFDetailView({
               ? "没有匹配的 IP"
               : active
                 ? "正在检测，结果将在本轮结束后保存。"
-                : "暂无可用 IP，请选择网段开始检测。"}
+                : "暂无可用 IP，请返回 CF 优选统一配置并开始检测。"}
           </p>
         )}
         {pages > 1 && (
@@ -459,7 +586,7 @@ export function CFDetailView({
       <div className="flex flex-wrap items-center gap-3">
         {confirmDelete ? (
           <>
-            <p className="text-sm">确定删除此地址及其检测结果？</p>
+            <p className="text-sm">确定删除此地址？共用 IP 池将保留。</p>
             <Button
               variant="destructive"
               disabled={pending || active}

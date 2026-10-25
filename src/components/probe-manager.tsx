@@ -1,10 +1,14 @@
 "use client";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { nodeProtocol, protocolLabels } from "@/lib/protocol";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Activity, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { startScan, cancelScan } from "@/app/actions";
+import { startScan, cancelScan, restoreProtocolNetwork } from "@/app/actions";
 import type { Node, Network, ScanJob } from "@/lib/types";
+import { networkAddressCount as size } from "@/lib/network";
+import { NetworkSelector } from "@/components/network-selector";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,10 +36,6 @@ const labels = {
   cancelled: "已停止",
   interrupted: "已中断",
 };
-function size(cidr: string): bigint {
-  const [address, bits] = cidr.split("/");
-  return BigInt(1) << BigInt((address.includes(":") ? 128 : 32) - Number(bits));
-}
 export function ProbeManager({
   nodes,
   networks,
@@ -43,14 +43,28 @@ export function ProbeManager({
   nodes: Node[];
   networks: Network[];
 }) {
+  const router = useRouter();
   const availableNodes = nodes.filter((node) => node.enabled && node.share_uri);
-  const availableNetworks = networks.filter((network) => network.enabled);
+
   const [nodeID, setNodeID] = useState(availableNodes[0]?.id || "");
   const [networkIDs, setNetworkIDs] = useState<string[]>([]);
   const [url, setURL] = useState("https://www.gstatic.com/generate_204");
   const [timeout, setTimeoutMs] = useState(5000);
   const [concurrency, setConcurrency] = useState(5);
-  const [interval, setIntervalMinutes] = useState(0);
+  const [interval, setIntervalMinutes] = useState(5);
+  const protocol = nodeProtocol(
+    nodes.find((node) => node.id === nodeID)?.share_uri || "",
+  );
+  const disabledNetworks = networks.filter(
+    (network) =>
+      network.enabled && network.disabled_protocols?.includes(protocol),
+  );
+  const poolNetworks = networks.map((network) => ({
+    ...network,
+    enabled: network.enabled && !network.disabled_protocols?.includes(protocol),
+  }));
+  const availableNetworks = poolNetworks.filter((network) => network.enabled);
+  const refreshedRound = useRef("");
   const [fullEvery, setFullEvery] = useState(12);
   const restored = useRef(false);
   const [job, setJob] = useState<ScanJob | null>(null);
@@ -74,17 +88,25 @@ export function ProbeManager({
     async function poll() {
       try {
         const response = await fetch(
-          `/api/scans${jobID ? `?id=${jobID}` : ""}`,
+          `/api/scans${jobID ? `?id=${jobID}` : `?protocol=${encodeURIComponent(protocol)}`}`,
           { cache: "no-store", signal: controller.signal },
         );
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "读取进度失败");
         if (!disposed) {
           setJob(data);
+          if (data && data.status !== "running") {
+            const key = `${data.id}:${data.round}:${data.status}`;
+            if (refreshedRound.current !== key) {
+              refreshedRound.current = key;
+              router.refresh();
+            }
+          }
           if (!restored.current) {
             restored.current = true;
             if (data?.input?.node_id && Array.isArray(data.input.network_ids)) {
-              setNodeID(data.input.node_id);
+              if (nodes.some((node) => node.id === data.input.node_id))
+                setNodeID(data.input.node_id);
               setNetworkIDs(
                 data.input.network_ids.filter((id: string) =>
                   networks.some(
@@ -122,7 +144,7 @@ export function ProbeManager({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [jobID, jobStatus, networks]);
+  }, [jobID, jobStatus, networks, nodes, protocol, router]);
   const selected = availableNetworks.filter((network) =>
     networkIDs.includes(network.id),
   );
@@ -150,7 +172,8 @@ export function ProbeManager({
         </div>
         <h1 className="text-[26px] font-semibold">批量连通性测试</h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          将节点连接地址替换为网段中的 IP，通过代理访问检测网址，找出可用 IP。
+          按协议与传输方式维护共用 IP
+          池，选择一个样本节点后台扫描，同池所有节点均可复用结果。
         </p>
         <Link
           href="/available-ips"
@@ -168,7 +191,9 @@ export function ProbeManager({
             try {
               const result = await startScan({
                 node_id: nodeID,
-                network_ids: networkIDs,
+                network_ids: networkIDs.filter((id) =>
+                  availableNetworks.some((network) => network.id === id),
+                ),
                 url,
                 timeout_ms: timeout,
                 concurrency,
@@ -191,20 +216,39 @@ export function ProbeManager({
         <div className="grid gap-5 lg:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="probe-node">测试节点</Label>
-            <Select value={nodeID} onValueChange={setNodeID} disabled={busy}>
+            <Select
+              value={nodeID}
+              onValueChange={(value) => {
+                const nextProtocol = nodeProtocol(
+                  nodes.find((node) => node.id === value)?.share_uri || "",
+                );
+                setNodeID(value);
+                if (nextProtocol !== protocol) {
+                  setJob(null);
+                  setLoaded(false);
+                  restored.current = false;
+                  setError("");
+                }
+              }}
+              disabled={pending}
+            >
               <SelectTrigger id="probe-node" className="w-full">
                 <SelectValue placeholder="请选择已导入的节点" />
               </SelectTrigger>
               <SelectContent>
                 {availableNodes.map((node) => (
                   <SelectItem value={node.id} key={node.id}>
-                    {node.name}
+                    {node.name} ·{" "}
+                    {protocolLabels[nodeProtocol(node.share_uri)] ||
+                      nodeProtocol(node.share_uri)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <p className="text-xs leading-5 text-muted-foreground">
-              保留 UUID、端口、SNI、Host、路径与服务名，仅替换连接 IP。
+              当前池：{protocolLabels[protocol] || protocol || "请选择节点"}
+              。仅替换样本节点的连接
+              IP，保留其他参数；可切换节点管理其他协议池。
             </p>
             {!availableNodes.length && (
               <Link className="text-sm text-primary underline" href="/nodes">
@@ -231,49 +275,12 @@ export function ProbeManager({
         </div>
         <fieldset disabled={busy} className="space-y-3">
           <legend className="mb-2 text-sm font-medium">选择已配置网段</legend>
-          <div className="max-h-60 overflow-y-auto rounded-lg border divide-y">
-            {availableNetworks.map((network) => (
-              <label
-                key={network.id}
-                className="flex cursor-pointer items-center gap-3 p-3 hover:bg-slate-50"
-              >
-                <input
-                  type="checkbox"
-                  checked={networkIDs.includes(network.id)}
-                  onChange={(event) =>
-                    setNetworkIDs(
-                      event.target.checked
-                        ? [...networkIDs, network.id]
-                        : networkIDs.filter((id) => id !== network.id),
-                    )
-                  }
-                  className="size-4 accent-blue-600"
-                />
-                <span className="min-w-0 flex-1 text-sm">
-                  <span className="font-medium">{network.name}</span>
-                  <span className="ml-2 font-mono text-xs text-muted-foreground">
-                    {network.cidr}
-                  </span>
-                  <span className="mt-1 block text-xs text-muted-foreground">
-                    {[network.asn, network.provider]
-                      .filter(Boolean)
-                      .join(" · ") || "未填写归属信息"}
-                  </span>
-                </span>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {size(network.cidr).toString()} IP
-                </span>
-              </label>
-            ))}
-            {!availableNetworks.length && (
-              <p className="p-4 text-sm text-muted-foreground">
-                暂无已启用的网段。
-                <Link href="/networks" className="ml-2 text-primary underline">
-                  添加网段
-                </Link>
-              </p>
-            )}
-          </div>
+          <NetworkSelector
+            networks={poolNetworks}
+            value={networkIDs}
+            onChange={setNetworkIDs}
+            disabled={busy}
+          />
           <p className="text-xs leading-5 text-muted-foreground">
             已选 {selected.length} 个网段，地址总数上限 {upperCount.toString()}
             （重叠地址自动去重）。每次最多 4096 个
@@ -285,6 +292,47 @@ export function ProbeManager({
             </p>
           )}
         </fieldset>
+        {!!disabledNetworks.length && (
+          <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+            <p className="text-sm font-medium">
+              当前协议池已禁用 {disabledNetworks.length} 个空网段
+            </p>
+            <p className="text-xs text-muted-foreground">
+              完整扫描后全部失败，仅影响当前池。恢复后将再次参与扫描。
+            </p>
+            {disabledNetworks.map((network) => (
+              <div
+                key={network.id}
+                className="flex flex-wrap items-center justify-between gap-2 text-sm"
+              >
+                <span>
+                  {network.name} · {network.cidr}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() =>
+                    startTransition(async () => {
+                      const result = await restoreProtocolNetwork(
+                        network.id,
+                        protocol,
+                      );
+                      if (!result.ok) setError(result.error);
+                      else {
+                        router.refresh();
+                        toast.success("网段已恢复，后续巡检将重新扫描");
+                      }
+                    })
+                  }
+                >
+                  恢复扫描
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="space-y-3 rounded-lg bg-slate-50 p-4">
           <Label htmlFor="patrol-interval">巡检方式</Label>
           <Select
@@ -324,7 +372,8 @@ export function ProbeManager({
                 时自动全量扫描。每轮完成后等待 {interval} 分钟，不会重叠执行。
               </p>
               <p className="text-xs leading-5 text-muted-foreground">
-                巡检使用启动时的节点和网段配置，离开页面仍会继续；停止后可调整配置。服务重启后需手动重新启动巡检。
+                后台按当前协议池自动巡检，离开页面仍会继续，服务重启后自动恢复。完整扫描且全段无可用
+                IP 时，仅在当前协议池中禁用该网段。
               </p>
             </>
           )}
@@ -361,7 +410,7 @@ export function ProbeManager({
           <Button
             type="submit"
             disabled={
-              busy || !loaded || !nodeID || !networkIDs.length || tooLarge
+              busy || !loaded || !nodeID || !selected.length || tooLarge
             }
           >
             {pending ? <Loader2 className="animate-spin" /> : <Activity />}

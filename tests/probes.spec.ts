@@ -65,8 +65,14 @@ test("导入节点、批量测试、刷新恢复和停止", async ({
     networkID = (await netResponse.json()).id;
     await page.goto("/probes");
     await page.getByLabel("测试节点", { exact: true }).click();
-    await page.getByRole("option", { name, exact: true }).click();
-    await page.getByRole("checkbox", { name: new RegExp(name) }).check();
+    await page.getByRole("option", { name: new RegExp(name) }).click();
+    await page.getByRole("button", { name: "选择检测网段" }).click();
+    await page.getByRole("combobox", { name: "搜索网段" }).fill(name);
+    await page.getByRole("option", { name: new RegExp(name) }).click();
+    await expect(
+      page.getByRole("option", { name: new RegExp(name) }),
+    ).toContainText("已勾选");
+    await page.getByRole("button", { name: "完成", exact: true }).click();
     await page.getByLabel("巡检方式", { exact: true }).click();
     await page.getByRole("option", { name: "单次检测", exact: true }).click();
     await page.getByLabel("检测网址").fill("http://probe.example/generate_204");

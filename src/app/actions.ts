@@ -165,3 +165,20 @@ export async function generateIPLinks(ip: string) {
     return failure(error);
   }
 }
+
+export async function restoreProtocolNetwork(
+  id: string,
+  protocol: string,
+): Promise<ActionResult> {
+  try {
+    await api(
+      `/protocol-networks/${encodeURIComponent(id)}?protocol=${encodeURIComponent(protocol)}`,
+      { method: "DELETE" },
+    );
+    revalidatePath("/probes");
+    revalidatePath("/networks");
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
+}
