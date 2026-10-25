@@ -10,6 +10,8 @@ export function LoginForm() {
   const [result, formAction, pending] = useActionState(submitLogin, null, "/login");
   const error = result && !result.ok ? result.error : "";
   const [visible, setVisible] = useState(false);
+  // 表单 action 完成后浏览器会重置未受控字段，用户名需要保留以便直接重试。
+  const [username, setUsername] = useState("");
   return (
     <form className="space-y-5" action={formAction}>
       <div className="space-y-2">
@@ -22,6 +24,8 @@ export function LoginForm() {
           maxLength={64}
           required
           disabled={pending}
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
           className="h-11 bg-white"
         />
       </div>

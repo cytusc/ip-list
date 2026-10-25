@@ -158,6 +158,8 @@ export async function startCFScan(
       `/cf-targets/${encodeURIComponent(id)}/scans`,
       { method: "POST", body: JSON.stringify(input) },
     );
+    revalidatePath("/cf");
+    revalidatePath("/cf/progress");
     return { ok: true as const, job: data };
   } catch (error) {
     return failure(error);

@@ -109,29 +109,90 @@ func (a *app) saveScanResults(ctx context.Context, j scanJob) error {
 	if j.TargetID == "" {
 		return a.saveIPResults(ctx, j)
 	}
-	if len(j.Results) == 0 {
+	if len(j.Results) == 0 || j.FinishedAt == nil {
 		return nil
 	}
 	data, err := json.Marshal(j.Results)
 	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec(ctx, `INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
+	success := 0
+	for _, result := range j.Results {
+		if result.Status == "success" {
+			success++
+		}
+	}
+	status := j.Status
+	if status == "" {
+		status = "completed"
+	}
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
  SELECT r.ip::inet,r.status='success',0,COALESCE(r.http_status,0),$2
  FROM jsonb_to_recordset($1::jsonb) r(ip text,status text,http_status integer)
  ON CONFLICT(ip) DO UPDATE SET available=excluded.available,delay_ms=excluded.delay_ms,http_status=excluded.http_status,checked_at=excluded.checked_at
  WHERE cf_ip_pool.checked_at<=excluded.checked_at`, string(data), j.FinishedAt)
-	return err
+	if err != nil {
+		return err
+	}
+	// The same round is also recorded per domain, so a domain page can show
+	// which IPs answered this domain rather than the shared pool.
+	_, err = tx.Exec(ctx, `INSERT INTO cf_results(target_id,ip,available,delay_ms,http_status,checked_at)
+ SELECT $1,r.ip::inet,r.status='success',0,COALESCE(r.http_status,0),$3
+ FROM jsonb_to_recordset($2::jsonb) r(ip text,status text,http_status integer)
+ ON CONFLICT(target_id,ip) DO UPDATE SET available=excluded.available,delay_ms=excluded.delay_ms,http_status=excluded.http_status,checked_at=excluded.checked_at
+ WHERE cf_results.checked_at<=excluded.checked_at`, j.TargetID, string(data), j.FinishedAt)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO cf_target_rounds(target_id,started_at,finished_at,total,success,status)
+ VALUES($1,$2,$3,$4,$5,$6)`, j.TargetID, j.StartedAt, j.FinishedAt, len(j.Results), success, status); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE cf_targets SET last_checked_at=GREATEST(COALESCE(last_checked_at,$2),$2) WHERE id=$1`, j.TargetID, j.FinishedAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
+
+// Per-domain metrics shared by the list and detail queries: current available
+// IPs for the domain, availability of the latest round, cumulative
+// availability, and the shared pool size. Older per-domain results predate the
+// round table, so they act as a fallback.
+const cfTargetStats = `(SELECT count(*) FROM cf_results r WHERE r.target_id=t.id AND r.available) AS available_count,
+ (SELECT count(*) FROM cf_ip_pool WHERE available) AS shared_count,
+ COALESCE(
+  (SELECT round(100.0*success/NULLIF(total,0)) FROM cf_target_rounds k WHERE k.target_id=t.id ORDER BY finished_at DESC LIMIT 1),
+  (SELECT round(100.0*count(*) FILTER (WHERE r.available)/NULLIF(count(*),0)) FROM cf_results r WHERE r.target_id=t.id)
+ ) AS availability,
+ COALESCE(
+  (SELECT round(100.0*sum(success)/NULLIF(sum(total),0)) FROM cf_target_rounds k WHERE k.target_id=t.id),
+  (SELECT round(100.0*count(*) FILTER (WHERE r.available)/NULLIF(count(*),0)) FROM cf_results r WHERE r.target_id=t.id)
+ ) AS overall,
+ (SELECT count(*) FROM cf_target_rounds k WHERE k.target_id=t.id) AS rounds,
+ COALESCE(
+  (SELECT sum(total) FROM cf_target_rounds k WHERE k.target_id=t.id),
+  (SELECT count(*) FROM cf_results r WHERE r.target_id=t.id)
+ ) AS checked_total,
+ COALESCE(
+  (SELECT sum(success) FROM cf_target_rounds k WHERE k.target_id=t.id),
+  (SELECT count(*) FROM cf_results r WHERE r.target_id=t.id AND r.available)
+ ) AS checked_success`
+
 func (a *app) listCFTargets(w http.ResponseWriter, r *http.Request) {
 	var data json.RawMessage
-	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(t),'[]') FROM (SELECT t.*,(SELECT count(*) FROM cf_ip_pool WHERE available) AS available_count FROM cf_targets t ORDER BY created_at DESC) t`).Scan(&data)
+	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(t),'[]') FROM (SELECT t.*,`+cfTargetStats+` FROM cf_targets t ORDER BY created_at DESC) t`).Scan(&data)
 	if err != nil {
 		dbError(w, err)
 		return
 	}
 	respond(w, 200, data)
 }
+
 func (a *app) createCFTarget(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name string `json:"name"`
@@ -171,8 +232,8 @@ func (a *app) getCFTarget(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		return
 	}
-	var target, items json.RawMessage
-	err := a.db.QueryRow(r.Context(), "SELECT row_to_json(t) FROM cf_targets t WHERE id=$1", id).Scan(&target)
+	var target, items, history json.RawMessage
+	err := a.db.QueryRow(r.Context(), "SELECT row_to_json(t) FROM (SELECT t.*,"+cfTargetStats+" FROM cf_targets t WHERE id=$1) t", id).Scan(&target)
 	if errors.Is(err, pgx.ErrNoRows) {
 		apiError(w, 404, "目标地址不存在", nil)
 		return
@@ -181,36 +242,63 @@ func (a *app) getCFTarget(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_ip_pool s `+networkInfoJoin+` WHERE s.available ORDER BY s.ip) r`).Scan(&items)
+	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_results s `+networkInfoJoin+` WHERE s.target_id=$1 AND s.available ORDER BY s.ip) r`, id).Scan(&items)
 	if err != nil {
 		dbError(w, err)
 		return
 	}
-	var job *scanJob
-	jobID, err := a.redis.Get(r.Context(), cfLatestKey).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(k),'[]') FROM (SELECT finished_at,total,success,status FROM cf_target_rounds WHERE target_id=$1 ORDER BY finished_at DESC LIMIT 12) k`, id).Scan(&history)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	respond(w, 200, map[string]any{"target": target, "items": items, "history": history})
+}
+
+// The unified CF scan is one shared job for every domain, so its progress lives
+// outside the domain pages.
+func (a *app) latestCFScan(w http.ResponseWriter, r *http.Request) {
+	id, err := a.redis.Get(r.Context(), cfLatestKey).Result()
+	if errors.Is(err, redis.Nil) {
+		respond(w, 200, nil)
+		return
+	}
+	if err != nil {
 		apiError(w, 503, "任务服务暂时不可用", nil)
 		return
 	}
-	if err == nil {
-		data, e := a.redis.Get(r.Context(), scanKey(jobID)).Bytes()
-		if e != nil && !errors.Is(e, redis.Nil) {
-			apiError(w, 503, "任务服务暂时不可用", nil)
-			return
-		}
-		if e == nil {
-			var j scanJob
-			if json.Unmarshal(data, &j) == nil && j.UserID == r.Context().Value(userContextKey{}).(user).ID {
-				if j.Status == "running" && time.Since(j.UpdatedAt) > 50*time.Second {
-					j.Status = "interrupted"
-					j.Error = "任务已中断，请重新测试"
-				}
-				job = &j
-			}
-		}
+	data, err := a.redis.Get(r.Context(), scanKey(id)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		respond(w, 200, nil)
+		return
 	}
-	respond(w, 200, map[string]any{"target": target, "items": items, "job": job})
+	if err != nil {
+		apiError(w, 503, "任务服务暂时不可用", nil)
+		return
+	}
+	var job scanJob
+	if err = json.Unmarshal(data, &job); err != nil {
+		apiError(w, 503, "任务数据无法读取", nil)
+		return
+	}
+	if job.Status == "running" && time.Since(job.UpdatedAt) > 50*time.Second {
+		job.Status = "interrupted"
+		job.Error = "任务已中断，请重新测试"
+	}
+	respond(w, 200, job)
 }
+
+// The shared pool outlives a single job, so it keeps its own listing.
+func (a *app) cfIPPool(w http.ResponseWriter, r *http.Request) {
+	var data json.RawMessage
+	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_ip_pool s `+networkInfoJoin+` WHERE s.available ORDER BY s.ip) r`).Scan(&data)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	respond(w, 200, data)
+}
+
 func (a *app) deleteCFTarget(w http.ResponseWriter, r *http.Request) {
 	id := cfID(w, r)
 	if id == "" {

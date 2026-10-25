@@ -91,6 +91,24 @@ CREATE TABLE IF NOT EXISTS cf_ip_pool (
  http_status integer NOT NULL,
  checked_at timestamptz NOT NULL
 );
+
+-- Per-domain view of one unified CF scan: which IPs answered this domain, and
+-- how each round went, so the domain page can report its own availability.
+ALTER TABLE cf_targets ADD COLUMN IF NOT EXISTS last_checked_at timestamptz;
+CREATE TABLE IF NOT EXISTS cf_target_rounds (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ target_id uuid NOT NULL REFERENCES cf_targets(id) ON DELETE CASCADE,
+ started_at timestamptz NOT NULL,
+ finished_at timestamptz NOT NULL,
+ total integer NOT NULL,
+ success integer NOT NULL,
+ status varchar(16) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cf_target_rounds_target_idx ON cf_target_rounds(target_id,finished_at DESC);
+-- Domains scanned before the round table keep a usable "last checked" time.
+UPDATE cf_targets t SET last_checked_at=s.last_checked
+FROM (SELECT target_id,max(checked_at) AS last_checked FROM cf_results GROUP BY target_id) s
+WHERE s.target_id=t.id AND (t.last_checked_at IS NULL OR t.last_checked_at<s.last_checked);
 INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
  SELECT DISTINCT ON (ip) ip,available,delay_ms,http_status,checked_at
  FROM cf_results ORDER BY ip,checked_at DESC,target_id

@@ -165,7 +165,7 @@ func TestCFPersistence(t *testing.T) {
 	defer func() { _, _ = db.Exec(ctx, "DELETE FROM cf_ip_pool WHERE ip IN ('192.0.2.1','192.0.2.2')") }()
 	a := &app{db: db}
 	now := time.Now().UTC()
-	j := scanJob{TargetID: id, FinishedAt: &now, Results: []scanResult{{IP: "192.0.2.1", Status: "success", Delay: 20, HTTPStatus: 200}, {IP: "192.0.2.2", Status: "failed"}}}
+	j := scanJob{TargetID: id, StartedAt: now, FinishedAt: &now, Status: "completed", Results: []scanResult{{IP: "192.0.2.1", Status: "success", Delay: 20, HTTPStatus: 200}, {IP: "192.0.2.2", Status: "failed"}}}
 	save := func() {
 		t.Helper()
 		if err := a.saveScanResults(ctx, j); err != nil {
@@ -193,7 +193,7 @@ func TestCFPersistence(t *testing.T) {
 	}
 	a.redis = redis.NewClient(options)
 	defer a.redis.Close()
-	readShared := func(targetID string) {
+	readDetail := func(targetID string) (items []string, rounds int) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/cf-targets/"+targetID, nil)
 		req.SetPathValue("id", targetID)
@@ -201,27 +201,37 @@ func TestCFPersistence(t *testing.T) {
 		response := httptest.NewRecorder()
 		a.getCFTarget(response, req)
 		var body struct {
+			Target struct {
+				LastCheckedAt *time.Time `json:"last_checked_at"`
+			} `json:"target"`
 			Items []struct {
 				IP string `json:"ip"`
 			} `json:"items"`
+			History []struct {
+				Total int `json:"total"`
+			} `json:"history"`
 		}
 		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil {
-			t.Fatalf("shared pool response: %d %s", response.Code, response.Body.String())
+			t.Fatalf("domain response: %d %s", response.Code, response.Body.String())
 		}
 		for _, item := range body.Items {
-			if item.IP == "192.0.2.1" {
-				return
-			}
+			items = append(items, item.IP)
 		}
-		t.Fatal("new domain did not inherit shared IP")
+		return items, len(body.History)
 	}
-	readShared(id)
-	readShared(secondID)
+	// The scanned domain records its own results, and the round is stored.
+	if items, rounds := readDetail(id); len(items) != 1 || items[0] != "192.0.2.1" || rounds != 1 {
+		t.Fatalf("scanned domain: items=%v rounds=%d", items, rounds)
+	}
+	// Another domain inherits the shared pool but has no results of its own yet.
+	if items, rounds := readDetail(secondID); len(items) != 0 || rounds != 0 {
+		t.Fatalf("new domain must not inherit per-domain results: items=%v rounds=%d", items, rounds)
+	}
 	// Deleting the source domain must not remove the reusable IP pool.
 	if _, err = db.Exec(ctx, "DELETE FROM cf_targets WHERE id=$1", id); err != nil {
 		t.Fatal(err)
 	}
-	readShared(secondID)
+	count(1)
 	// A newer scan through another domain updates the same pool.
 	j.TargetID = secondID
 	later := now.Add(time.Second)
@@ -239,7 +249,8 @@ func TestCFPersistence(t *testing.T) {
 	count(0)
 	// Upgrade old per-domain results, keeping newer shared failures intact.
 	if _, err = db.Exec(ctx, `INSERT INTO cf_results(target_id,ip,available,delay_ms,http_status,checked_at)
- VALUES($1,'192.0.2.1',true,0,200,$2),($1,'192.0.2.2',true,0,200,$3)`, secondID, later.Add(time.Second), now.Add(-time.Hour)); err != nil {
+ VALUES($1,'192.0.2.1',true,0,200,$2),($1,'192.0.2.2',true,0,200,$3)
+ ON CONFLICT(target_id,ip) DO UPDATE SET available=excluded.available,checked_at=excluded.checked_at`, secondID, later.Add(time.Second), now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {

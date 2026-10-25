@@ -87,16 +87,35 @@ export type CFTarget = {
   id: string;
   name: string;
   url: string;
+  created_at: string;
+  last_checked_at?: string | null;
+  /** 该域名当前可用的 IP 数 */
   available_count?: number;
+  /** 所有域名共用的 IP 池可用数 */
+  shared_count?: number;
+  /** 最近一轮检测的可用率（百分比整数），无记录时为 null */
+  availability?: number | null;
+  /** 累计可用率（百分比整数） */
+  overall?: number | null;
+  rounds?: number;
+  checked_total?: number | null;
+  checked_success?: number | null;
+};
+export type CFIP = {
+  ip: string;
+  asn?: string;
+  provider?: string;
+  http_status: number;
+  checked_at: string;
+};
+export type CFRound = {
+  finished_at: string;
+  total: number;
+  success: number;
+  status: "completed" | "cancelled" | "interrupted";
 };
 export type CFDetail = {
   target: CFTarget;
-  items: {
-    ip: string;
-    asn?: string;
-    provider?: string;
-    http_status: number;
-    checked_at: string;
-  }[];
-  job: ScanJob | null;
+  items: CFIP[];
+  history: CFRound[];
 };

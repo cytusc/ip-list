@@ -25,21 +25,21 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
       provider: "Cloudflare",
       checks: [
         {
-          protocol: "httpupgrade",
+          protocol: "vless/httpupgrade",
           delay_ms: 42,
           node_id: "node-1",
           node_name: "香港 HTTPUpgrade",
           checked_at,
         },
         {
-          protocol: "xhttp",
+          protocol: "vless/xhttp",
           delay_ms: 68,
           node_id: "node-2",
           node_name: "香港 XHTTP",
           checked_at,
         },
         {
-          protocol: "xhttp",
+          protocol: "vless/xhttp",
           delay_ms: 80,
           node_id: "node-3",
           node_name: "备用 XHTTP",
@@ -51,7 +51,7 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
       ip: "2001:db8:1234:5678:abcd:ef01:1234:5678",
       checks: [
         {
-          protocol: "grpc",
+          protocol: "vless/grpc",
           delay_ms: 95,
           node_id: "node-4",
           node_name: "香港 gRPC",
@@ -76,11 +76,11 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
   await expect(row).toContainText("42 ms");
   await expect(row).toContainText("68 ms");
   await expect(
-    row.getByText("香港 XHTTP、备用 XHTTP", { exact: true }),
+    row.getByText("同协议与传输方式的所有节点共用").first(),
   ).toBeVisible();
   await expect(row.locator('[data-slot="badge"]')).toHaveCount(2);
   await page.getByLabel("协议筛选", { exact: true }).click();
-  await page.getByRole("option", { name: "gRPC", exact: true }).click();
+  await page.getByRole("option", { name: "VLESS · gRPC", exact: true }).click();
   await expect(row).toHaveCount(0);
   await expect(page.getByRole("table")).toContainText(fixtures[1].ip);
   await page.getByLabel("搜索 IP、节点、ASN 或服务商").fill("不匹配");
