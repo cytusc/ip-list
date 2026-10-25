@@ -111,6 +111,7 @@ export async function startScan(
       method: "POST",
       body: JSON.stringify(input),
     });
+    revalidatePath("/probes");
     return { ok: true, job: data };
   } catch (error) {
     return {

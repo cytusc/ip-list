@@ -34,10 +34,10 @@ export function formatDuration(from?: string, to?: string | null) {
   return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
 }
 
-/** 百分比，保留一位小数；分母为 0 时返回 null。 */
+/** 百分比，保留两位小数；分母为 0 时返回 null。大网段里 1 个可用 IP 也能显示为 0.03%。 */
 export function percent(part: number, total: number) {
   if (!total) return null;
-  return Math.round((part / total) * 1000) / 10;
+  return Math.round((part / total) * 10000) / 100;
 }
 
 export function availabilityTone(value?: number | null) {

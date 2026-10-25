@@ -50,22 +50,38 @@ test("协议池空网段隔离与恢复", async ({ page, request }) => {
     await page.getByRole("button", { name: "登录控制台" }).click();
     await expect(page).toHaveURL(/\/nodes$/);
     await page.goto("/probes");
+    const dialog = page.getByRole("dialog");
+    const openForm = async () => {
+      await page.getByRole("button", { name: "新建检测" }).click();
+      await expect(dialog).toBeVisible();
+    };
     const selectNode = async (suffix: string) => {
-      await page.getByLabel("测试节点", { exact: true }).click();
+      await dialog.getByLabel("测试节点", { exact: true }).click();
       await page
         .getByRole("option", { name: new RegExp(`${name}-${suffix}`) })
         .click();
     };
+    await openForm();
     await selectNode("HTTP");
-    await page.getByRole("button", { name: "选择检测网段" }).click();
+    await dialog.getByRole("button", { name: "选择检测网段" }).click();
+    const clearNetworks = page.getByRole("button", { name: "清空", exact: true });
+    if (await clearNetworks.isEnabled()) await clearNetworks.click();
     await page.getByRole("combobox", { name: "搜索网段" }).fill(name);
     await page.getByRole("option", { name: new RegExp(name) }).click();
     await page.getByRole("button", { name: "完成", exact: true }).click();
-    await page.getByLabel("单 IP 超时（毫秒）").fill("1000");
-    await page.getByLabel("巡检方式", { exact: true }).click();
+    await dialog.getByLabel("单 IP 超时（毫秒）").fill("1000");
+    await dialog.getByLabel("巡检方式", { exact: true }).click();
     await page.getByRole("option", { name: "单次检测", exact: true }).click();
-    await page.getByRole("button", { name: "开始测试", exact: true }).click();
-    const disabledRow = () => page.getByText(`${name} · 198.18.93.0/30`, { exact: true }).locator("..");
+    await dialog.getByRole("button", { name: "开始测试", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    // 全段失败后协议池会禁用该网段，记录先结束再重新打开配置查看。
+    await expect(
+      page.getByRole("row").filter({ hasText: name }).first(),
+    ).toContainText("已完成", { timeout: 20000 });
+    await page.reload();
+    await openForm();
+    const disabledRow = () =>
+      page.getByText(`${name} · 198.18.93.0/30`, { exact: true }).locator("..");
     await expect(
       disabledRow().getByRole("button", { name: "恢复扫描", exact: true }),
     ).toBeVisible({ timeout: 15000 });
@@ -89,18 +105,21 @@ test("协议池空网段隔离与恢复", async ({ page, request }) => {
     await expect(badge).toHaveCSS("background-color", "rgb(153, 27, 27)");
     await expect(badge).toHaveCSS("color", "rgb(255, 255, 255)");
     await page.goto("/probes");
+    await openForm();
     await selectNode("gRPC");
     await expect(
       disabledRow().getByRole("button", { name: "恢复扫描", exact: true }),
     ).toHaveCount(0);
-    await page.getByRole("button", { name: "选择检测网段" }).click();
+    await dialog.getByRole("button", { name: "选择检测网段" }).click();
     await page.getByRole("combobox", { name: "搜索网段" }).fill(name);
     await expect(
       page.getByRole("option", { name: new RegExp(name) }),
     ).toBeVisible();
     await page.getByRole("button", { name: "完成", exact: true }).click();
     await selectNode("HTTP");
-    await disabledRow().getByRole("button", { name: "恢复扫描", exact: true }).click();
+    await disabledRow()
+      .getByRole("button", { name: "恢复扫描", exact: true })
+      .click();
     await expect(
       disabledRow().getByRole("button", { name: "恢复扫描", exact: true }),
     ).toHaveCount(0);

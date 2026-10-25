@@ -156,7 +156,7 @@ export function CFProgressView({
 
           <progress
             aria-label="统一检测进度"
-            className="h-2 w-full accent-primary"
+            className="h-2 w-full accent-blue-600"
             max={job.total || 1}
             value={job.completed}
           />

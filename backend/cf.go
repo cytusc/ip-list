@@ -166,12 +166,12 @@ func (a *app) saveScanResults(ctx context.Context, j scanJob) error {
 const cfTargetStats = `(SELECT count(*) FROM cf_results r WHERE r.target_id=t.id AND r.available) AS available_count,
  (SELECT count(*) FROM cf_ip_pool WHERE available) AS shared_count,
  COALESCE(
-  (SELECT round(100.0*success/NULLIF(total,0)) FROM cf_target_rounds k WHERE k.target_id=t.id ORDER BY finished_at DESC LIMIT 1),
-  (SELECT round(100.0*count(*) FILTER (WHERE r.available)/NULLIF(count(*),0)) FROM cf_results r WHERE r.target_id=t.id)
+  (SELECT round(100.0*success/NULLIF(total,0),2) FROM cf_target_rounds k WHERE k.target_id=t.id ORDER BY finished_at DESC LIMIT 1),
+  (SELECT round(100.0*count(*) FILTER (WHERE r.available)/NULLIF(count(*),0),2) FROM cf_results r WHERE r.target_id=t.id)
  ) AS availability,
  COALESCE(
-  (SELECT round(100.0*sum(success)/NULLIF(sum(total),0)) FROM cf_target_rounds k WHERE k.target_id=t.id),
-  (SELECT round(100.0*count(*) FILTER (WHERE r.available)/NULLIF(count(*),0)) FROM cf_results r WHERE r.target_id=t.id)
+  (SELECT round(100.0*sum(success)/NULLIF(sum(total),0),2) FROM cf_target_rounds k WHERE k.target_id=t.id),
+  (SELECT round(100.0*count(*) FILTER (WHERE r.available)/NULLIF(count(*),0),2) FROM cf_results r WHERE r.target_id=t.id)
  ) AS overall,
  (SELECT count(*) FROM cf_target_rounds k WHERE k.target_id=t.id) AS rounds,
  COALESCE(

@@ -159,6 +159,33 @@ CREATE TABLE IF NOT EXISTS node_scan_schedules (
  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Connectivity rounds are listed as records: one row per round, written when the
+-- round starts and completed when it ends. Per-IP results are attached only for
+-- the latest rounds, so the list stays cheap while a record can be reopened.
+CREATE TABLE IF NOT EXISTS node_scan_rounds (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ job_id text NOT NULL,
+ round integer NOT NULL,
+ protocol varchar(32) NOT NULL,
+ node_name varchar(80) NOT NULL DEFAULT '',
+ scope varchar(16) NOT NULL DEFAULT 'full',
+ url text NOT NULL DEFAULT '',
+ cidrs text[] NOT NULL DEFAULT '{}',
+ input jsonb NOT NULL DEFAULT '{}'::jsonb,
+ started_at timestamptz NOT NULL,
+ finished_at timestamptz,
+ total integer NOT NULL DEFAULT 0,
+ completed integer NOT NULL DEFAULT 0,
+ success integer NOT NULL DEFAULT 0,
+ status varchar(16) NOT NULL DEFAULT 'running',
+ error text NOT NULL DEFAULT '',
+ results jsonb NOT NULL DEFAULT '[]'::jsonb,
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE (job_id, round)
+);
+CREATE INDEX IF NOT EXISTS node_scan_rounds_started_idx ON node_scan_rounds(started_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS node_scan_rounds_protocol_idx ON node_scan_rounds(protocol,started_at DESC);
+
 -- Upgrade existing pools once: every address must have a result and none may
 -- be available. The migration marker preserves subsequent manual restores.
 CREATE TABLE IF NOT EXISTS app_migrations (

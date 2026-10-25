@@ -62,7 +62,11 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 	if err = a.disableEmptyNetworks(ctx, tx, job); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	// The same round is kept as a record so it can be reopened from the list.
+	return a.saveScanRecord(ctx, &job, data)
 }
 
 func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {

@@ -174,6 +174,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		a.releaseLock(job.lockKey(), id)
+		a.discardScanRecord(r.Context(), job.ID)
 		apiError(w, 503, "任务保存失败，请重试", nil)
 		return
 	}
@@ -182,11 +183,13 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		if _, err = a.db.Exec(r.Context(), `INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES($1,$2,$3)
    ON CONFLICT(protocol) DO UPDATE SET job_id=excluded.job_id,job=excluded.job,enabled=true,updated_at=now()`, job.Protocol, job.ID, data); err != nil {
 			a.releaseLock(job.lockKey(), id)
+			a.discardScanRecord(r.Context(), job.ID)
 			dbError(w, err)
 			return
 		}
 	} else if _, err = a.db.Exec(r.Context(), "UPDATE node_scan_schedules SET enabled=false,updated_at=now() WHERE protocol=$1", job.Protocol); err != nil {
 		a.releaseLock(job.lockKey(), id)
+		a.discardScanRecord(r.Context(), job.ID)
 		dbError(w, err)
 		return
 	}
@@ -213,6 +216,11 @@ func (a *app) persistScan(ctx context.Context, job *scanJob) error {
 		if _, err = a.db.Exec(ctx, `UPDATE node_scan_schedules SET job=$2,enabled=enabled AND $3,updated_at=now() WHERE protocol=$1 AND job_id=$4`, job.Protocol, data, job.Status != "cancelled", job.ID); err != nil {
 			return err
 		}
+	}
+	// Every heartbeat also refreshes the round record, so the record list shows
+	// live counters without reading the task snapshot.
+	if err = a.saveScanRecord(ctx, job, nil); err != nil {
+		return err
 	}
 	_, err = a.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.Set(ctx, scanKey(job.ID), data, scanTTL)

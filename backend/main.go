@@ -207,6 +207,8 @@ func (a *app) routes() http.Handler {
 	mux.Handle("DELETE /protocol-networks/{id}", a.protected(http.HandlerFunc(a.restoreProtocolNetwork)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
 	mux.Handle("POST /scans", a.protected(http.HandlerFunc(a.startScan)))
+	mux.Handle("GET /scan-records", a.protected(http.HandlerFunc(a.listScanRecords)))
+	mux.Handle("GET /scan-records/{id}", a.protected(http.HandlerFunc(a.getScanRecord)))
 	mux.Handle("GET /scans/latest", a.protected(http.HandlerFunc(a.latestScan)))
 	mux.Handle("GET /scans/{id}", a.protected(http.HandlerFunc(a.getScan)))
 	mux.Handle("POST /scans/{id}/cancel", a.protected(http.HandlerFunc(a.cancelScan)))

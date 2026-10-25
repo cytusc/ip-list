@@ -62,6 +62,46 @@ export type ScanJob = {
   results: ScanResult[];
   error?: string;
 };
+/** 一轮连通性检测记录：列表一条记录对应一次轮次，而不是整个任务。 */
+export type ScanRecord = {
+  id: number;
+  job_id: string;
+  round: number;
+  protocol: string;
+  node_name: string;
+  scope: "full" | "available";
+  url: string;
+  cidrs: string[];
+  input: ScanInput;
+  started_at: string;
+  finished_at?: string | null;
+  total: number;
+  completed: number;
+  success: number;
+  status: ScanJob["status"];
+  error?: string;
+  results: ScanResult[];
+  /** 数据来自正在运行的任务快照，而不是已保存的记录 */
+  live?: boolean;
+  next_run_at?: string | null;
+};
+/** 后台仍在进行的任务：巡检等待下一轮时没有任何记录处于运行状态。 */
+export type ActiveScan = {
+  job_id: string;
+  protocol: string;
+  node_name: string;
+  round: number;
+  status: "running" | "waiting";
+  total: number;
+  completed: number;
+  success: number;
+  interval_minutes: number;
+  next_run_at?: string | null;
+};
+export type ScanRecordList = {
+  items: ScanRecord[];
+  active: ActiveScan | null;
+};
 
 export type IPCheck = {
   protocol: string;

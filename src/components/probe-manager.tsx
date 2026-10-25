@@ -1,17 +1,14 @@
 "use client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { nodeProtocol, protocolLabels } from "@/lib/protocol";
-import { useEffect, useRef, useState, useTransition } from "react";
-import { Activity, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Activity, ArrowRight, Clock, History } from "lucide-react";
 import { toast } from "sonner";
-import { startScan, cancelScan, restoreProtocolNetwork } from "@/app/actions";
-import type { Node, Network, ScanJob } from "@/lib/types";
-import { networkAddressCount as size } from "@/lib/network";
-import { NetworkSelector } from "@/components/network-selector";
+import { cancelScan } from "@/app/actions";
+import { protocolLabels } from "@/lib/protocol";
+import { availabilityTone, formatDuration, formatTime, percent } from "@/lib/cf";
+import { NewProbeDialog } from "@/components/probe-form";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -28,636 +25,431 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+import type {
+  ActiveScan,
+  Network,
+  Node,
+  ScanRecord,
+  ScanRecordList,
+} from "@/lib/types";
 
-const labels = {
-  running: "测试中",
+const statusText: Record<string, string> = {
+  running: "检测中",
   waiting: "等待下轮",
   completed: "已完成",
   cancelled: "已停止",
   interrupted: "已中断",
 };
-export function ProbeManager({
+
+export function ProbeList({
   nodes,
   networks,
+  initial,
 }: {
   nodes: Node[];
   networks: Network[];
+  initial: ScanRecordList;
 }) {
-  const router = useRouter();
-  const availableNodes = nodes.filter((node) => node.enabled && node.share_uri);
-
-  const [nodeID, setNodeID] = useState(availableNodes[0]?.id || "");
-  const [networkIDs, setNetworkIDs] = useState<string[]>([]);
-  const [url, setURL] = useState("https://www.gstatic.com/generate_204");
-  const [timeout, setTimeoutMs] = useState(5000);
-  const [concurrency, setConcurrency] = useState(5);
-  const [interval, setIntervalMinutes] = useState(5);
-  const protocol = nodeProtocol(
-    nodes.find((node) => node.id === nodeID)?.share_uri || "",
-  );
-  const disabledNetworks = networks.filter(
-    (network) =>
-      network.enabled && network.disabled_protocols?.includes(protocol),
-  );
-  const poolNetworks = networks.map((network) => ({
-    ...network,
-    enabled: network.enabled && !network.disabled_protocols?.includes(protocol),
-  }));
-  const availableNetworks = poolNetworks.filter((network) => network.enabled);
-  const refreshedRound = useRef("");
-  const [fullEvery, setFullEvery] = useState(12);
-  const restored = useRef(false);
-  const [job, setJob] = useState<ScanJob | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [data, setData] = useState(initial);
   const [error, setError] = useState("");
-  const [pollError, setPollError] = useState("");
   const [stopping, setStopping] = useState(false);
-  const [pending, startTransition] = useTransition();
-  const [filter, setFilter] = useState("all");
+  const [protocol, setProtocol] = useState("");
   const [page, setPage] = useState(1);
-  const running = job?.status === "running";
-  const active = running || job?.status === "waiting";
-  const busy = pending || active || !loaded;
-  const jobID = job?.id;
-  const jobStatus = job?.status;
+  const [version, setVersion] = useState(0);
+  const router = useRouter();
+  // 一轮检测结束后刷新服务端数据：协议池禁用的网段等信息只在服务端渲染。
+  const seen = useRef<string | null>(null);
+  const active = data.active;
+  const scanning = data.items.some((item) => item.status === "running");
+  const busy = scanning || !!active;
   useEffect(() => {
-    if (jobStatus && jobStatus !== "running" && jobStatus !== "waiting") return;
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
-    async function poll() {
+    const load = async () => {
+      if (document.hidden) return;
       try {
-        const response = await fetch(
-          `/api/scans${jobID ? `?id=${jobID}` : `?protocol=${encodeURIComponent(protocol)}`}`,
-          { cache: "no-store", signal: controller.signal },
-        );
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "读取进度失败");
-        if (!disposed) {
-          setJob(data);
-          if (data && data.status !== "running") {
-            const key = `${data.id}:${data.round}:${data.status}`;
-            if (refreshedRound.current !== key) {
-              refreshedRound.current = key;
-              router.refresh();
-            }
+        const response = await fetch("/api/scan-records", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "读取检测记录失败");
+        if (disposed) return;
+        setData(payload);
+        setError("");
+        const latest = payload.items?.[0] as ScanRecord | undefined;
+        if (latest) {
+          const key = `${latest.id}:${latest.status}`;
+          if (seen.current === null) seen.current = key;
+          else if (seen.current !== key) {
+            seen.current = key;
+            if (latest.status !== "running") router.refresh();
           }
-          if (!restored.current) {
-            restored.current = true;
-            if (data?.input?.node_id && Array.isArray(data.input.network_ids)) {
-              if (nodes.some((node) => node.id === data.input.node_id))
-                setNodeID(data.input.node_id);
-              setNetworkIDs(
-                data.input.network_ids.filter((id: string) =>
-                  networks.some(
-                    (network) => network.id === id && network.enabled,
-                  ),
-                ),
-              );
-              setURL(data.input.url);
-              setTimeoutMs(data.input.timeout_ms);
-              setConcurrency(data.input.concurrency);
-              setIntervalMinutes(data.input.interval_minutes || 0);
-              setFullEvery(data.input.full_every || 12);
-            }
-          }
-          setLoaded(true);
-          setPollError("");
-          if (data?.status !== "running" && data?.status !== "waiting")
-            setStopping(false);
         }
-      } catch (error) {
-        if (!disposed) {
-          setPollError(error instanceof Error ? error.message : "读取进度失败");
-          setLoaded(true);
-        }
+      } catch (e) {
+        if (!disposed && !(e instanceof DOMException && e.name === "AbortError"))
+          setError(e instanceof Error ? e.message : "读取检测记录失败");
       }
-      if (!disposed)
-        timer = setTimeout(
-          poll,
-          document.hidden ? 10000 : jobStatus === "waiting" ? 5000 : 1500,
-        );
-    }
-    void poll();
+    };
+    const timer = window.setInterval(load, busy ? 2000 : 10000);
+    void load();
     return () => {
       disposed = true;
       controller.abort();
-      clearTimeout(timer);
+      window.clearInterval(timer);
     };
-  }, [jobID, jobStatus, networks, nodes, protocol, router]);
-  const selected = availableNetworks.filter((network) =>
-    networkIDs.includes(network.id),
-  );
-  const upperCount = selected.reduce(
-    (sum, network) => sum + size(network.cidr),
-    BigInt(0),
-  );
-  const tooLarge = selected.some(
-    (network) => size(network.cidr) > BigInt(4096),
-  );
-  const results = (job?.results || [])
-    .filter((row) => filter === "all" || row.status === filter)
-    .sort((a, b) => {
-      if (a.status !== b.status) return a.status === "success" ? -1 : 1;
-      return a.delay_ms - b.delay_ms || a.ip.localeCompare(b.ip);
-    });
-  const pages = Math.max(1, Math.ceil(results.length / 50));
-  const currentPage = Math.min(page, pages);
+  }, [busy, version, router]);
+  const protocols = [...new Set(data.items.map((item) => item.protocol))];
+  const filtered = protocol
+    ? data.items.filter((item) => item.protocol === protocol)
+    : data.items;
+  const pages = Math.max(1, Math.ceil(filtered.length / 20));
+  const current = Math.min(page, pages);
   return (
     <div className="space-y-6">
-      <div>
-        <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-          <Activity className="size-4" />
-          节点检测
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 sm:flex-1">
+          <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+            <Activity className="size-4" />
+            节点检测
+          </div>
+          <h1 className="text-2xl font-semibold">连通性检测记录</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+            每轮检测保存为一条记录，可回看该轮的可用 IP、延迟与变化。同一协议池的所有节点共用结果。
+          </p>
+          <Link
+            href="/available-ips"
+            className="mt-2 inline-block text-sm text-primary underline underline-offset-4"
+          >
+            查看可用 IP 与支持的协议
+          </Link>
         </div>
-        <h1 className="text-[26px] font-semibold">批量连通性测试</h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          按协议与传输方式维护共用 IP
-          池，选择一个样本节点后台扫描，同池所有节点均可复用结果。
-        </p>
-        <Link
-          href="/available-ips"
-          className="mt-2 inline-block text-sm text-primary underline underline-offset-4"
-        >
-          查看可用 IP 与支持的协议
-        </Link>
+        <NewProbeDialog
+          nodes={nodes}
+          networks={networks}
+          defaults={data.items[0]?.input}
+          active={active}
+          onStarted={() => setVersion((value) => value + 1)}
+        />
       </div>
-      <form
-        className="space-y-5 rounded-xl border bg-white p-5 sm:p-6"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setError("");
-          startTransition(async () => {
-            try {
-              const result = await startScan({
-                node_id: nodeID,
-                network_ids: networkIDs.filter((id) =>
-                  availableNetworks.some((network) => network.id === id),
-                ),
-                url,
-                timeout_ms: timeout,
-                concurrency,
-                interval_minutes: interval,
-                full_every: fullEvery,
-              });
-              if (result.ok) {
-                setJob(result.job);
-                setFilter("all");
-                setPage(1);
-                setStopping(false);
-                toast.success(interval ? "自动巡检已开始" : "测试已开始");
-              } else setError(result.error);
-            } catch {
-              setError("启动请求失败，请稍后重试");
-            }
-          });
-        }}
-      >
-        <div className="grid gap-5 lg:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="probe-node">测试节点</Label>
-            <Select
-              value={nodeID}
-              onValueChange={(value) => {
-                const nextProtocol = nodeProtocol(
-                  nodes.find((node) => node.id === value)?.share_uri || "",
-                );
-                setNodeID(value);
-                if (nextProtocol !== protocol) {
-                  setJob(null);
-                  setLoaded(false);
-                  restored.current = false;
-                  setError("");
-                }
-              }}
-              disabled={pending}
-            >
-              <SelectTrigger id="probe-node" className="w-full">
-                <SelectValue placeholder="请选择已导入的节点" />
-              </SelectTrigger>
-              <SelectContent>
-                {availableNodes.map((node) => (
-                  <SelectItem value={node.id} key={node.id}>
-                    {node.name} ·{" "}
-                    {protocolLabels[nodeProtocol(node.share_uri)] ||
-                      nodeProtocol(node.share_uri)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs leading-5 text-muted-foreground">
-              当前池：{protocolLabels[protocol] || protocol || "请选择节点"}
-              。仅替换样本节点的连接
-              IP，保留其他参数；可切换节点管理其他协议池。
-            </p>
-            {!availableNodes.length && (
-              <Link className="text-sm text-primary underline" href="/nodes">
-                前往节点管理导入 VLESS 链接
-              </Link>
-            )}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="probe-url">检测网址</Label>
-            <Input
-              id="probe-url"
-              type="url"
-              required
-              value={url}
-              onChange={(event) => setURL(event.target.value)}
-              maxLength={2048}
-              disabled={busy}
-            />
-            <p className="text-xs leading-5 text-muted-foreground">
-              通过代理连通检测网址并返回延迟即视为可用，不额外限制 HTTP
-              状态码。测试从后端服务器发起。
-            </p>
-          </div>
-        </div>
-        <fieldset disabled={busy} className="space-y-3">
-          <legend className="mb-2 text-sm font-medium">选择已配置网段</legend>
-          <NetworkSelector
-            networks={poolNetworks}
-            value={networkIDs}
-            onChange={setNetworkIDs}
-            disabled={busy}
-          />
-          <p className="text-xs leading-5 text-muted-foreground">
-            已选 {selected.length} 个网段，地址总数上限 {upperCount.toString()}
-            （重叠地址自动去重）。每次最多 4096 个
-            IP，包含网段内全部地址；同一网段可用于不同节点检测。
-          </p>
-          {tooLarge && (
-            <p role="alert" className="text-sm text-destructive">
-              所选网段过大，请在网段配置中拆分为更小的网段。
-            </p>
-          )}
-        </fieldset>
-        {!!disabledNetworks.length && (
-          <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-            <p className="text-sm font-medium">
-              当前协议池已禁用 {disabledNetworks.length} 个空网段
-            </p>
-            <p className="text-xs text-muted-foreground">
-              完整扫描后全部失败，仅影响当前池。恢复后将再次参与扫描。
-            </p>
-            {disabledNetworks.map((network) => (
-              <div
-                key={network.id}
-                className="flex flex-wrap items-center justify-between gap-2 text-sm"
-              >
-                <span>
-                  {network.name} · {network.cidr}
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={pending}
-                  onClick={() =>
-                    startTransition(async () => {
-                      const result = await restoreProtocolNetwork(
-                        network.id,
-                        protocol,
-                      );
-                      if (!result.ok) setError(result.error);
-                      else {
-                        router.refresh();
-                        toast.success("网段已恢复，后续巡检将重新扫描");
-                      }
-                    })
-                  }
-                >
-                  恢复扫描
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="space-y-3 rounded-lg bg-slate-50 p-4">
-          <Label htmlFor="patrol-interval">巡检方式</Label>
-          <Select
-            value={String(interval)}
-            onValueChange={(value) => setIntervalMinutes(Number(value))}
-            disabled={busy}
-          >
-            <SelectTrigger id="patrol-interval" className="w-full sm:w-64">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="0">单次检测</SelectItem>
-              <SelectItem value="1">自动巡检 · 间隔 1 分钟</SelectItem>
-              <SelectItem value="5">自动巡检 · 间隔 5 分钟</SelectItem>
-              <SelectItem value="15">自动巡检 · 间隔 15 分钟</SelectItem>
-              <SelectItem value="30">自动巡检 · 间隔 30 分钟</SelectItem>
-              <SelectItem value="60">自动巡检 · 间隔 60 分钟</SelectItem>
-            </SelectContent>
-          </Select>
-          {interval > 0 && (
-            <>
-              <Label htmlFor="patrol-full">每隔多少轮重新扫描全部网段</Label>
-              <Input
-                id="patrol-full"
-                type="number"
-                min={1}
-                max={288}
-                required
-                value={fullEvery}
-                disabled={busy}
-                className="w-32"
-                onChange={(event) => setFullEvery(Number(event.target.value))}
-              />
-              <p className="text-xs leading-5 text-muted-foreground">
-                首轮全量扫描，之后优先复测可用 IP，每隔 {fullEvery}{" "}
-                轮再次全量扫描；设为 1 则每轮全量。没有可用 IP
-                时自动全量扫描。每轮完成后等待 {interval} 分钟，不会重叠执行。
-              </p>
-              <p className="text-xs leading-5 text-muted-foreground">
-                后台按当前协议池自动巡检，离开页面仍会继续，服务重启后自动恢复。完整扫描且全段无可用
-                IP 时，仅在当前协议池中禁用该网段。
-              </p>
-            </>
-          )}
-        </div>
-        <div className="flex flex-wrap items-end gap-4">
-          <div className="space-y-2">
-            <Label htmlFor="probe-timeout">单 IP 超时（毫秒）</Label>
-            <Input
-              id="probe-timeout"
-              className="w-44"
-              type="number"
-              min={1000}
-              max={15000}
-              required
-              value={timeout}
-              disabled={busy}
-              onChange={(event) => setTimeoutMs(Number(event.target.value))}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="probe-concurrency">并发数</Label>
-            <Input
-              id="probe-concurrency"
-              className="w-28"
-              type="number"
-              min={1}
-              max={32}
-              required
-              value={concurrency}
-              disabled={busy}
-              onChange={(event) => setConcurrency(Number(event.target.value))}
-            />
-          </div>
-          <Button
-            type="submit"
-            disabled={
-              busy || !loaded || !nodeID || !selected.length || tooLarge
-            }
-          >
-            {pending ? <Loader2 className="animate-spin" /> : <Activity />}
-            {pending
-              ? "正在启动…"
-              : active
-                ? "任务进行中"
-                : interval
-                  ? "开始巡检"
-                  : "开始测试"}
-          </Button>
-        </div>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
-      </form>
-      {pollError && (
+
+      {error && (
         <p
           role="alert"
           className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
         >
-          {pollError}。正在自动重试，现有结果已保留。
+          {error}。正在自动重试，已有记录已保留。
         </p>
       )}
-      {!loaded && (
-        <p role="status" className="text-sm text-muted-foreground">
-          正在读取最近一次任务…
-        </p>
+
+      {active && (
+        <ActiveBanner
+          active={active}
+          record={data.items.find(
+            (item) =>
+              item.job_id === active.job_id && item.round === active.round,
+          )}
+          stopping={stopping}
+          onStop={async () => {
+            setStopping(true);
+            try {
+              const result = await cancelScan(active.job_id);
+              if (!result.ok) {
+                toast.error(result.error);
+                setStopping(false);
+                return;
+              }
+              setVersion((value) => value + 1);
+            } catch {
+              toast.error("停止失败，请重试");
+              setStopping(false);
+            }
+          }}
+        />
       )}
-      {!job && loaded && (
-        <div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
-          选择节点与网段后开始测试。结果保留 24 小时，刷新页面可继续查看。
-        </div>
-      )}
-      {job && (
-        <section className="overflow-hidden rounded-xl border bg-white">
-          <div className="space-y-4 border-b p-5 sm:p-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="font-semibold">
-                  {job.node_name}
-                  <Badge variant="secondary" className="ml-3">
-                    {labels[job.status]}
-                  </Badge>
-                </h2>
-                <p className="mt-2 break-all text-xs text-muted-foreground">
-                  {job.cidrs.join("、")} · {job.url}
-                </p>
-              </div>
-              {active && (
-                <Button
-                  variant="outline"
-                  disabled={stopping}
-                  onClick={async () => {
-                    setStopping(true);
-                    try {
-                      const result = await cancelScan(job.id);
-                      if (!result.ok) {
-                        toast.error(result.error);
-                        setStopping(false);
-                      }
-                    } catch {
-                      toast.error("停止失败，请重试");
-                      setStopping(false);
-                    }
-                  }}
-                >
-                  {stopping
-                    ? "正在停止…"
-                    : job.input?.interval_minutes
-                      ? "停止巡检"
-                      : "停止测试"}
-                </Button>
-              )}
-            </div>
-            <p className="text-xs leading-5 text-muted-foreground">
-              第 {job.round || 1} 轮 ·{" "}
-              {job.scope === "available" ? "复测可用 IP" : "全量扫描"}
-              {job.started_at &&
-                ` · 开始于 ${new Date(job.started_at).toLocaleString()}`}
-              {job.next_run_at &&
-                ` · 下轮 ${new Date(job.next_run_at).toLocaleString()}`}
+
+      {data.items.length ? (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              最近 {data.items.length} 条记录 · 保留 7 天
             </p>
-            <div
-              role="status"
-              aria-live="polite"
-              className="flex flex-wrap gap-4 text-sm tabular-nums"
-            >
-              <span>
-                已测试 {job.completed} / {job.total}
-              </span>
-              <span className="text-emerald-700">可用 {job.success}</span>
-              <span className="text-red-700">
-                失败 {job.completed - job.success}
-              </span>
-              {job.input?.interval_minutes ? (
-                <span className="text-muted-foreground">
-                  新增{" "}
-                  {job.results.filter((row) => row.change === "new").length} ·
-                  恢复{" "}
-                  {
-                    job.results.filter((row) => row.change === "recovered")
-                      .length
-                  }{" "}
-                  · 本轮失效{" "}
-                  {job.results.filter((row) => row.change === "lost").length}
-                </span>
-              ) : null}
-              <span className="text-muted-foreground">
-                未测试 {job.total - job.completed}
-              </span>
-            </div>
-            <progress
-              className="h-2 w-full accent-blue-600"
-              value={job.completed}
-              max={job.total}
-              aria-label="测试进度"
-            />
-            {job.error && (
-              <p role="alert" className="text-sm text-destructive">
-                {job.error}
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              结果仅代表当前轮已测试的
-              IP，按可用优先、延迟升序排列。离开页面不会停止任务；停止后的结果保留
-              24 小时。
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 p-4">
             <Select
-              value={filter}
+              value={protocol || "all"}
               onValueChange={(value) => {
-                setFilter(value);
+                setProtocol(value === "all" ? "" : value);
                 setPage(1);
               }}
             >
-              <SelectTrigger className="w-36" aria-label="筛选测试结果">
+              <SelectTrigger className="w-44" aria-label="按协议筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部结果</SelectItem>
-                <SelectItem value="success">仅可用</SelectItem>
-                <SelectItem value="failed">仅失败</SelectItem>
+                <SelectItem value="all">全部协议</SelectItem>
+                {protocols.map((value) => (
+                  <SelectItem value={value} key={value}>
+                    {protocolLabels[value] || value}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
-            <Button
-              variant="outline"
-              disabled={!job.success}
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(
-                    job.results
-                      .filter((row) => row.status === "success")
-                      .sort((a, b) => a.delay_ms - b.delay_ms)
-                      .map((row) => row.ip)
-                      .join("\n"),
-                  );
-                  toast.success("可用 IP 已复制");
-                } catch {
-                  toast.error("复制失败，请手动选择表格中的 IP");
-                }
-              }}
-            >
-              复制可用 IP
-            </Button>
           </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="pl-6">连接 IP</TableHead>
-                <TableHead>结果</TableHead>
-                <TableHead>延迟</TableHead>
-                <TableHead>变化 / 说明</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {results
-                .slice((currentPage - 1) * 50, currentPage * 50)
-                .map((row) => (
-                  <TableRow key={row.ip}>
-                    <TableCell className="pl-6 font-mono">{row.ip}</TableCell>
-                    <TableCell>
-                      <Badge
-                        variant="outline"
-                        className={
-                          row.status === "success"
-                            ? "text-emerald-700"
-                            : "text-red-700"
-                        }
-                      >
-                        {row.status === "success" ? "可用" : "失败"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="tabular-nums">
-                      {row.status === "success" ? `${row.delay_ms} ms` : "—"}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {row.change === "new"
-                        ? "首次可用 · "
-                        : row.change === "lost"
-                          ? "本轮失效 · "
-                          : row.change === "recovered"
-                            ? "恢复可用 · "
-                            : ""}
-                      {row.previous_delay_ms !== undefined &&
-                      row.status === "success"
-                        ? `上次 ${row.previous_delay_ms} ms · `
-                        : ""}
-                      {row.error || "代理请求成功"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-            </TableBody>
-          </Table>
-          {!results.length && (
-            <p className="p-10 text-center text-sm text-muted-foreground">
-              {running ? "等待检测结果…" : "暂无符合筛选条件的结果"}
-            </p>
-          )}
-          <div className="flex items-center justify-between border-t p-4 text-xs text-muted-foreground">
-            <span>
-              {results.length} 条结果 · {currentPage} / {pages}
-            </span>
-            <div className="flex gap-2">
+          <RecordTable
+            items={filtered.slice((current - 1) * 20, current * 20)}
+          />
+          {pages > 1 && (
+            <div className="flex items-center justify-end gap-3 text-sm">
               <Button
                 variant="outline"
                 size="sm"
-                disabled={currentPage === 1}
-                onClick={() => setPage(currentPage - 1)}
+                disabled={current === 1}
+                onClick={() => setPage(current - 1)}
               >
                 上一页
               </Button>
+              <span className="text-muted-foreground tabular-nums">
+                {current} / {pages}
+              </span>
               <Button
                 variant="outline"
                 size="sm"
-                disabled={currentPage === pages}
-                onClick={() => setPage(currentPage + 1)}
+                disabled={current === pages}
+                onClick={() => setPage(current + 1)}
               >
                 下一页
               </Button>
             </div>
-          </div>
-        </section>
+          )}
+        </>
+      ) : (
+        <div className="rounded-xl border border-dashed bg-white/60 px-6 py-14 text-center">
+          <History className="mx-auto size-8 text-slate-300" />
+          <p className="mt-3 text-sm font-medium">还没有检测记录</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            点击「新建检测」选择节点与网段，第一轮完成后会在这里留下记录。
+          </p>
+        </div>
       )}
     </div>
+  );
+}
+
+function ActiveBanner({
+  active,
+  record,
+  stopping,
+  onStop,
+}: {
+  active: ActiveScan;
+  record?: ScanRecord;
+  stopping: boolean;
+  onStop: () => void;
+}) {
+  const running = active.status === "running";
+  const done = active.total
+    ? Math.round((active.completed / active.total) * 100)
+    : 0;
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border bg-white p-4 sm:flex-row sm:items-center sm:gap-4 sm:px-5">
+      <div className="flex min-w-0 flex-1 items-start gap-3">
+        <span
+          className={`flex size-9 shrink-0 items-center justify-center rounded-full ${running ? "bg-blue-50 text-primary" : "bg-slate-100 text-slate-500"}`}
+        >
+          <Activity className={`size-4 ${running ? "animate-pulse" : ""}`} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
+            <span className="min-w-0 truncate">{active.node_name}</span>
+            <span className="shrink-0">第 {active.round} 轮</span>
+            <Badge variant="secondary" className="shrink-0">
+              {statusText[active.status]}
+            </Badge>
+            {running && (
+              <span className="font-normal text-muted-foreground tabular-nums">
+                {active.completed} / {active.total}（{done}%）
+              </span>
+            )}
+          </p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {running
+              ? `本轮可用 ${active.success} 个`
+              : active.next_run_at
+                ? `下一轮 ${formatTime(active.next_run_at)}`
+                : "等待下一轮"}
+            {active.interval_minutes
+              ? ` · 自动巡检间隔 ${active.interval_minutes} 分钟`
+              : ""}
+          </p>
+          {running && (
+            <progress
+              aria-label="检测进度"
+              className="mt-2 h-1.5 w-full accent-blue-600"
+              max={active.total || 1}
+              value={active.completed}
+            />
+          )}
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 sm:justify-end">
+        {record && (
+          <Button variant="ghost" size="sm" asChild>
+            <Link href={`/probes/${record.id}`}>查看本轮 →</Link>
+          </Button>
+        )}
+        <Button variant="outline" size="sm" disabled={stopping} onClick={onStop}>
+          {stopping ? "正在停止…" : active.interval_minutes ? "停止巡检" : "停止测试"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function RecordTable({ items }: { items: ScanRecord[] }) {
+  return (
+    <>
+      <div className="divide-y overflow-hidden rounded-xl border bg-white sm:hidden">
+        {items.map((item) => {
+          const rate = percent(item.success, item.completed);
+          return (
+            <Link
+              key={item.id}
+              href={`/probes/${item.id}`}
+              className="block px-4 py-3 transition-colors active:bg-muted/50"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{item.node_name}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {protocolLabels[item.protocol] || item.protocol} · 第{" "}
+                    {item.round} 轮 ·{" "}
+                    {item.scope === "available" ? "复测" : "全量"}
+                  </p>
+                </div>
+                <Badge
+                  variant="outline"
+                  className={`shrink-0 ${item.status === "running" ? "text-primary" : ""}`}
+                >
+                  {statusText[item.status] ?? item.status}
+                </Badge>
+              </div>
+              <dl className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <div className="flex gap-1">
+                  <dt>可用</dt>
+                  <dd className="font-medium text-foreground tabular-nums">
+                    {item.success} / {item.completed}
+                  </dd>
+                </div>
+                <div className="flex gap-1">
+                  <dt>可用率</dt>
+                  <dd className={`tabular-nums ${availabilityTone(rate)}`}>
+                    {rate == null ? "—" : `${rate}%`}
+                  </dd>
+                </div>
+                <div className="flex gap-1">
+                  <dt>开始</dt>
+                  <dd className="tabular-nums">{formatTime(item.started_at)}</dd>
+                </div>
+                <div className="flex gap-1">
+                  <dt>耗时</dt>
+                  <dd className="tabular-nums">
+                    {formatDuration(item.started_at, item.finished_at)}
+                  </dd>
+                </div>
+              </dl>
+            </Link>
+          );
+        })}
+      </div>
+      <div className="hidden overflow-hidden rounded-xl border bg-white sm:block">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="pl-5">开始时间</TableHead>
+              <TableHead>节点 / 协议</TableHead>
+              <TableHead className="w-32">轮次</TableHead>
+              <TableHead className="w-32">可用 / 已测</TableHead>
+              <TableHead className="w-24">可用率</TableHead>
+              <TableHead className="w-28">耗时</TableHead>
+              <TableHead className="w-24">状态</TableHead>
+              <TableHead className="w-24 pr-5 text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {items.map((item) => {
+              const rate = percent(item.success, item.completed);
+              return (
+                <TableRow key={item.id} className="group relative">
+                  <TableCell className="pl-5 text-sm tabular-nums text-muted-foreground">
+                    {formatTime(item.started_at)}
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      href={`/probes/${item.id}`}
+                      className="font-medium after:absolute after:inset-0 after:content-[''] group-hover:text-primary"
+                    >
+                      {item.node_name}
+                    </Link>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {protocolLabels[item.protocol] || item.protocol}
+                    </p>
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    第 {item.round} 轮 ·{" "}
+                    {item.scope === "available" ? "复测可用" : "全量"}
+                  </TableCell>
+                  <TableCell className="text-sm tabular-nums">
+                    <span className="font-medium text-emerald-700">
+                      {item.success}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      / {item.completed}
+                    </span>
+                    {item.completed < item.total && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        共 {item.total} 个
+                      </p>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {rate == null ? (
+                      <span className="text-sm text-muted-foreground">—</span>
+                    ) : (
+                      <span
+                        className={`text-sm tabular-nums ${availabilityTone(rate)}`}
+                      >
+                        {rate}%
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-sm tabular-nums text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      <Clock className="size-3.5" />
+                      {formatDuration(item.started_at, item.finished_at)}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      className={
+                        item.status === "running" ? "text-primary" : undefined
+                      }
+                    >
+                      {statusText[item.status] ?? item.status}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="pr-5 text-right">
+                    <span className="inline-flex items-center gap-1 text-sm text-primary group-hover:underline">
+                      查看
+                      <ArrowRight className="size-3.5" />
+                    </span>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </>
   );
 }

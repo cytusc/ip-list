@@ -1,6 +1,13 @@
-import { getNodes, getNetworks } from "@/lib/queries";
-import { ProbeManager } from "@/components/probe-manager";
+import { getNodes, getNetworks, getScanRecords } from "@/lib/queries";
+import { ProbeList } from "@/components/probe-manager";
+export const dynamic = "force-dynamic";
 export default async function ProbesPage() {
-  const [nodes, networks] = await Promise.all([getNodes(), getNetworks()]);
-  return <ProbeManager nodes={nodes} networks={networks} />;
+  const [nodes, networks, records] = await Promise.all([
+    getNodes(),
+    getNetworks(),
+    getScanRecords(),
+  ]);
+  return (
+    <ProbeList nodes={nodes} networks={networks} initial={records} />
+  );
 }

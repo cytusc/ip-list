@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/select";
 import type { CFDetail, CFTarget, Network, ScanJob } from "@/lib/types";
 import { networkAddressCount } from "@/lib/network";
-import { availabilityTone, formatTime, scanStatusText } from "@/lib/cf";
+import { availabilityTone, formatTime, percent, scanStatusText } from "@/lib/cf";
 
 /** 统一检测任务由所有域名共用，列表与进度页都从同一接口读取。 */
 function useCFScan() {
@@ -286,7 +286,7 @@ function ScanBanner({ job }: { job: ScanJob }) {
         {running && (
           <progress
             aria-label="统一检测进度"
-            className="mt-2 h-1.5 w-full accent-primary"
+            className="mt-2 h-1.5 w-full accent-blue-600"
             max={job.total || 1}
             value={job.completed}
           />
@@ -844,9 +844,7 @@ export function CFDetailView({ initial }: { initial: CFDetail }) {
         {history.length ? (
           <ul className="divide-y text-sm">
             {history.map((round) => {
-              const rate = round.total
-                ? Math.round((round.success / round.total) * 100)
-                : 0;
+              const rate = percent(round.success, round.total) ?? 0;
               return (
                 <li
                   key={`${round.finished_at}-${round.total}`}
