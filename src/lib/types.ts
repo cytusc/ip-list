@@ -116,6 +116,11 @@ export type AvailableIP = {
   provider?: string;
   checks: IPCheck[];
 };
+export type IPLocation = {
+  country: string;
+  region: string;
+  city: string;
+};
 export type GeneratedLink = {
   node_id: string;
   node_name: string;

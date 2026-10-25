@@ -18,6 +18,14 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
     page.getByRole("heading", { name: "可用 IP", exact: true }),
   ).toBeVisible();
   const checked_at = new Date().toISOString();
+  await page.route("**/api/available-ips/location?*", async (route) => {
+    const ip = new URL(route.request().url()).searchParams.get("ip");
+    await route.fulfill({
+      json: ip === "192.0.2.25"
+        ? { country: "HK", region: "Hong Kong", city: "Hong Kong" }
+        : { country: "", region: "", city: "" },
+    });
+  });
   const fixtures = [
     {
       ip: "192.0.2.25",
@@ -73,6 +81,9 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
   await expect(row).toContainText("HTTPUpgrade");
   await expect(row).toContainText("AS13335");
   await expect(row).toContainText("Cloudflare");
+  await expect(row.getByRole("img", { name: /香港.*国旗/ })).toBeVisible();
+  await expect(row).toContainText("Hong Kong");
+  await expect(page.getByRole("table")).toContainText("未知归属地");
   await expect(row).toContainText("42 ms");
   await expect(row).toContainText("68 ms");
   await expect(

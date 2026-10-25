@@ -204,6 +204,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /cf-pool", a.protected(http.HandlerFunc(a.cfIPPool)))
 	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
 	mux.Handle("GET /available-ips/links", a.protected(http.HandlerFunc(a.generateIPLinks)))
+	mux.Handle("GET /available-ips/location", a.protected(http.HandlerFunc(a.availableIPLocation)))
 	mux.Handle("DELETE /protocol-networks/{id}", a.protected(http.HandlerFunc(a.restoreProtocolNetwork)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
 	mux.Handle("POST /scans", a.protected(http.HandlerFunc(a.startScan)))

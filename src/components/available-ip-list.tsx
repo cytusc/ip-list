@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { NodeLinksDialog } from "@/components/node-links-dialog";
+import { IPLocationCell } from "@/components/ip-location";
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -226,6 +227,7 @@ export function AvailableIPList({
           <TableHeader>
             <TableRow>
               <TableHead className="pl-5">IP 地址</TableHead>
+              <TableHead>归属地</TableHead>
               <TableHead>ASN / 服务商</TableHead>
               <TableHead>支持的协议 · 延迟</TableHead>
               <TableHead className="hidden pr-5 md:table-cell">
@@ -246,6 +248,9 @@ export function AvailableIPList({
                 <TableRow key={item.ip}>
                   <TableCell className="max-w-44 break-all whitespace-normal pl-5 align-top font-mono text-sm">
                     {item.ip}
+                  </TableCell>
+                  <TableCell className="max-w-44 whitespace-normal align-top text-xs">
+                    <IPLocationCell ip={item.ip} />
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
                     <p className="font-mono">{item.asn || "—"}</p>
@@ -302,7 +307,7 @@ export function AvailableIPList({
             })}
             {!visible.length && (
               <TableRow>
-                <TableCell colSpan={5} className="h-44 text-center">
+                <TableCell colSpan={6} className="h-44 text-center">
                   <p className="font-medium">
                     {items.length ? "没有匹配的 IP" : "暂无可用 IP"}
                   </p>
