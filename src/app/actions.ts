@@ -22,6 +22,15 @@ export async function login(input: unknown): Promise<ActionResult> {
   }
   redirect("/nodes");
 }
+export async function submitLogin(
+  _previous: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  return login({
+    username: formData.get("username"),
+    password: formData.get("password"),
+  });
+}
 export async function logout(): Promise<ActionResult> {
   try {
     const { response } = await api("/auth/logout", { method: "POST" });

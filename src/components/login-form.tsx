@@ -1,35 +1,17 @@
 "use client";
-import { useState, useTransition } from "react";
+import { useActionState, useState } from "react";
 import { ArrowRight, AlertCircle, Eye, EyeOff, Loader2 } from "lucide-react";
-import { login } from "@/app/actions";
+import { submitLogin } from "@/app/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export function LoginForm() {
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState("");
+  const [result, formAction, pending] = useActionState(submitLogin, null, "/login");
+  const error = result && !result.ok ? result.error : "";
   const [visible, setVisible] = useState(false);
   return (
-    <form
-      className="space-y-5"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const data = new FormData(event.currentTarget);
-        setError("");
-        startTransition(async () => {
-          try {
-            const result = await login({
-              username: data.get("username"),
-              password: data.get("password"),
-            });
-            if (!result.ok) setError(result.error);
-          } catch {
-            setError("连接失败，请检查网络后重试");
-          }
-        });
-      }}
-    >
+    <form className="space-y-5" action={formAction}>
       <div className="space-y-2">
         <Label htmlFor="username">用户名</Label>
         <Input
