@@ -402,34 +402,52 @@ func probeError(err error) string {
 	}
 	return "代理连接失败（端口、传输握手或上游不可用）"
 }
-func (a *app) readScan(w http.ResponseWriter, r *http.Request, id string) *scanJob {
+var (
+	errScanNotFound = errors.New("scan not found")
+	errScanBroken   = errors.New("scan unreadable")
+)
+
+// loadScan returns the task snapshot of the current user, or a sentinel error so
+// callers can decide between an HTTP error and a silent fallback.
+func (a *app) loadScan(ctx context.Context, id string) (*scanJob, error) {
 	if len(id) != 32 {
+		return nil, errScanNotFound
+	}
+	data, err := a.redis.Get(ctx, scanKey(id)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, errScanNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var job scanJob
+	if err = json.Unmarshal(data, &job); err != nil {
+		return nil, errScanBroken
+	}
+	if job.UserID != ctx.Value(userContextKey{}).(user).ID {
+		return nil, errScanNotFound
+	}
+	if (job.Status == "running" || job.Status == "waiting") && time.Since(job.UpdatedAt) > 50*time.Second {
+		job.Status = "interrupted"
+		job.Error = "任务进度已中断，请重新测试"
+	}
+	return &job, nil
+}
+func (a *app) readScan(w http.ResponseWriter, r *http.Request, id string) *scanJob {
+	job, err := a.loadScan(r.Context(), id)
+	if errors.Is(err, errScanNotFound) {
 		apiError(w, 404, "测试任务不存在或已过期", nil)
 		return nil
 	}
-	data, err := a.redis.Get(r.Context(), scanKey(id)).Bytes()
-	if errors.Is(err, redis.Nil) {
-		apiError(w, 404, "测试任务不存在或已过期", nil)
+	if errors.Is(err, errScanBroken) {
+		apiError(w, 503, "任务数据无法读取", nil)
 		return nil
 	}
 	if err != nil {
 		apiError(w, 503, "任务服务暂时不可用", nil)
 		return nil
 	}
-	var job scanJob
-	if err = json.Unmarshal(data, &job); err != nil {
-		apiError(w, 503, "任务数据无法读取", nil)
-		return nil
-	}
-	if job.UserID != r.Context().Value(userContextKey{}).(user).ID {
-		apiError(w, 404, "测试任务不存在", nil)
-		return nil
-	}
-	if (job.Status == "running" || job.Status == "waiting") && time.Since(job.UpdatedAt) > 50*time.Second {
-		job.Status = "interrupted"
-		job.Error = "任务进度已中断，请重新测试"
-	}
-	return &job
+	return job
 }
 func (a *app) getScan(w http.ResponseWriter, r *http.Request) {
 	if job := a.readScan(w, r, r.PathValue("id")); job != nil {

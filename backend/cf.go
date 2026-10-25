@@ -72,6 +72,8 @@ func (j scanJob) lockKey() string {
 }
 
 const cfLatestKey = "ipfilter:cf:latest"
+const cfDoneKey = "ipfilter:cf:done"
+const cfDoneKeep = 5
 
 // Keep the original URL (Host and SNI), pin only the TCP endpoint. Never use
 // environment proxies or follow redirects to an untested address.
@@ -156,7 +158,20 @@ func (a *app) saveScanResults(ctx context.Context, j scanJob) error {
 	if _, err = tx.Exec(ctx, `UPDATE cf_targets SET last_checked_at=GREATEST(COALESCE(last_checked_at,$2),$2) WHERE id=$1`, j.TargetID, j.FinishedAt); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	// Remember the rounds that finished, so the progress page can still show one
+	// after the domain that ran it is deleted.
+	if status == "completed" && a.redis != nil {
+		_, _ = a.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.LPush(ctx, cfDoneKey, j.ID)
+			pipe.LTrim(ctx, cfDoneKey, 0, cfDoneKeep-1)
+			pipe.Expire(ctx, cfDoneKey, scanTTL)
+			return nil
+		})
+	}
+	return nil
 }
 
 // Per-domain metrics shared by the list and detail queries: current available
@@ -258,34 +273,44 @@ func (a *app) getCFTarget(w http.ResponseWriter, r *http.Request) {
 // The unified CF scan is one shared job for every domain, so its progress lives
 // outside the domain pages.
 func (a *app) latestCFScan(w http.ResponseWriter, r *http.Request) {
+	ids := []string{}
 	id, err := a.redis.Get(r.Context(), cfLatestKey).Result()
-	if errors.Is(err, redis.Nil) {
-		respond(w, 200, nil)
-		return
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		apiError(w, 503, "任务服务暂时不可用", nil)
 		return
 	}
-	data, err := a.redis.Get(r.Context(), scanKey(id)).Bytes()
-	if errors.Is(err, redis.Nil) {
-		respond(w, 200, nil)
-		return
+	if id != "" {
+		ids = append(ids, id)
 	}
-	if err != nil {
+	// A job whose domain was deleted can no longer describe the current pool;
+	// fall back to the most recent round that still belongs to a live domain.
+	done, err := a.redis.LRange(r.Context(), cfDoneKey, 0, cfDoneKeep-1).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
 		apiError(w, 503, "任务服务暂时不可用", nil)
 		return
 	}
-	var job scanJob
-	if err = json.Unmarshal(data, &job); err != nil {
-		apiError(w, 503, "任务数据无法读取", nil)
+	ids = append(ids, done...)
+	for _, id := range ids {
+		job, err := a.loadScan(r.Context(), id)
+		if err != nil || job.TargetID == "" {
+			continue
+		}
+		var exists bool
+		if err = a.db.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM cf_targets WHERE id=$1)", job.TargetID).Scan(&exists); err != nil {
+			dbError(w, err)
+			return
+		}
+		if !exists {
+			continue
+		}
+		if job.Status == "running" && time.Since(job.UpdatedAt) > 50*time.Second {
+			job.Status = "interrupted"
+			job.Error = "任务已中断，请重新测试"
+		}
+		respond(w, 200, job)
 		return
 	}
-	if job.Status == "running" && time.Since(job.UpdatedAt) > 50*time.Second {
-		job.Status = "interrupted"
-		job.Error = "任务已中断，请重新测试"
-	}
-	respond(w, 200, job)
+	respond(w, 200, nil)
 }
 
 // The shared pool outlives a single job, so it keeps its own listing.
