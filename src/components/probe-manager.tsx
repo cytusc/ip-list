@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { Activity, ArrowRight, Clock, History } from "lucide-react";
+import { Activity, ArrowRight, Clock, History, Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { cancelScan } from "@/app/actions";
 import { protocolLabels } from "@/lib/protocol";
@@ -196,6 +196,8 @@ export function ProbeList({
           </div>
           <RecordTable
             items={filtered.slice((current - 1) * 20, current * 20)}
+            active={active}
+            onRetried={() => setVersion((value) => value + 1)}
           />
           {pages > 1 && (
             <div className="flex items-center justify-end gap-3 text-sm">
@@ -304,59 +306,77 @@ function ActiveBanner({
   );
 }
 
-function RecordTable({ items }: { items: ScanRecord[] }) {
+function RecordTable({
+  items,
+  active,
+  onRetried,
+}: {
+  items: ScanRecord[];
+  active: ActiveScan | null;
+  onRetried: () => void;
+}) {
   return (
     <>
       <div className="divide-y overflow-hidden rounded-xl border bg-white sm:hidden">
         {items.map((item) => {
           const rate = percent(item.success, item.completed);
           return (
-            <Link
-              key={item.id}
-              href={`/probes/${item.id}`}
-              className="block px-4 py-3 transition-colors active:bg-muted/50"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{item.node_name}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {protocolLabels[item.protocol] || item.protocol} · 第{" "}
-                    {item.round} 轮 ·{" "}
-                    {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测" : "全量"}
-                  </p>
+            <div key={item.id} className="px-4 py-3">
+              <Link
+                href={`/probes/${item.id}`}
+                className="block transition-colors active:bg-muted/50"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{item.node_name}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {protocolLabels[item.protocol] || item.protocol} · 第{" "}
+                      {item.round} 轮 ·{" "}
+                      {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测" : "全量"}
+                    </p>
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className={`shrink-0 ${item.status === "running" ? "text-primary" : ""}`}
+                  >
+                    {statusText[item.status] ?? item.status}
+                  </Badge>
                 </div>
-                <Badge
-                  variant="outline"
-                  className={`shrink-0 ${item.status === "running" ? "text-primary" : ""}`}
-                >
-                  {statusText[item.status] ?? item.status}
-                </Badge>
-              </div>
-              <dl className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <div className="flex gap-1">
-                  <dt>可用</dt>
-                  <dd className="font-medium text-foreground tabular-nums">
-                    {item.success} / {item.completed}
-                  </dd>
+                <dl className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <div className="flex gap-1">
+                    <dt>可用</dt>
+                    <dd className="font-medium text-foreground tabular-nums">
+                      {item.success} / {item.completed}
+                    </dd>
+                  </div>
+                  <div className="flex gap-1">
+                    <dt>可用率</dt>
+                    <dd className={`tabular-nums ${availabilityTone(rate)}`}>
+                      {rate == null ? "—" : `${rate}%`}
+                    </dd>
+                  </div>
+                  <div className="flex gap-1">
+                    <dt>开始</dt>
+                    <dd className="tabular-nums">{formatTime(item.started_at)}</dd>
+                  </div>
+                  <div className="flex gap-1">
+                    <dt>耗时</dt>
+                    <dd className="tabular-nums">
+                      {formatDuration(item.started_at, item.finished_at)}
+                    </dd>
+                  </div>
+                </dl>
+              </Link>
+              {item.status === "interrupted" && (
+                <div className="mt-3 flex justify-end">
+                  <RetryScanButton
+                    item={item}
+                    disabled={active?.protocol === item.protocol}
+                    onRetried={onRetried}
+                  />
                 </div>
-                <div className="flex gap-1">
-                  <dt>可用率</dt>
-                  <dd className={`tabular-nums ${availabilityTone(rate)}`}>
-                    {rate == null ? "—" : `${rate}%`}
-                  </dd>
-                </div>
-                <div className="flex gap-1">
-                  <dt>开始</dt>
-                  <dd className="tabular-nums">{formatTime(item.started_at)}</dd>
-                </div>
-                <div className="flex gap-1">
-                  <dt>耗时</dt>
-                  <dd className="tabular-nums">
-                    {formatDuration(item.started_at, item.finished_at)}
-                  </dd>
-                </div>
-              </dl>
-            </Link>
+              )}
+            </div>
           );
         })}
       </div>
@@ -439,9 +459,21 @@ function RecordTable({ items }: { items: ScanRecord[] }) {
                     </Badge>
                   </TableCell>
                   <TableCell className="pr-5 text-right">
-                    <span className="inline-flex items-center gap-1 text-sm text-primary group-hover:underline">
-                      查看
-                      <ArrowRight className="size-3.5" />
+                    <span className="relative z-10 inline-flex items-center gap-2">
+                      {item.status === "interrupted" && (
+                        <RetryScanButton
+                          item={item}
+                          disabled={active?.protocol === item.protocol}
+                          onRetried={onRetried}
+                        />
+                      )}
+                      <Link
+                        href={`/probes/${item.id}`}
+                        className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                      >
+                        查看
+                        <ArrowRight className="size-3.5" />
+                      </Link>
                     </span>
                   </TableCell>
                 </TableRow>
@@ -451,5 +483,45 @@ function RecordTable({ items }: { items: ScanRecord[] }) {
         </Table>
       </div>
     </>
+  );
+}
+
+function RetryScanButton({
+  item,
+  disabled,
+  onRetried,
+}: {
+  item: ScanRecord;
+  disabled: boolean;
+  onRetried: () => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="relative z-10"
+      disabled={disabled || pending}
+      title={disabled ? "同一协议已有检测任务运行" : undefined}
+      onClick={() => {
+        startTransition(async () => {
+          const result = await startScan({
+            ...item.input,
+            interval_minutes: 0,
+            incremental: false,
+          });
+          if (!result.ok) {
+            toast.error(result.error);
+            return;
+          }
+          toast.success("已重新开始全量检测");
+          onRetried();
+        });
+      }}
+    >
+      {pending ? <Loader2 className="animate-spin" /> : <RotateCcw />}
+      重试
+    </Button>
   );
 }
