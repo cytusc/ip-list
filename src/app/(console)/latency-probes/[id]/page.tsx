@@ -50,6 +50,10 @@ export default async function LatencyProbeDetailPage({
           probeName={probe.name}
           ip={ip}
           initial={history}
+          initialProbe={probe}
+          // This is an async server component: capture this request’s real time.
+          // eslint-disable-next-line react-hooks/purity
+          initialTime={Date.now()}
         />
       ) : (
         <div className="rounded-xl border border-dashed bg-white p-8 text-center">

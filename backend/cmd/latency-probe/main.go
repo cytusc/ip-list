@@ -99,7 +99,11 @@ func main() {
 		log.Printf("连接和鉴权成功：%d 个目标，间隔 %d 秒", len(cfg.IPs), cfg.Interval)
 		return
 	}
+	if !*once {
+		go heartbeatLoop(client, base, *token)
+	}
 	for {
+		roundStarted := time.Now()
 		settings, err := loadSettings(client, base, *token)
 		if err != nil {
 			if *once {
@@ -158,7 +162,7 @@ func main() {
 		if wait < 15*time.Second {
 			wait = 15 * time.Second
 		}
-		time.Sleep(wait)
+		time.Sleep(max(time.Second, wait-time.Since(roundStarted)))
 	}
 }
 
@@ -427,4 +431,14 @@ func interfaceAddress(iface net.Interface, ipv6 bool) string {
 		}
 	}
 	return ""
+}
+
+// Liveness must not depend on target count, ping timeouts or sampling interval.
+func heartbeatLoop(client *http.Client, base, token string) {
+	for {
+		if err := requestJSON(client, http.MethodPost, base+"/api/probe-agent/heartbeat", token, nil, nil); err != nil {
+			log.Printf("心跳失败: %v", err)
+		}
+		time.Sleep(20 * time.Second)
+	}
 }

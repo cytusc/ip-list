@@ -16,14 +16,16 @@ type ipCheck struct {
 }
 
 type availableIP struct {
-	ASN          string            `json:"asn"`
-	Provider     string            `json:"provider"`
-	IP           string            `json:"ip"`
-	Checks       []ipCheck         `json:"checks"`
-	ProbeDelays  []probeIPDelay    `json:"probe_delays"`
+	ASN         string         `json:"asn"`
+	Provider    string         `json:"provider"`
+	IP          string         `json:"ip"`
+	Checks      []ipCheck      `json:"checks"`
+	ProbeDelays []probeIPDelay `json:"probe_delays"`
 }
 
 type probeIPDelay struct {
+	Online    bool       `json:"online"`
+	Fresh     bool       `json:"fresh"`
 	ProbeID   string     `json:"probe_id"`
 	Name      string     `json:"name"`
 	DelayMS   *float64   `json:"delay_ms"`
@@ -115,7 +117,8 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
  FROM latency_probe_results WHERE checked_at>now()-interval '30 days'
  ORDER BY probe_id,ip,checked_at DESC,id DESC
 )
-SELECT host(t.ip),p.id::text,p.name,l.delay_ms,l.success,l.checked_at
+SELECT host(t.ip),p.id::text,p.name,l.delay_ms,l.success,l.checked_at,`+probeOnlineSQL+`,
+COALESCE(l.checked_at>now()-make_interval(secs=>`+probeSampleWindowSQL+`*2),false)
 FROM latency_probes p CROSS JOIN targets t
 LEFT JOIN latest l ON l.probe_id=p.id AND l.ip=t.ip
 WHERE p.enabled ORDER BY t.ip,p.created_at`)
@@ -132,7 +135,7 @@ WHERE p.enabled ORDER BY t.ip,p.created_at`)
 	for probeRows.Next() {
 		var ip string
 		var delay probeIPDelay
-		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.DelayMS, &delay.Success, &delay.CheckedAt); err != nil {
+		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.DelayMS, &delay.Success, &delay.CheckedAt, &delay.Online, &delay.Fresh); err != nil {
 			dbError(w, err)
 			return
 		}

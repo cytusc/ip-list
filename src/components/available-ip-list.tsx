@@ -304,11 +304,12 @@ export function AvailableIPList({
                           <Link
                             key={probe.probe_id}
                             href={`/latency-probes/${probe.probe_id}?ip=${encodeURIComponent(item.ip)}`}
-                            title={probe.checked_at ? `检测时间：${formatTime(probe.checked_at)}` : "该探针尚未检测"}
+                            title={probe.checked_at ? `最近检测：${formatTime(probe.checked_at)}；${!probe.online ? "探针离线，延迟为历史值" : !probe.fresh ? "数据已过期，等待新检测" : "当前检测结果"}` : "该探针尚未检测"}
                             className="rounded-md border bg-slate-50 px-2 py-1 text-xs hover:border-primary hover:text-primary"
                           >
                             <span className="font-medium">{probe.name}</span>
                             <span className="ml-1 font-mono tabular-nums">
+                              {!probe.online ? "离线 · 历史 " : !probe.fresh && probe.checked_at ? "过期 · " : ""}
                               {probe.success == null
                                 ? "—"
                                 : probe.success

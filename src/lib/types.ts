@@ -129,8 +129,11 @@ export type LatencyProbe = {
   last_seen?: string | null;
   created_at: string;
   online: boolean;
+  sample_window_seconds: number;
 };
 export type ProbeIPDelay = {
+  online: boolean;
+  fresh: boolean;
   probe_id: string;
   name: string;
   delay_ms: number | null;

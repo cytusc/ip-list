@@ -15,17 +15,25 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// New agents send heartbeats independently of measurement interval.
+const probeOnlineSQL = `COALESCE(enabled AND last_seen>now()-make_interval(secs=>
+CASE WHEN heartbeat_at IS NOT NULL THEN 90 ELSE GREATEST(90,interval_seconds*3) END),false)`
+
+// Account for worker batches and the system-ping deadline when aging samples.
+const probeSampleWindowSQL = `(interval_seconds + CEIL((SELECT count(DISTINCT ip) FROM node_ip_pool WHERE available)::numeric / concurrency)::integer * (CEIL(timeout_ms::numeric/1000)::integer+2) + 30)`
+
 type latencyProbe struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	IntervalSeconds int        `json:"interval_seconds"`
-	TimeoutMS       int        `json:"timeout_ms"`
-	Concurrency     int        `json:"concurrency"`
-	InterfaceName   string     `json:"interface_name"`
-	Enabled         bool       `json:"enabled"`
-	LastSeen        *time.Time `json:"last_seen"`
-	CreatedAt       time.Time  `json:"created_at"`
-	Online          bool       `json:"online"`
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	IntervalSeconds     int        `json:"interval_seconds"`
+	TimeoutMS           int        `json:"timeout_ms"`
+	Concurrency         int        `json:"concurrency"`
+	InterfaceName       string     `json:"interface_name"`
+	Enabled             bool       `json:"enabled"`
+	LastSeen            *time.Time `json:"last_seen"`
+	CreatedAt           time.Time  `json:"created_at"`
+	Online              bool       `json:"online"`
+	SampleWindowSeconds int        `json:"sample_window_seconds"`
 }
 
 type latencyProbeInput struct {
@@ -95,7 +103,7 @@ func validProbeInput(input *latencyProbeInput, create bool) map[string]string {
 func (a *app) listLatencyProbes(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `SELECT id::text,name,interval_seconds,timeout_ms,concurrency,
 interface_name,enabled,last_seen,created_at,
-COALESCE(enabled AND last_seen>now()-make_interval(secs=>interval_seconds*3),false) AS online
+`+probeOnlineSQL+` AS online,`+probeSampleWindowSQL+`
 FROM latency_probes ORDER BY created_at DESC`)
 	if err != nil {
 		dbError(w, err)
@@ -107,7 +115,7 @@ FROM latency_probes ORDER BY created_at DESC`)
 		var item latencyProbe
 		if err = rows.Scan(&item.ID, &item.Name, &item.IntervalSeconds, &item.TimeoutMS,
 			&item.Concurrency, &item.InterfaceName, &item.Enabled, &item.LastSeen,
-			&item.CreatedAt, &item.Online); err != nil {
+			&item.CreatedAt, &item.Online, &item.SampleWindowSeconds); err != nil {
 			dbError(w, err)
 			return
 		}
@@ -172,7 +180,7 @@ func (a *app) updateLatencyProbe(w http.ResponseWriter, r *http.Request) {
 	err := a.db.QueryRow(r.Context(), `UPDATE latency_probes SET name=$2,interval_seconds=$3,
 timeout_ms=$4,concurrency=$5,interface_name=$6,enabled=$7 WHERE id=$1
 RETURNING id::text,name,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,
-COALESCE(enabled AND last_seen>now()-make_interval(secs=>interval_seconds*3),false)`, id, input.Name,
+`+probeOnlineSQL, id, input.Name,
 		input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName, input.Enabled).
 		Scan(&item.ID, &item.Name, &item.IntervalSeconds, &item.TimeoutMS, &item.Concurrency,
 			&item.InterfaceName, &item.Enabled, &item.LastSeen, &item.CreatedAt, &item.Online)
@@ -415,4 +423,17 @@ SELECT count(*) FROM inserted`, id, string(body)).Scan(&saved)
 		return
 	}
 	respond(w, http.StatusOK, map[string]int64{"saved": saved})
+}
+
+func (a *app) probeAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.authorizeLatencyProbe(r)
+	if !ok {
+		apiError(w, http.StatusUnauthorized, "探针密钥无效或已停用", nil)
+		return
+	}
+	if _, err := a.db.Exec(r.Context(), "UPDATE latency_probes SET last_seen=now(),heartbeat_at=now() WHERE id=$1", id); err != nil {
+		dbError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]bool{"ok": true})
 }

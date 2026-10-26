@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useState, useTransition, cloneElement, type ReactNode, type ReactElement } from "react";
+import { useId, useEffect, useRef, useState, useTransition, cloneElement, type ReactNode, type ReactElement } from "react";
 import { Activity, Copy, Download, KeyRound, Loader2, Plus, Radio, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -44,6 +44,37 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
   const [platforms, setPlatforms] = useState<Record<string, string>>({});
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
+
+  const [statusError, setStatusError] = useState("");
+  const pendingRef = useRef(pending);
+  useEffect(() => { pendingRef.current = pending; }, [pending]);
+  useEffect(() => {
+    const controller = new AbortController();
+    let inFlight = false;
+    async function refresh() {
+      if (document.hidden || inFlight || pendingRef.current) return;
+      inFlight = true;
+      try {
+        const response = await fetch("/api/latency-probes", { cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw new Error("状态刷新失败");
+        const updated: LatencyProbe[] = await response.json();
+        if (!controller.signal.aborted && !pendingRef.current) {
+          // Only telemetry changes; preserve editor drafts and local mutations.
+          setItems(current => current.map(item => {
+            const remote = updated.find(value => value.id === item.id);
+            return remote ? { ...item, online: remote.online, last_seen: remote.last_seen } : item;
+          }));
+          setStatusError("");
+        }
+      } catch {
+        if (!controller.signal.aborted) setStatusError("状态刷新失败，当前显示上次获取的状态，请检查连接");
+      } finally { inFlight = false; }
+    }
+    void refresh();
+    const timer = window.setInterval(refresh, 10000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+  }, []);
 
   function updateDraft<K extends keyof Config>(key: K, value: Config[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -259,6 +290,8 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
           <h2 className="font-semibold">已配置的探针</h2>
           <span className="text-xs text-muted-foreground">{items.length} 个</span>
         </div>
+        <p className="text-xs text-muted-foreground">在线状态每 10 秒刷新；IP 检测超时不代表探针离线。</p>
+        {statusError && <p role="alert" className="text-sm text-amber-700">{statusError}</p>}
         {items.length ? <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full whitespace-nowrap text-sm">
           <thead className="bg-slate-50 text-left text-muted-foreground"><tr>{["名称", "状态", "检测间隔", "出口网卡", "最后连接", "操作"].map((title) => <th key={title} className="px-4 py-3 font-medium">{title}</th>)}</tr></thead>
           <tbody>{items.map((item) => <tr key={item.id} className="border-t">

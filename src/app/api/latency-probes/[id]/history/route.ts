@@ -1,5 +1,5 @@
 import { api, ApiError } from "@/lib/api";
-import type { LatencyProbeResult } from "@/lib/types";
+import type { LatencyProbe, LatencyProbeResult } from "@/lib/types";
 
 export async function GET(
   request: Request,
@@ -13,7 +13,10 @@ export async function GET(
     const { data } = await api<LatencyProbeResult[]>(
       `/latency-probes/${encodeURIComponent(id)}/history?ip=${encodeURIComponent(ip)}&hours=${encodeURIComponent(hours)}`,
     );
-    return Response.json(data, { headers: { "Cache-Control": "no-store" } });
+    const { data: probes } = await api<LatencyProbe[]>("/latency-probes");
+    const probe = probes.find(value => value.id === id);
+    if (!probe) return Response.json({ error: "探针不存在" }, { status: 404 });
+    return Response.json({ items: data, probe, server_time: new Date().toISOString() }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return Response.json(
       { error: error instanceof ApiError ? error.message : "读取延迟历史失败" },

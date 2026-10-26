@@ -137,6 +137,7 @@ API 默认为 `127.0.0.1:8081`，浏览器通过 Next.js 服务端操作访问�
 | PUT / DELETE | `/latency-probes/{id}` | 修改 / 删除探针 |
 | POST         | `/latency-probes/{id}/token` | 轮换探针密钥 |
 | GET          | `/latency-probes/{id}/history?ip=...&hours=24` | 查看单 IP 的探针延迟历史 |
+| POST         | `/probe-agent/heartbeat` | 独立心跳（Bearer 密钥，每 20 秒；90 秒无连接判定离线） |
 | GET / POST   | `/probe-agent/targets`、`/probe-agent/results` | 探针获取目标并上报结果（Bearer 密钥） |
 | GET          | `/health`        | PostgreSQL、Redis 连通性 |
 

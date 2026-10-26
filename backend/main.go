@@ -219,6 +219,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /latency-probes/{id}/history", a.protected(http.HandlerFunc(a.latencyProbeHistory)))
 	mux.HandleFunc("GET /probe-agent/targets", a.probeAgentTargets)
 	mux.HandleFunc("POST /probe-agent/results", a.reportProbeResults)
+	mux.HandleFunc("POST /probe-agent/heartbeat", a.probeAgentHeartbeat)
 	mux.Handle("GET /blacklist", a.protected(http.HandlerFunc(a.listBlacklist)))
 	mux.Handle("POST /blacklist", a.protected(http.HandlerFunc(a.addBlacklist)))
 	mux.Handle("DELETE /blacklist", a.protected(http.HandlerFunc(a.deleteBlacklist)))

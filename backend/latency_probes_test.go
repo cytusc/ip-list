@@ -84,3 +84,132 @@ func TestProbeTargetsDeduplicatesAndExcludesBlacklist(t *testing.T) {
 		t.Fatalf("unauthenticated request: HTTP %d", denied.Code)
 	}
 }
+
+func TestProbeMonitoringStatus(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires TEST_DATABASE_URL")
+	}
+	ctx := context.Background()
+	db, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !strings.HasSuffix(db.Config().ConnConfig.Database, "_test") {
+		t.Fatal("requires test database")
+	}
+	if _, err = db.Exec(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	token, hash, err := newProbeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	err = db.QueryRow(ctx, `INSERT INTO latency_probes(name,token_hash,interval_seconds,last_seen,heartbeat_at)
+ VALUES('monitoring-test',$1,3600,now()-interval '2 minutes',now()-interval '2 minutes') RETURNING id::text`, hash).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(ctx, "DELETE FROM latency_probes WHERE id=$1", id)
+	defer db.Exec(ctx, "DELETE FROM node_ip_pool WHERE protocol='latency/monitoring-test'")
+	_, err = db.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at) VALUES('latency/monitoring-test','198.18.98.1',true,1,now());`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at) VALUES($1,'198.18.98.1',42,true,now()-interval '1 day')`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{db: db}
+	getStatus := func() latencyProbe {
+		t.Helper()
+		w := httptest.NewRecorder()
+		a.listLatencyProbes(w, httptest.NewRequest("GET", "/latency-probes", nil))
+		var probes []latencyProbe
+		if w.Code != 200 {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &probes); err != nil {
+			t.Fatal(err)
+		}
+		for _, probe := range probes {
+			if probe.ID == id {
+				return probe
+			}
+		}
+		t.Fatal("missing probe")
+		return latencyProbe{}
+	}
+	if getStatus().Online {
+		t.Fatal("stale heartbeat must be offline despite long interval")
+	}
+	w := httptest.NewRecorder()
+	a.probeAgentHeartbeat(w, httptest.NewRequest("POST", "/probe-agent/heartbeat", nil))
+	if w.Code != 401 {
+		t.Fatal("heartbeat must require authentication")
+	}
+	req := httptest.NewRequest("POST", "/probe-agent/heartbeat", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	a.probeAgentHeartbeat(w, req)
+	if w.Code != 200 || !getStatus().Online {
+		t.Fatalf("fresh heartbeat must be online: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	a.availableIPs(w, httptest.NewRequest("GET", "/available-ips", nil))
+	if w.Code != 200 {
+		t.Fatalf("available IPs: %d %s", w.Code, w.Body.String())
+	}
+	var ips []availableIP
+	if err := json.Unmarshal(w.Body.Bytes(), &ips); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ip := range ips {
+		for _, delay := range ip.ProbeDelays {
+			if ip.IP == "198.18.98.1" && delay.ProbeID == id {
+				found = true
+				if !delay.Online || delay.Fresh || delay.DelayMS == nil || *delay.DelayMS != 42 {
+					t.Fatalf("online agent with historical data: %+v", delay)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing delay")
+	}
+	// A recent successful sample is historical once its agent disconnects.
+	_, err = db.Exec(ctx, "UPDATE latency_probe_results SET checked_at=now() WHERE probe_id=$1", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(ctx, "UPDATE latency_probes SET last_seen=now()-interval '2 minutes' WHERE id=$1", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	a.availableIPs(w, httptest.NewRequest("GET", "/available-ips", nil))
+	if w.Code != 200 {
+		t.Fatalf("available IPs: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &ips); err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range ips {
+		for _, delay := range ip.ProbeDelays {
+			if ip.IP == "198.18.98.1" && delay.ProbeID == id && (delay.Online || !delay.Fresh) {
+				t.Fatalf("fresh sample must not imply online: %+v", delay)
+			}
+		}
+	}
+	// Legacy agents remain supported until they are upgraded to independent heartbeats.
+	_, err = db.Exec(ctx, "UPDATE latency_probes SET heartbeat_at=NULL,last_seen=now()-interval '2 minutes' WHERE id=$1", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !getStatus().Online {
+		t.Fatal("legacy interval-based status changed")
+	}
+}
