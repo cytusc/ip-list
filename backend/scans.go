@@ -177,7 +177,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		ips, err = expandPrefixes(cidrs)
+		ips, err = a.scanIPsExcludingBlacklist(r.Context(), cidrs)
 	}
 	if err != nil {
 		apiError(w, 422, err.Error(), nil)

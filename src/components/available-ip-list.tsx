@@ -4,7 +4,7 @@ import Link from "next/link";
 import { NodeLinksDialog } from "@/components/node-links-dialog";
 import { IPLocationCell } from "@/components/ip-location";
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy, RefreshCw, Search } from "lucide-react";
+import { Ban, Check, Copy, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 import type { AvailableIP } from "@/lib/types";
 import { toast } from "sonner";
+import { addBlacklist } from "@/app/actions";
 
 import { protocolLabels } from "@/lib/protocol";
 const protocolBadgeColors: Record<string, string> = {
@@ -135,6 +136,16 @@ export function AvailableIPList({
     }
   }
 
+  async function blacklist(ip: string) {
+    const result = await addBlacklist([ip]);
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+    setItems((current) => current.filter((item) => item.ip !== ip));
+    toast.success(`${ip} 已加入黑名单`);
+  }
+
   return (
     <div className="space-y-6">
       {linkIP && (
@@ -242,7 +253,7 @@ export function AvailableIPList({
               <TableHead className="hidden pr-5 md:table-cell">
                 最近测通
               </TableHead>
-              <TableHead>节点链接</TableHead>
+              <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -289,6 +300,7 @@ export function AvailableIPList({
                     {formatTime(latest.checked_at)}
                   </TableCell>
                   <TableCell className="align-top">
+                    <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"
                       size="sm"
@@ -297,6 +309,10 @@ export function AvailableIPList({
                     >
                       生成节点
                     </Button>
+                    <Button variant="ghost" size="sm" onClick={() => blacklist(item.ip)} aria-label={`屏蔽 ${item.ip}`}>
+                      <Ban />屏蔽
+                    </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               );

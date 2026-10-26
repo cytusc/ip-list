@@ -67,7 +67,7 @@ func (a *app) resumeDueNodeSchedules(ctx context.Context) error {
 		if len(cidrs) == 0 {
 			continue
 		}
-		ips, err := expandPrefixes(cidrs)
+		ips, err := a.scanIPsExcludingBlacklist(ctx, cidrs)
 		if err != nil {
 			continue
 		}

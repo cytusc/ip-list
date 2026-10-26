@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS networks (
   UNIQUE (cidr)
 );
 
+-- Individual addresses excluded from all proxy and CF scans.
+CREATE TABLE IF NOT EXISTS ip_blacklist (
+  ip inet PRIMARY KEY,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Existing installations: run -init again; existing data is preserved.
 ALTER TABLE nodes ADD COLUMN IF NOT EXISTS share_uri text NOT NULL DEFAULT '';
 ALTER TABLE nodes DROP CONSTRAINT IF EXISTS nodes_address_port_key;

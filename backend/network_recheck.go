@@ -34,7 +34,7 @@ func (a *app) recheckNetwork(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "请先启用该网段后再重新检测", nil)
 		return
 	}
-	ips, err := expandPrefixes([]string{cidr})
+	ips, err := a.scanIPsExcludingBlacklist(r.Context(), []string{cidr})
 	if err != nil {
 		apiError(w, 422, err.Error(), nil)
 		return

@@ -117,6 +117,7 @@ export type AvailableIP = {
   provider?: string;
   checks: IPCheck[];
 };
+export type BlacklistedIP = { ip: string; created_at: string };
 export type IPLocation = {
   country: string;
   region: string;

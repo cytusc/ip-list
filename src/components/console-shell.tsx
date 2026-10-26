@@ -12,6 +12,7 @@ import {
   LogOut,
   ChevronRight,
   Loader2,
+  Ban,
 } from "lucide-react";
 import { toast } from "sonner";
 import { logout } from "@/app/actions";
@@ -24,6 +25,7 @@ const navigation = [
   { href: "/available-ips", label: "可用 IP", icon: ListChecks },
   { href: "/nodes", label: "节点管理", icon: Server },
   { href: "/networks", label: "网段配置", icon: Network },
+  { href: "/blacklist", label: "IP 黑名单", icon: Ban },
 ];
 export function ConsoleShell({
   username,

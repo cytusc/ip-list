@@ -24,5 +24,24 @@ func (a *app) checkedScanIPs(ctx context.Context, cidrs []string, protocol strin
 		}
 		checked = append(checked, ip)
 	}
-	return checked, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	blocked, err := a.blacklistIPs(ctx, cidrs)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(checked)+len(blocked))
+	for _, ip := range checked {
+		seen[ip] = true
+	}
+	for _, ip := range blocked {
+		if !seen[ip] {
+			checked = append(checked, ip)
+			seen[ip] = true
+		}
+	}
+	return checked, nil
 }

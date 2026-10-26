@@ -175,6 +175,34 @@ export async function importNodes(links: string): Promise<ActionResult> {
     return failure(error);
   }
 }
+export async function addBlacklist(ips: string[]): Promise<
+  | { ok: true; added: number; skipped: number }
+  | { ok: false; error: string }
+> {
+  try {
+    const { data } = await api<{ added: number; skipped: number }>("/blacklist", {
+      method: "POST",
+      body: JSON.stringify({ ips }),
+    });
+    revalidatePath("/blacklist");
+    revalidatePath("/available-ips");
+    revalidatePath("/cf", "layout");
+    return { ok: true, ...data };
+  } catch (error) {
+    return { ok: false, error: error instanceof ApiError ? error.fields?.ip || error.message : "添加失败，请重试" };
+  }
+}
+export async function removeBlacklist(ip: string): Promise<ActionResult> {
+  try {
+    await api("/blacklist", { method: "DELETE", body: JSON.stringify({ ip }) });
+    revalidatePath("/blacklist");
+    revalidatePath("/available-ips");
+    revalidatePath("/cf", "layout");
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
+}
 export async function startScan(
   input: unknown,
 ): Promise<

@@ -327,7 +327,7 @@ func (a *app) latestCFScan(w http.ResponseWriter, r *http.Request) {
 // The shared pool outlives a single job, so it keeps its own listing.
 func (a *app) cfIPPool(w http.ResponseWriter, r *http.Request) {
 	var data json.RawMessage
-	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_ip_pool s `+networkInfoJoin+` WHERE s.available ORDER BY s.ip) r`).Scan(&data)
+	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_ip_pool s `+networkInfoJoin+` WHERE s.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) ORDER BY s.ip) r`).Scan(&data)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -417,6 +417,12 @@ func (a *app) startCFScan(w http.ResponseWriter, r *http.Request) {
 	var checked []string
 	if input.Incremental {
 		checked, err = a.checkedScanIPs(r.Context(), cidrs, "")
+		if err != nil {
+			dbError(w, err)
+			return
+		}
+	} else {
+		checked, err = a.blacklistIPs(r.Context(), cidrs)
 		if err != nil {
 			dbError(w, err)
 			return

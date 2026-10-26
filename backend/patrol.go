@@ -42,7 +42,7 @@ func (a *app) runPatrol(job scanJob, input scanInput, template map[string]any, a
 					return
 				}
 				if len(cidrs) > 0 {
-					all, err = expandPrefixes(cidrs)
+					all, err = a.scanIPsExcludingBlacklist(a.scanContext, cidrs)
 					if err != nil {
 						job.Status = "interrupted"
 						job.Error = err.Error()

@@ -73,7 +73,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `
  SELECT host(s.ip),s.protocol,s.delay_ms, '', '协议共用 IP 池',s.checked_at,COALESCE(info.asn,''),COALESCE(info.provider,'')
  FROM node_ip_pool s `+networkInfoJoin+`
- WHERE s.available
+ WHERE s.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
  ORDER BY s.ip,s.protocol`)
 	if err != nil {
 		dbError(w, err)
