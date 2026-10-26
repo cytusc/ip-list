@@ -21,6 +21,22 @@ type networkMetadata struct {
 	Provider string `json:"provider"`
 }
 
+func prefixLastAddress(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Masked().Addr()
+	if addr.Is4() {
+		bytes := addr.As4()
+		for bit := prefix.Bits(); bit < 32; bit++ {
+			bytes[bit/8] |= 1 << (7 - bit%8)
+		}
+		return netip.AddrFrom4(bytes)
+	}
+	bytes := addr.As16()
+	for bit := prefix.Bits(); bit < 128; bit++ {
+		bytes[bit/8] |= 1 << (7 - bit%8)
+	}
+	return netip.AddrFrom16(bytes)
+}
+
 func publicMetadataPrefix(p netip.Prefix) bool {
 	ip := p.Addr()
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.Is4In6() {
@@ -53,21 +69,35 @@ func lookupNetworkMetadata(ctx context.Context, client *http.Client, base string
 		}
 		return json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(target)
 	}
-	var network struct {
-		Status string
-		Data   struct {
-			ASNs   []string `json:"asns"`
-			Prefix string
+	last := prefixLastAddress(prefix)
+	cursor := prefix.Masked().Addr()
+	rawASNs := []string{}
+	for routes := 0; prefix.Contains(cursor); routes++ {
+		if routes >= 64 {
+			return result, errors.New("too many announced routes covering this range")
 		}
+		var network struct {
+			Status string
+			Data   struct {
+				ASNs   []string `json:"asns"`
+				Prefix string
+			}
+		}
+		if err := get("network-info", cursor.String(), &network); err != nil {
+			return result, err
+		}
+		announced, err := netip.ParsePrefix(network.Data.Prefix)
+		if network.Status != "ok" || err != nil || len(network.Data.ASNs) == 0 || !announced.Contains(cursor) {
+			return result, errors.New("no unique ASN covering this range")
+		}
+		rawASNs = append(rawASNs, network.Data.ASNs...)
+		routeLast := prefixLastAddress(announced)
+		if routeLast.Compare(last) >= 0 {
+			break
+		}
+		cursor = routeLast.Next()
 	}
-	if err := get("network-info", prefix.Addr().String(), &network); err != nil {
-		return result, err
-	}
-	announced, err := netip.ParsePrefix(network.Data.Prefix)
-	if network.Status != "ok" || err != nil || len(network.Data.ASNs) == 0 || announced.Bits() > prefix.Bits() || !announced.Contains(prefix.Addr()) {
-		return result, errors.New("no unique ASN covering this range")
-	}
-	asns, err := normalizeASNs(strings.Join(network.Data.ASNs, ","))
+	asns, err := normalizeASNs(strings.Join(rawASNs, ","))
 	if err != nil {
 		return result, err
 	}
