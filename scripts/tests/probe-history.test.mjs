@@ -67,3 +67,30 @@ test('success resets failure streak and silence or duplicate timestamps cannot c
  assert.deepEqual(classifyProbeSamples([1,2,3,4].map(i=>sample(i,0,0,false)),106),['pending','pending','pending','pending']);
  assert.deepEqual(classifyProbeSamples([sample(1,3,0,false),sample(2,2,0,false),sample(3,1,0,false),sample(4,0,0,false)],106),['pending','pending','pending','pending']);
 });
+
+test('minute cells average successful samples and ignore an isolated timeout', async () => {
+ const { aggregateProbeMinutes } = await import('../../src/lib/probe-history.ts');
+ const end=Date.parse('2026-10-26T04:01:00Z');
+ const s=(id,seconds,delay,success=true)=>({id,ip:'1.1.1.1',checked_at:new Date(end-seconds*1000).toISOString(),delay_ms:delay,success});
+ const cells=aggregateProbeMinutes([s(1,60,70),s(2,40,0,false),s(3,20,90),s(4,0,110)],end,106);
+ assert.equal(cells.length,16);
+ assert.equal(cells[14].delay_ms,80);
+ assert.equal(cells[14].successCount,2);assert.equal(cells[14].totalCount,3);
+ assert.equal(cells[14].unavailable,false);
+ assert.equal(cells[15].delay_ms,110);
+ assert.equal(cells[13].delay_ms,null);
+ assert.equal(cells[15].start-cells[14].start,60000);
+});
+test('minute cells retain missing minutes and confirm sustained loss across minute boundaries', async () => {
+ const { aggregateProbeMinutes } = await import('../../src/lib/probe-history.ts');
+ const end=Date.parse('2026-10-26T04:01:00Z');
+ const s=(id,seconds,success=false)=>({id,ip:'1.1.1.1',checked_at:new Date(end-seconds*1000).toISOString(),delay_ms:success?80:0,success});
+ const cells=aggregateProbeMinutes([s(1,60),s(2,40),s(3,20),s(4,0)],end,106);
+ assert.equal(cells[14].delay_ms,null);assert.equal(cells[14].unavailable,false);
+ assert.equal(cells[15].delay_ms,null);assert.equal(cells[15].unavailable,true);
+ const recovered=aggregateProbeMinutes([s(1,80),s(2,60),s(3,40),s(4,20),s(5,0,true)],end,106);
+ assert.equal(recovered[15].delay_ms,80);assert.equal(recovered[15].unavailable,false);
+ const stale=aggregateProbeMinutes([s(1,180,true)],end,106);
+ assert.equal(stale[12].delay_ms,80);assert.equal(stale[15].totalCount,0);
+ assert.ok(aggregateProbeMinutes([],end,106).every(c=>c.delay_ms===null && !c.unavailable));
+});

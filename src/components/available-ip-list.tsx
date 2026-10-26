@@ -235,7 +235,7 @@ export function AvailableIPList({
               </span>
             </h2>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              色条每格代表一次探针采样，左旧右新，最多显示 16 次。悬停查看延迟，点击查看曲线。
+              色条每格代表 1 分钟的平均延迟，忽略偶发超时；左旧右新，显示最近 16 分钟。当前分钟持续更新，悬停查看详情。
             </p>
           </div>
           <div className="flex gap-2">

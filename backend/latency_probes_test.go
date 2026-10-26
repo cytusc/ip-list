@@ -212,7 +212,7 @@ func TestProbeMonitoringStatus(t *testing.T) {
 	if !getStatus().Online {
 		t.Fatal("legacy interval-based status changed")
 	}
-	// The compact list history is bounded and chronological, including failures.
+	// List history covers 17 calendar minutes plus the current minute, including failures.
 	_, err = db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
  SELECT $1,'198.18.98.1',i,i%2=0,now()-make_interval(secs=>i*60) FROM generate_series(1,20) AS i`, id)
 	if err != nil {
@@ -231,7 +231,7 @@ func TestProbeMonitoringStatus(t *testing.T) {
 			if ip.IP != "198.18.98.1" || delay.ProbeID != id {
 				continue
 			}
-			if len(delay.Samples) != 16 || delay.Samples[0].DelayMS != 15 || delay.Samples[0].Success || delay.Samples[15].DelayMS != 42 {
+			if len(delay.Samples) != 18 || delay.Samples[0].DelayMS != 17 || delay.Samples[0].Success || delay.Samples[17].DelayMS != 42 || delay.WindowEnd.IsZero() {
 				t.Fatalf("unexpected compact history: %+v", delay.Samples)
 			}
 			for i := 1; i < len(delay.Samples); i++ {

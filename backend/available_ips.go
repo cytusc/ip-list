@@ -24,6 +24,7 @@ type availableIP struct {
 }
 
 type probeIPDelay struct {
+	WindowEnd           time.Time            `json:"window_end"`
 	SampleWindowSeconds int                  `json:"sample_window_seconds"`
 	Mode                string               `json:"mode"`
 	TCPPort             int                  `json:"tcp_port"`
@@ -123,14 +124,14 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 )
 SELECT host(t.ip),p.id::text,p.name,p.mode,p.tcp_port,l.delay_ms,l.success,l.checked_at,`+probeOnlineSQL+`,
 COALESCE(l.checked_at>now()-make_interval(secs=>`+probeSampleWindowSQL+`*2),false),
-COALESCE(recent.samples,'[]'::jsonb),`+probeSampleWindowSQL+`
+COALESCE(recent.samples,'[]'::jsonb),`+probeSampleWindowSQL+`,now()
 FROM latency_probes p CROSS JOIN targets t
 LEFT JOIN latest l ON l.probe_id=p.id AND l.ip=t.ip AND l.mode=p.mode AND l.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
 LEFT JOIN LATERAL (
  SELECT jsonb_agg(sample ORDER BY sample.checked_at,sample.id) AS samples FROM (
   SELECT id,host(ip) AS ip,delay_ms,success,checked_at FROM latency_probe_results
-  WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END AND checked_at>now()-interval '30 days'
-  ORDER BY checked_at DESC,id DESC LIMIT 16
+  WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END AND checked_at>=date_trunc('minute',now())-interval '17 minutes'
+  ORDER BY checked_at DESC,id DESC LIMIT 256
  ) sample
 ) recent ON true
 WHERE p.enabled ORDER BY t.ip,p.created_at`)
@@ -148,7 +149,7 @@ WHERE p.enabled ORDER BY t.ip,p.created_at`)
 		var ip string
 		var delay probeIPDelay
 		var samples []byte
-		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.Mode, &delay.TCPPort, &delay.DelayMS, &delay.Success, &delay.CheckedAt, &delay.Online, &delay.Fresh, &samples, &delay.SampleWindowSeconds); err != nil {
+		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.Mode, &delay.TCPPort, &delay.DelayMS, &delay.Success, &delay.CheckedAt, &delay.Online, &delay.Fresh, &samples, &delay.SampleWindowSeconds, &delay.WindowEnd); err != nil {
 			dbError(w, err)
 			return
 		}

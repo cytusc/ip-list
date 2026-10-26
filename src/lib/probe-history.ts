@@ -55,3 +55,28 @@ export function analyzeProbeHistory(items: LatencyProbeResult[], now: number, ho
     loss: samples.length ? failed.length / samples.length * 100 : null,
   };
 }
+
+
+// Calendar-minute buckets keep missing minutes visible and never average failed samples as zero.
+export function aggregateProbeMinutes(items: LatencyProbeResult[], now: number, gapSeconds: number) {
+  const end = Math.floor(now / 60000) * 60000;
+  const samples = items.filter(sample => Number.isFinite(Date.parse(sample.checked_at)) && Date.parse(sample.checked_at) <= now)
+    .sort((a, b) => Date.parse(a.checked_at) - Date.parse(b.checked_at) || a.id - b.id);
+  const states = classifyProbeSamples(samples, gapSeconds);
+  const buckets = Array.from({ length: 16 }, (_, index) => ({
+    start: end - (15 - index) * 60000, delay_ms: null as number | null,
+    successCount: 0, totalCount: 0, unavailable: false,
+  }));
+  for (const [index, sample] of samples.entries()) {
+    const minute = Math.floor(Date.parse(sample.checked_at) / 60000) * 60000;
+    const bucket = buckets[(minute - buckets[0].start) / 60000];
+    if (!bucket) continue;
+    bucket.totalCount++;
+    bucket.unavailable = states[index] === "unavailable";
+    if (sample.success && Number.isFinite(sample.delay_ms) && sample.delay_ms >= 0) {
+      bucket.delay_ms = ((bucket.delay_ms ?? 0) * bucket.successCount + sample.delay_ms) / (bucket.successCount + 1);
+      bucket.successCount++;
+    }
+  }
+  return buckets;
+}

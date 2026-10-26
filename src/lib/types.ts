@@ -134,6 +134,7 @@ export type LatencyProbe = {
   sample_window_seconds: number;
 };
 export type ProbeIPDelay = {
+  window_end?: string;
   sample_window_seconds?: number;
   mode: "icmp" | "tcp";
   tcp_port: number;
