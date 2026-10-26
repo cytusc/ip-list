@@ -27,6 +27,13 @@ import type { AvailableIP } from "@/lib/types";
 import { toast } from "sonner";
 
 import { protocolLabels } from "@/lib/protocol";
+const protocolBadgeColors: Record<string, string> = {
+  "vless/httpupgrade": "border-blue-200 bg-blue-50 text-blue-800",
+  "vless/xhttp": "border-violet-200 bg-violet-50 text-violet-800",
+  "vless/grpc": "border-amber-200 bg-amber-50 text-amber-800",
+  "vless/ws": "border-cyan-200 bg-cyan-50 text-cyan-800",
+  "vless/tcp": "border-rose-200 bg-rose-50 text-rose-800",
+};
 const pageSize = 20;
 const formatTime = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
@@ -231,7 +238,7 @@ export function AvailableIPList({
               <TableHead className="pl-5">IP 地址</TableHead>
               <TableHead>归属地</TableHead>
               <TableHead>ASN / 服务商</TableHead>
-              <TableHead>支持的协议 · 延迟</TableHead>
+              <TableHead>支持的协议</TableHead>
               <TableHead className="hidden pr-5 md:table-cell">
                 最近测通
               </TableHead>
@@ -263,27 +270,14 @@ export function AvailableIPList({
                   <TableCell className="whitespace-normal">
                     <div className="flex flex-wrap gap-2">
                       {protocols.map((type) => {
-                        const checks = item.checks.filter(
-                          (c) => c.protocol === type,
-                        );
-                        const fastest = Math.min(
-                          ...checks.map((c) => c.delay_ms),
-                        );
                         return (
-                          <div key={type} className="space-y-1">
-                            <Badge
-                              variant="outline"
-                              className="gap-2 border-emerald-200 bg-emerald-50 text-emerald-800"
-                            >
-                              {protocolLabels[type] || type}
-                              <span className="font-normal tabular-nums">
-                                {fastest} ms
-                              </span>
-                            </Badge>
-                            <p className="max-w-56 break-words text-xs leading-5 text-muted-foreground">
-                              同协议与传输方式的所有节点共用
-                            </p>
-                          </div>
+                          <Badge
+                            key={type}
+                            variant="outline"
+                            className={protocolBadgeColors[type] || ""}
+                          >
+                            {protocolLabels[type] || type}
+                          </Badge>
                         );
                       })}
                     </div>
