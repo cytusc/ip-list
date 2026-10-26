@@ -34,7 +34,7 @@ const blank: Config = {
   name: "",
   mode: "tcp",
   tcp_port: 443,
-  interval_seconds: 300,
+  interval_seconds: 20,
   timeout_ms: 1000,
   concurrency: 64,
   interface_name: "",

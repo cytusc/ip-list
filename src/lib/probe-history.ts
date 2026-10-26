@@ -1,5 +1,21 @@
 import type { LatencyProbeResult } from "./types";
 
+// Require both repeated failures and elapsed time. Missing reports never count as failures.
+export function classifyProbeSamples(items: LatencyProbeResult[], gapSeconds: number) {
+  let count = 0, since = 0, previous = NaN;
+  return items.map(sample => {
+    const time = Date.parse(sample.checked_at);
+    if (sample.success) { count = 0; since = 0; previous = time; return "available" as const; }
+    if (!Number.isFinite(time) || !Number.isFinite(previous) || time <= previous || time - previous > gapSeconds * 1000) {
+      count = 0; since = time;
+    }
+    if (count === 0) since = time;
+    count++;
+    previous = time;
+    return count >= 4 && time - since >= 60000 ? "unavailable" as const : "pending" as const;
+  });
+}
+
 export function analyzeProbeHistory(items: LatencyProbeResult[], now: number, hours: number, gapSeconds: number) {
   const from = now - hours * 3600000;
   const samples = items.filter(item => {
@@ -10,9 +26,10 @@ export function analyzeProbeHistory(items: LatencyProbeResult[], now: number, ho
   let segment: LatencyProbeResult[] = [];
   let previous: LatencyProbeResult | undefined;
   const changes: number[] = [];
-  for (const sample of samples) {
+  const states = classifyProbeSamples(samples, gapSeconds);
+  for (const [index, sample] of samples.entries()) {
     const continuous = previous?.success && Date.parse(sample.checked_at) - Date.parse(previous.checked_at) <= gapSeconds * 1000;
-    if (!sample.success || !continuous) {
+    if (states[index] === "unavailable" || (sample.success && !continuous)) {
       if (segment.length) segments.push(segment);
       segment = [];
     }
@@ -20,13 +37,15 @@ export function analyzeProbeHistory(items: LatencyProbeResult[], now: number, ho
       segment.push(sample);
       if (continuous && previous) changes.push(Math.abs(sample.delay_ms - previous.delay_ms));
     }
-    previous = sample;
+    if (sample.success || states[index] === "unavailable") previous = sample;
   }
   if (segment.length) segments.push(segment);
   const values = samples.filter(item => item.success).map(item => item.delay_ms).sort((a, b) => a - b);
   const failed = samples.filter(item => !item.success);
   return {
-    from, samples, segments, failed,
+    from, samples, segments, failed, states,
+    unavailable: samples.filter((_, index) => states[index] === "unavailable"),
+    currentState: states.at(-1),
     latest: samples.at(-1),
     average: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
     minimum: values[0] ?? null,

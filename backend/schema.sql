@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS latency_probes (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  name varchar(80) NOT NULL UNIQUE,
  token_hash bytea NOT NULL UNIQUE,
- interval_seconds integer NOT NULL DEFAULT 300 CHECK (interval_seconds BETWEEN 15 AND 86400),
+ interval_seconds integer NOT NULL DEFAULT 20 CHECK (interval_seconds BETWEEN 15 AND 86400),
  timeout_ms integer NOT NULL DEFAULT 1000 CHECK (timeout_ms BETWEEN 250 AND 10000),
  concurrency integer NOT NULL DEFAULT 64 CHECK (concurrency BETWEEN 1 AND 512),
  interface_name varchar(100) NOT NULL DEFAULT '',
@@ -258,3 +258,11 @@ ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS tcp_port integer NOT NULL DE
 ALTER TABLE latency_probe_results ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'icmp' CHECK (mode IN ('icmp','tcp'));
 ALTER TABLE latency_probe_results ADD COLUMN IF NOT EXISTS tcp_port integer NOT NULL DEFAULT 0 CHECK ((mode='icmp' AND tcp_port=0) OR (mode='tcp' AND tcp_port BETWEEN 1 AND 65535));
 CREATE INDEX IF NOT EXISTS latency_probe_results_measurement_idx ON latency_probe_results(probe_id,ip,mode,tcp_port,checked_at DESC);
+
+-- Apply the requested 20-second interval once; later manual edits survive restart.
+ALTER TABLE latency_probes ALTER COLUMN interval_seconds SET DEFAULT 20;
+WITH upgrade AS (
+ INSERT INTO app_migrations(name) VALUES('probe_interval_20_seconds_v1')
+ ON CONFLICT DO NOTHING RETURNING name
+)
+UPDATE latency_probes SET interval_seconds=20 WHERE EXISTS(SELECT 1 FROM upgrade);

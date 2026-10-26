@@ -316,8 +316,8 @@ export function AvailableIPList({
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 pb-4 text-xs text-muted-foreground" aria-label="探针色条图例">
           <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-emerald-500" />低延迟</span>
           <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-amber-400" />中等延迟</span>
-          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-rose-500" />高延迟 / 超时</span>
-          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-slate-200" />缺失 / 过期</span>
+          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-rose-500" />高延迟 / 持续不可用</span>
+          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-slate-200" />待确认 / 缺失 / 过期</span>
           <span>按 IP 地区分级 · 悬停查看阈值</span>
         </div>
         <Table>

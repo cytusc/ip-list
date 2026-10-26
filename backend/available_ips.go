@@ -24,16 +24,17 @@ type availableIP struct {
 }
 
 type probeIPDelay struct {
-	Mode      string               `json:"mode"`
-	TCPPort   int                  `json:"tcp_port"`
-	Samples   []latencyProbeResult `json:"samples"`
-	Online    bool                 `json:"online"`
-	Fresh     bool                 `json:"fresh"`
-	ProbeID   string               `json:"probe_id"`
-	Name      string               `json:"name"`
-	DelayMS   *float64             `json:"delay_ms"`
-	Success   *bool                `json:"success"`
-	CheckedAt *time.Time           `json:"checked_at"`
+	SampleWindowSeconds int                  `json:"sample_window_seconds"`
+	Mode                string               `json:"mode"`
+	TCPPort             int                  `json:"tcp_port"`
+	Samples             []latencyProbeResult `json:"samples"`
+	Online              bool                 `json:"online"`
+	Fresh               bool                 `json:"fresh"`
+	ProbeID             string               `json:"probe_id"`
+	Name                string               `json:"name"`
+	DelayMS             *float64             `json:"delay_ms"`
+	Success             *bool                `json:"success"`
+	CheckedAt           *time.Time           `json:"checked_at"`
 }
 
 // One bulk write per round; completed probes also survive a manual stop.
@@ -122,7 +123,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 )
 SELECT host(t.ip),p.id::text,p.name,p.mode,p.tcp_port,l.delay_ms,l.success,l.checked_at,`+probeOnlineSQL+`,
 COALESCE(l.checked_at>now()-make_interval(secs=>`+probeSampleWindowSQL+`*2),false),
-COALESCE(recent.samples,'[]'::jsonb)
+COALESCE(recent.samples,'[]'::jsonb),`+probeSampleWindowSQL+`
 FROM latency_probes p CROSS JOIN targets t
 LEFT JOIN latest l ON l.probe_id=p.id AND l.ip=t.ip AND l.mode=p.mode AND l.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
 LEFT JOIN LATERAL (
@@ -147,7 +148,7 @@ WHERE p.enabled ORDER BY t.ip,p.created_at`)
 		var ip string
 		var delay probeIPDelay
 		var samples []byte
-		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.Mode, &delay.TCPPort, &delay.DelayMS, &delay.Success, &delay.CheckedAt, &delay.Online, &delay.Fresh, &samples); err != nil {
+		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.Mode, &delay.TCPPort, &delay.DelayMS, &delay.Success, &delay.CheckedAt, &delay.Online, &delay.Fresh, &samples, &delay.SampleWindowSeconds); err != nil {
 			dbError(w, err)
 			return
 		}

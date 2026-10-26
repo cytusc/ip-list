@@ -65,7 +65,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
   const measurement = probe.mode === "tcp" ? `TCP 建连延迟 :${probe.tcp_port}` : "ICMP 往返延迟";
   const failure = probe.mode === "tcp" ? "连接失败或超时" : "ICMP 超时";
   const stale = current && now - Date.parse(current.checked_at) > gapSeconds * 1000;
-  const state = !probe.enabled ? "已停用" : !probe.online ? "探针离线" : !current ? "等待检测" : stale ? "数据已过期" : current.success ? "检测成功" : failure;
+  const state = !probe.enabled ? "已停用" : !probe.online ? "探针离线" : !current ? "等待检测" : stale ? "数据已过期" : current.success ? "检测成功" : data.currentState === "unavailable" ? "持续不可用" : "偶发超时，等待确认";
   const hovered = selected == null ? undefined : data.samples[selected];
   function selectAt(clientX: number, bounds: DOMRect) {
     const position = Math.max(0, Math.min(1, ((clientX - bounds.left) / bounds.width * width - plot.left) / plotWidth));
@@ -123,19 +123,19 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
               return <text key={fraction} x={plot.left + fraction * plotWidth} y={height - 12} textAnchor={fraction === 0 ? "start" : fraction === 1 ? "end" : "middle"} className="fill-slate-500 text-[12px]">{new Date(value).toLocaleString("zh-CN", { ...(hours >= 24 ? { month: "2-digit", day: "2-digit" } as const : {}), hour: "2-digit", minute: "2-digit", hour12: false })}</text>;
             })}
             <text x={plot.left - 10} y={height - 43} textAnchor="end" className="fill-red-600 text-[12px]">失败</text>
-            {data.failed.map(point => <line key={point.id} x1={x(point.checked_at)} x2={x(point.checked_at)} y1={height - 56} y2={height - 36} stroke="#ef4444" strokeWidth="2" />)}
+            {data.failed.map(point => <line key={point.id} x1={x(point.checked_at)} x2={x(point.checked_at)} y1={height - 56} y2={height - 36} stroke={data.unavailable.includes(point) ? "#ef4444" : "#94a3b8"} strokeWidth="2" />)}
             {data.segments.map((segment, index) => <g key={index} data-segment="latency">
               <polyline points={segment.map(point => `${x(point.checked_at)},${y(point.delay_ms)}`).join(" ")} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinejoin="round" />
               {segment.filter((_, index) => segment.length < 600 || index % Math.ceil(segment.length / 600) === 0).map(point => <circle key={point.id} cx={x(point.checked_at)} cy={y(point.delay_ms)} r="2.5" fill="#2563eb" />)}
             </g>)}
             {hovered && <g pointerEvents="none">
               <line x1={x(hovered.checked_at)} x2={x(hovered.checked_at)} y1={plot.top} y2={height - 33} stroke="#64748b" strokeDasharray="3 3" />
-              <circle cx={x(hovered.checked_at)} cy={hovered.success ? y(hovered.delay_ms) : height - 46} r="5" fill={hovered.success ? "#2563eb" : "#ef4444"} stroke="white" strokeWidth="2" />
+              <circle cx={x(hovered.checked_at)} cy={hovered.success ? y(hovered.delay_ms) : height - 46} r="5" fill={hovered.success ? "#2563eb" : data.unavailable.includes(hovered) ? "#ef4444" : "#94a3b8"} stroke="white" strokeWidth="2" />
             </g>}
           </svg>
         </div>
       ) : <div className="rounded-lg border border-dashed py-14 text-center"><Activity className="mx-auto size-7 text-slate-300" /><p className="mt-3 text-sm font-medium">此时间段暂无延迟记录</p><p className="mt-1 text-xs text-muted-foreground">检查探针连接，或选择更长的时间范围。</p></div>}
-      <p className="text-xs text-muted-foreground">蓝线为{measurement}，红色标记为检测失败，断报留空且不连线。失败率仅统计已上报采样；抖动为连续成功采样延迟差的平均绝对值。仅显示当前模式及端口的历史记录。</p>
+      <p className="text-xs text-muted-foreground">蓝线为{measurement}，灰色标记为待确认超时，连续至少 4 次失败且持续满 60 秒后标红；成功一次即恢复。偶发超时不参与延迟计算，断报留空且不连线。失败率仅统计已上报采样；抖动为连续成功采样延迟差的平均绝对值。仅显示当前模式及端口的历史记录。</p>
     </section>
   );
 }

@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeProbeHistory } from '../../src/lib/probe-history.ts';
+import { analyzeProbeHistory, classifyProbeSamples } from '../../src/lib/probe-history.ts';
 const now = Date.parse('2026-10-26T04:00:00Z');
 const sample = (id, secondsAgo, delay, success = true) => ({id, ip:'1.1.1.1', delay_ms:delay, success, checked_at:new Date(now-secondsAgo*1000).toISOString()});
-test('timeouts and reporting gaps split lines and jitter', () => {
+test('isolated timeouts are skipped while reporting gaps split lines', () => {
  const data = analyzeProbeHistory([sample(1,600,10),sample(2,540,20),sample(3,480,0,false),sample(4,420,30),sample(5,60,40)],now,1,180);
- assert.deepEqual(data.segments.map(s=>s.map(p=>p.id)),[[1,2],[4],[5]]);
+ assert.deepEqual(data.segments.map(s=>s.map(p=>p.id)),[[1,2,4],[5]]);
  assert.equal(data.jitter,10);
  assert.equal(data.average,25);
  assert.equal(data.p95,40);
@@ -49,4 +49,21 @@ test('regional quality targets distinguish nearby destinations and US regions', 
  assert.equal(latencyQuality(NaN,true,'US'),'unknown');
  assert.equal(latencyQuality(180,true,'US','California'),'yellow');
  assert.equal(latencyQuality(180,true,'US','New York'),'green');
+});
+
+
+test('isolated failures stay pending; four consecutive failures over 60 seconds confirm outage', () => {
+ const items = [sample(1,120,80),sample(2,100,0,false),sample(3,80,0,false),sample(4,60,0,false),sample(5,40,0,false),sample(6,20,85)];
+ assert.deepEqual(classifyProbeSamples(items,106),['available','pending','pending','pending','unavailable','available']);
+ const data=analyzeProbeHistory(items,now,1,106);
+ assert.deepEqual(data.unavailable.map(s=>s.id),[5]);
+ assert.equal(data.currentState,'available');
+ assert.equal(data.average,82.5);
+ assert.deepEqual(data.segments.map(s=>s.map(p=>p.id)),[[1],[6]]);
+});
+test('success resets failure streak and silence or duplicate timestamps cannot confirm an outage', () => {
+ assert.deepEqual(classifyProbeSamples([sample(1,120,0,false),sample(2,100,10),sample(3,80,0,false),sample(4,60,0,false)],106),['pending','available','pending','pending']);
+ assert.deepEqual(classifyProbeSamples([sample(1,600,0,false),sample(2,40,0,false),sample(3,20,0,false),sample(4,0,0,false)],106),['pending','pending','pending','pending']);
+ assert.deepEqual(classifyProbeSamples([1,2,3,4].map(i=>sample(i,0,0,false)),106),['pending','pending','pending','pending']);
+ assert.deepEqual(classifyProbeSamples([sample(1,3,0,false),sample(2,2,0,false),sample(3,1,0,false),sample(4,0,0,false)],106),['pending','pending','pending','pending']);
 });
