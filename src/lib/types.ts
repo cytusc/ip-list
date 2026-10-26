@@ -125,6 +125,8 @@ export type LatencyProbe = {
   timeout_ms: number;
   concurrency: number;
   interface_name: string;
+  mode: "icmp" | "tcp";
+  tcp_port: number;
   enabled: boolean;
   last_seen?: string | null;
   created_at: string;
@@ -132,6 +134,8 @@ export type LatencyProbe = {
   sample_window_seconds: number;
 };
 export type ProbeIPDelay = {
+  mode: "icmp" | "tcp";
+  tcp_port: number;
   samples: LatencyProbeResult[];
   online: boolean;
   fresh: boolean;

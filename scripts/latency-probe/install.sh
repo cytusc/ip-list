@@ -20,7 +20,6 @@ case "$(uname -s)" in
 esac
 case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) echo '暂不支持此 CPU 架构' >&2; exit 1;; esac
 command -v curl >/dev/null || { echo '请先安装 curl' >&2; exit 1; }
-command -v ping >/dev/null || { echo '请先安装系统 ping（Debian/Ubuntu：apt install iputils-ping）' >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 url="$server/probe-downloads/latency-probe-$os-$arch"

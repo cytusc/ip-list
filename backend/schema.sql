@@ -251,3 +251,10 @@ CREATE TABLE IF NOT EXISTS network_auto_scans (
  created_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY (network_id, protocol)
 );
+
+-- Keep previous agents and samples on ICMP; TCP histories are isolated by port.
+ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'icmp' CHECK (mode IN ('icmp','tcp'));
+ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS tcp_port integer NOT NULL DEFAULT 443 CHECK (tcp_port BETWEEN 1 AND 65535);
+ALTER TABLE latency_probe_results ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'icmp' CHECK (mode IN ('icmp','tcp'));
+ALTER TABLE latency_probe_results ADD COLUMN IF NOT EXISTS tcp_port integer NOT NULL DEFAULT 0 CHECK ((mode='icmp' AND tcp_port=0) OR (mode='tcp' AND tcp_port BETWEEN 1 AND 65535));
+CREATE INDEX IF NOT EXISTS latency_probe_results_measurement_idx ON latency_probe_results(probe_id,ip,mode,tcp_port,checked_at DESC);

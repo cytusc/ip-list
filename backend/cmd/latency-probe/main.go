@@ -33,6 +33,8 @@ type config struct {
 }
 
 type settings struct {
+	Mode          string   `json:"mode"`
+	TCPPort       int      `json:"tcp_port"`
 	IPs           []string `json:"ips"`
 	Interval      int      `json:"interval_seconds"`
 	TimeoutMS     int      `json:"timeout_ms"`
@@ -88,14 +90,14 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if _, err = exec.LookPath("ping"); err != nil {
+		if _, err = exec.LookPath("ping"); cfg.Mode != "tcp" && runtime.GOOS != "windows" && err != nil {
 			log.Fatal("未找到系统 ping，请先安装 iputils-ping")
 		}
 		iface, interfaceErr := measurementInterface(cfg.InterfaceName)
 		if interfaceErr != nil {
 			log.Fatal(interfaceErr)
 		}
-		log.Printf("ICMP 检测绑定出口网卡：%s", iface.Name)
+		log.Printf("%s 检测绑定出口网卡：%s", measurementLabel(cfg), iface.Name)
 		log.Printf("连接和鉴权成功：%d 个目标，间隔 %d 秒", len(cfg.IPs), cfg.Interval)
 		return
 	}
@@ -123,13 +125,13 @@ func main() {
 			continue
 		}
 		settings.InterfaceName = iface.Name
-		log.Printf("ICMP 检测绑定出口网卡：%s", iface.Name)
+		log.Printf("%s 检测绑定出口网卡：%s", measurementLabel(settings), iface.Name)
 		results := runPings(settings)
 		if len(results) > 0 {
 			reportErr := error(nil)
 			for start := 0; start < len(results); start += 5000 {
 				end := min(start+5000, len(results))
-				if err = report(client, base, *token, results[start:end]); err != nil {
+				if err = report(client, base, *token, results[start:end], settings); err != nil {
 					reportErr = err
 					break
 				}
@@ -200,8 +202,16 @@ func loadSettings(client *http.Client, base, token string) (settings, error) {
 	return value, err
 }
 
-func report(client *http.Client, base, token string, results []result) error {
-	return requestJSON(client, http.MethodPost, base+"/api/probe-agent/results", token, map[string]any{"results": results}, nil)
+func report(client *http.Client, base, token string, results []result, cfg settings) error {
+	port := 0
+	if cfg.Mode == "tcp" {
+		port = cfg.TCPPort
+	}
+	mode := cfg.Mode
+	if mode == "" {
+		mode = "icmp"
+	}
+	return requestJSON(client, http.MethodPost, base+"/api/probe-agent/results", token, map[string]any{"results": results, "mode": mode, "tcp_port": port}, nil)
 }
 
 func requestJSON(client *http.Client, method, url, token string, body, output any) error {
@@ -219,6 +229,7 @@ func requestJSON(client *http.Client, method, url, token string, body, output an
 	if err != nil {
 		return err
 	}
+	req.Header.Set("X-Probe-Features", "tcp-ping-v1")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -269,7 +280,13 @@ func runPings(settings settings) []result {
 					continue
 				}
 				started := time.Now().UTC()
-				delay, success := ping(ip, timeout, settings.InterfaceName)
+				var delay float64
+				var success bool
+				if settings.Mode == "tcp" {
+					delay, success = tcpPing(ip, settings.TCPPort, timeout, settings.InterfaceName)
+				} else {
+					delay, success = ping(ip, timeout, settings.InterfaceName)
+				}
 				results <- result{IP: ip.Unmap().String(), DelayMS: delay, Success: success, CheckedAt: started}
 			}
 		}()
@@ -294,15 +311,7 @@ func ping(ip netip.Addr, timeout time.Duration, iface string) (float64, bool) {
 	defer cancel()
 	args := pingArgs(ip, timeout, iface)
 	if runtime.GOOS == "windows" {
-		selected, err := net.InterfaceByName(iface)
-		if err != nil {
-			return 0, false
-		}
-		source := interfaceAddress(*selected, ip.Is6())
-		if source == "" {
-			return 0, false
-		}
-		args = append(args[:len(args)-1], "-S", source, ip.String())
+		return windowsPing(ip, timeout, iface)
 	}
 	binary := "ping"
 	if runtime.GOOS == "darwin" && ip.Is6() {

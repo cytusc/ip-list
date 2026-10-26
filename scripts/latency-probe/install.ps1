@@ -5,6 +5,8 @@ param(
   [string]$Pin = ''
 )
 $ErrorActionPreference = 'Stop'
+$administrator = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $administrator.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw '请使用管理员 PowerShell 安装，物理网卡 ICMP 检测需要管理员权限' }
 if ($Server -notmatch '^https://[a-zA-Z0-9.:/_-]+$') { throw '网站地址无效，必须使用 HTTPS' }
 if ($Token -notmatch '^[a-zA-Z0-9_-]+$') { throw '探针密钥格式无效' }
 if ($Pin -and $Pin -notmatch '^[a-zA-Z0-9+/=]+$') { throw '服务器公钥指纹格式无效' }
@@ -34,7 +36,7 @@ try {
   Copy-Item $configPath (Join-Path $root 'config.json') -Force
   $action = New-ScheduledTaskAction -Execute (Join-Path $root 'latency-probe.exe') -Argument ('-config "' + (Join-Path $root 'config.json') + '"')
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
-  $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+  $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Highest
   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
   Start-ScheduledTask -TaskName $taskName

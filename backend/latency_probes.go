@@ -23,6 +23,8 @@ CASE WHEN heartbeat_at IS NOT NULL THEN 90 ELSE GREATEST(90,interval_seconds*3) 
 const probeSampleWindowSQL = `(interval_seconds + CEIL((SELECT count(DISTINCT ip) FROM node_ip_pool WHERE available)::numeric / concurrency)::integer * (CEIL(timeout_ms::numeric/1000)::integer+2) + 30)`
 
 type latencyProbe struct {
+	Mode                string     `json:"mode"`
+	TCPPort             int        `json:"tcp_port"`
 	ID                  string     `json:"id"`
 	Name                string     `json:"name"`
 	IntervalSeconds     int        `json:"interval_seconds"`
@@ -37,6 +39,8 @@ type latencyProbe struct {
 }
 
 type latencyProbeInput struct {
+	Mode            string `json:"mode"`
+	TCPPort         int    `json:"tcp_port"`
 	Name            string `json:"name"`
 	IntervalSeconds int    `json:"interval_seconds"`
 	TimeoutMS       int    `json:"timeout_ms"`
@@ -77,6 +81,18 @@ func probeTokenHash(token string) []byte {
 
 func validProbeInput(input *latencyProbeInput, create bool) map[string]string {
 	fields := map[string]string{}
+	if input.Mode == "" {
+		input.Mode = "icmp"
+	}
+	if input.Mode != "icmp" && input.Mode != "tcp" {
+		fields["mode"] = "检测模式需为 ICMP 或 TCP"
+	}
+	if input.TCPPort == 0 {
+		input.TCPPort = 443
+	}
+	if input.TCPPort < 1 || input.TCPPort > 65535 {
+		fields["tcp_port"] = "TCP 端口需为 1–65535"
+	}
 	input.Name = strings.TrimSpace(input.Name)
 	input.InterfaceName = strings.TrimSpace(input.InterfaceName)
 	if input.Name == "" || len([]rune(input.Name)) > 80 {
@@ -101,7 +117,7 @@ func validProbeInput(input *latencyProbeInput, create bool) map[string]string {
 }
 
 func (a *app) listLatencyProbes(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT id::text,name,interval_seconds,timeout_ms,concurrency,
+	rows, err := a.db.Query(r.Context(), `SELECT id::text,name,mode,tcp_port,interval_seconds,timeout_ms,concurrency,
 interface_name,enabled,last_seen,created_at,
 `+probeOnlineSQL+` AS online,`+probeSampleWindowSQL+`
 FROM latency_probes ORDER BY created_at DESC`)
@@ -113,7 +129,7 @@ FROM latency_probes ORDER BY created_at DESC`)
 	items := []latencyProbe{}
 	for rows.Next() {
 		var item latencyProbe
-		if err = rows.Scan(&item.ID, &item.Name, &item.IntervalSeconds, &item.TimeoutMS,
+		if err = rows.Scan(&item.ID, &item.Name, &item.Mode, &item.TCPPort, &item.IntervalSeconds, &item.TimeoutMS,
 			&item.Concurrency, &item.InterfaceName, &item.Enabled, &item.LastSeen,
 			&item.CreatedAt, &item.Online, &item.SampleWindowSeconds); err != nil {
 			dbError(w, err)
@@ -149,11 +165,11 @@ func (a *app) createLatencyProbe(w http.ResponseWriter, r *http.Request) {
 	}
 	var item latencyProbe
 	err = a.db.QueryRow(r.Context(), `INSERT INTO latency_probes
-(name,token_hash,interval_seconds,timeout_ms,concurrency,interface_name,enabled,token_encrypted)
-VALUES($1,$2,$3,$4,$5,$6,true,$7)
-RETURNING id::text,name,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,false`,
-		input.Name, tokenHash, input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName, encrypted).
-		Scan(&item.ID, &item.Name, &item.IntervalSeconds, &item.TimeoutMS, &item.Concurrency,
+(name,token_hash,interval_seconds,timeout_ms,concurrency,interface_name,enabled,token_encrypted,mode,tcp_port)
+VALUES($1,$2,$3,$4,$5,$6,true,$7,$8,$9)
+RETURNING id::text,name,mode,tcp_port,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,false`,
+		input.Name, tokenHash, input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName, encrypted, input.Mode, input.TCPPort).
+		Scan(&item.ID, &item.Name, &item.Mode, &item.TCPPort, &item.IntervalSeconds, &item.TimeoutMS, &item.Concurrency,
 			&item.InterfaceName, &item.Enabled, &item.LastSeen, &item.CreatedAt, &item.Online)
 	if err != nil {
 		dbError(w, err)
@@ -178,11 +194,11 @@ func (a *app) updateLatencyProbe(w http.ResponseWriter, r *http.Request) {
 	}
 	var item latencyProbe
 	err := a.db.QueryRow(r.Context(), `UPDATE latency_probes SET name=$2,interval_seconds=$3,
-timeout_ms=$4,concurrency=$5,interface_name=$6,enabled=$7 WHERE id=$1
-RETURNING id::text,name,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,
+timeout_ms=$4,concurrency=$5,interface_name=$6,enabled=$7,mode=$8,tcp_port=$9 WHERE id=$1
+RETURNING id::text,name,mode,tcp_port,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,
 `+probeOnlineSQL, id, input.Name,
-		input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName, input.Enabled).
-		Scan(&item.ID, &item.Name, &item.IntervalSeconds, &item.TimeoutMS, &item.Concurrency,
+		input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName, input.Enabled, input.Mode, input.TCPPort).
+		Scan(&item.ID, &item.Name, &item.Mode, &item.TCPPort, &item.IntervalSeconds, &item.TimeoutMS, &item.Concurrency,
 			&item.InterfaceName, &item.Enabled, &item.LastSeen, &item.CreatedAt, &item.Online)
 	if errors.Is(err, pgx.ErrNoRows) {
 		apiError(w, http.StatusNotFound, "探针不存在", nil)
@@ -271,7 +287,9 @@ func (a *app) latencyProbeHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := a.db.Query(r.Context(), `SELECT id,host(ip),delay_ms,success,checked_at
-FROM latency_probe_results WHERE probe_id=$1 AND ip=$2::inet AND checked_at>now()-make_interval(hours=>$3)
+FROM latency_probe_results r WHERE probe_id=$1 AND ip=$2::inet
+AND EXISTS(SELECT 1 FROM latency_probes p WHERE p.id=r.probe_id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END)
+AND checked_at>now()-make_interval(hours=>$3)
 ORDER BY checked_at`, id, canonical, hours)
 	if err != nil {
 		dbError(w, err)
@@ -322,12 +340,17 @@ func (a *app) probeAgentTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var interval, timeout, concurrency int
-	var interfaceName string
+	var interfaceName, mode string
+	var port int
 	err := a.db.QueryRow(r.Context(), `UPDATE latency_probes SET last_seen=now() WHERE id=$1
-RETURNING interval_seconds,timeout_ms,concurrency,interface_name`, id).
-		Scan(&interval, &timeout, &concurrency, &interfaceName)
+RETURNING interval_seconds,timeout_ms,concurrency,interface_name,mode,tcp_port`, id).
+		Scan(&interval, &timeout, &concurrency, &interfaceName, &mode, &port)
 	if err != nil {
 		dbError(w, err)
+		return
+	}
+	if mode == "tcp" && r.Header.Get("X-Probe-Features") != "tcp-ping-v1" {
+		apiError(w, http.StatusConflict, "当前配置为 TCP Ping，请重新执行一键部署命令升级探针", nil)
 		return
 	}
 	rows, err := a.db.Query(r.Context(), `SELECT host(p.ip) FROM node_ip_pool p
@@ -353,7 +376,7 @@ GROUP BY p.ip ORDER BY p.ip`)
 	}
 	respond(w, http.StatusOK, map[string]any{"ips": ips, "interval_seconds": interval,
 		"timeout_ms": timeout, "concurrency": concurrency, "interface_name": interfaceName,
-		"retention_days": 30})
+		"mode": mode, "tcp_port": port, "retention_days": 30})
 }
 
 func (a *app) reportProbeResults(w http.ResponseWriter, r *http.Request) {
@@ -365,6 +388,8 @@ func (a *app) reportProbeResults(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var input struct {
 		Results []latencyProbeReport `json:"results"`
+		Mode    string               `json:"mode"`
+		TCPPort int                  `json:"tcp_port"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -402,13 +427,37 @@ func (a *app) reportProbeResults(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "上报数据格式错误", nil)
 		return
 	}
+	if input.Mode == "" {
+		input.Mode = "icmp"
+	}
+	if (input.Mode != "icmp" && input.Mode != "tcp") || (input.Mode == "icmp" && input.TCPPort != 0) || (input.Mode == "tcp" && (input.TCPPort < 1 || input.TCPPort > 65535)) {
+		apiError(w, 422, "检测模式或端口无效", nil)
+		return
+	}
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var mode string
+	var port int
+	err = tx.QueryRow(r.Context(), "SELECT mode,CASE WHEN mode='tcp' THEN tcp_port ELSE 0 END FROM latency_probes WHERE id=$1 AND enabled FOR SHARE", id).Scan(&mode, &port)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	if mode != input.Mode || port != input.TCPPort {
+		apiError(w, 409, "检测配置已变更，请读取最新任务后重新检测", nil)
+		return
+	}
 	var saved int64
-	err = a.db.QueryRow(r.Context(), `WITH received AS (
+	err = tx.QueryRow(r.Context(), `WITH received AS (
 SELECT r.ip::inet AS ip,r.delay_ms,r.success,r.checked_at
 FROM jsonb_to_recordset($2::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at timestamptz)
 ), inserted AS (
-INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
-SELECT $1,p.ip,p.delay_ms,p.success,p.checked_at FROM received p
+INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port)
+SELECT $1,p.ip,p.delay_ms,p.success,p.checked_at,$3,$4 FROM received p
 WHERE EXISTS(SELECT 1 FROM node_ip_pool pool WHERE pool.ip=p.ip AND pool.available)
 AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
 RETURNING 1
@@ -417,8 +466,12 @@ UPDATE latency_probes SET last_seen=now() WHERE id=$1 RETURNING id
 ), pruned AS (
 DELETE FROM latency_probe_results WHERE checked_at<now()-interval '30 days' AND probe_id=$1 RETURNING 1
 )
-SELECT count(*) FROM inserted`, id, string(body)).Scan(&saved)
+SELECT count(*) FROM inserted`, id, string(body), input.Mode, input.TCPPort).Scan(&saved)
 	if err != nil {
+		dbError(w, err)
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
 		dbError(w, err)
 		return
 	}

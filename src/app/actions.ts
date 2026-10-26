@@ -229,6 +229,8 @@ export async function createLatencyProbe(input: {
   timeout_ms: number;
   concurrency: number;
   interface_name: string;
+  mode: "icmp" | "tcp";
+  tcp_port: number;
 }): Promise<
   | { ok: true; probe: LatencyProbe; token: string }
   | { ok: false; error: string }
@@ -253,6 +255,8 @@ export async function updateLatencyProbe(
     timeout_ms: number;
     concurrency: number;
     interface_name: string;
+  mode: "icmp" | "tcp";
+  tcp_port: number;
     enabled: boolean;
   },
 ): Promise<ActionResult> {

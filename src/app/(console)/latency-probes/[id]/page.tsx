@@ -30,7 +30,7 @@ export default async function LatencyProbeDetailPage({
             {probe?.name || "探针"}{ip ? ` · ${ip}` : ""}
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            显示该探针电脑直连目标 IP 的 ICMP 往返时间。
+            显示该探针电脑直连目标 IP 的{probe?.mode === "tcp" ? ` TCP :${probe.tcp_port} 建连时间` : " ICMP 往返时间"}。
           </p>
         </div>
         <Button asChild variant="outline">

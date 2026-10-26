@@ -25,11 +25,15 @@ type Config = {
   timeout_ms: number;
   concurrency: number;
   interface_name: string;
+  mode: "icmp" | "tcp";
+  tcp_port: number;
   enabled: boolean;
 };
 
 const blank: Config = {
   name: "",
+  mode: "tcp",
+  tcp_port: 443,
   interval_seconds: 300,
   timeout_ms: 1000,
   concurrency: 64,
@@ -212,11 +216,11 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
       <div>
         <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
           <Radio className="size-4" />
-          本机 ICMP 探针
+          本机延迟探针
         </div>
         <h1 className="text-2xl font-semibold tracking-tight">延迟探针</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-          在电脑运行探针后，它会直接用系统 ping 测量当前可用 IP，并定期上报。ICMP
+          在电脑运行探针后，可选择 TCP 建连延迟或 ICMP 往返延迟，定期检测当前可用 IP 并上报。检测
           会绑定出口网卡；留空时自动选择已连接的物理网卡，存在多个出口时需手动指定。
           每个探针可使用不同名称和检测间隔。
         </p>
@@ -240,6 +244,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
               onChange={(event) => updateDraft("name", event.target.value)}
             />
           </Field>
+          <MeasurementFields config={draft} onChange={setDraft} />
           <Field label="检测间隔（秒）">
             <Input
               type="number"
@@ -260,7 +265,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
               onChange={(event) => updateDraft("timeout_ms", Number(event.target.value))}
             />
           </Field>
-          <Field label="并发 ping 数">
+          <Field label="并发检测数">
             <Input
               type="number"
               min={1}
@@ -293,10 +298,11 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
         <p className="text-xs text-muted-foreground">在线状态每 10 秒刷新；IP 检测超时不代表探针离线。</p>
         {statusError && <p role="alert" className="text-sm text-amber-700">{statusError}</p>}
         {items.length ? <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full whitespace-nowrap text-sm">
-          <thead className="bg-slate-50 text-left text-muted-foreground"><tr>{["名称", "状态", "检测间隔", "出口网卡", "最后连接", "操作"].map((title) => <th key={title} className="px-4 py-3 font-medium">{title}</th>)}</tr></thead>
+          <thead className="bg-slate-50 text-left text-muted-foreground"><tr>{["名称", "状态", "检测方式", "检测间隔", "出口网卡", "最后连接", "操作"].map((title) => <th key={title} className="px-4 py-3 font-medium">{title}</th>)}</tr></thead>
           <tbody>{items.map((item) => <tr key={item.id} className="border-t">
             <td className="px-4 py-3 font-medium">{item.name}</td>
             <td className="px-4 py-3"><Badge variant={item.online ? "default" : "secondary"}>{!item.enabled ? "已停用" : item.online ? "在线" : "离线"}</Badge></td>
+            <td className="px-4 py-3">{item.mode === "tcp" ? `TCP :${item.tcp_port}` : "ICMP Ping"}</td>
             <td className="px-4 py-3">{item.interval_seconds} 秒</td>
             <td className="px-4 py-3">{item.interface_name || "自动选择物理网卡"}</td>
             <td className="px-4 py-3 text-muted-foreground">{item.last_seen ? new Date(item.last_seen).toLocaleString("zh-CN", { hour12: false }) : "尚未连接"}</td>
@@ -313,7 +319,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
         <div className="mb-1 flex items-center gap-2 font-medium text-foreground">
           <Activity className="size-4" />延迟口径
         </div>
-        记录的是探针电脑发出的 ICMP 往返时间，单位毫秒，不经过网站服务器代测。部分网络或目标会屏蔽 ICMP；这类地址会显示超时，而不代表其代理连接一定不可用。绑定网卡可避免 VPN/TUN 改写默认出口。
+        TCP Ping 测量探针电脑到指定端口的 TCP 建连时间，ICMP 测量回显往返时间，单位毫秒。端口关闭或屏蔽 ICMP 都可能导致检测失败，不代表 IP 完全不可用。两种模式均绑定出口网卡；切换模式或端口后仅显示匹配配置的历史。已有探针请重新执行一键部署命令升级，再切换 TCP。
       </div>
     </div>
   );
@@ -338,13 +344,15 @@ function ProbeCard({
 }) {
   const [config, setConfig] = useState<Config>({
     name: item.name,
+    mode: item.mode,
+    tcp_port: item.tcp_port,
     interval_seconds: item.interval_seconds,
     timeout_ms: item.timeout_ms,
     concurrency: item.concurrency,
     interface_name: item.interface_name,
     enabled: item.enabled,
   });
-  const changed = config.name !== item.name ||
+  const changed = config.mode !== item.mode || config.tcp_port !== item.tcp_port || config.name !== item.name ||
     config.interval_seconds !== item.interval_seconds ||
     config.timeout_ms !== item.timeout_ms ||
     config.concurrency !== item.concurrency ||
@@ -354,7 +362,7 @@ function ProbeCard({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild><Button size="sm" variant="outline">编辑</Button></DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-      <DialogHeader><DialogTitle>编辑探针 · {item.name}</DialogTitle><DialogDescription>间隔、超时和网卡配置会在下一轮检测时生效。</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>编辑探针 · {item.name}</DialogTitle><DialogDescription>配置在下一轮检测时生效。切换 TCP 前，请重新执行一键部署命令升级探针。</DialogDescription></DialogHeader>
       <form onSubmit={(event) => { event.preventDefault(); onSave(config); }} className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
@@ -371,13 +379,14 @@ function ProbeCard({
         <Field label="探针名称">
           <Input value={config.name} maxLength={80} onChange={(e) => setConfig({ ...config, name: e.target.value })} />
         </Field>
+        <MeasurementFields config={config} onChange={setConfig} />
         <Field label="检测间隔（秒）">
           <Input type="number" min={15} max={86400} value={config.interval_seconds} onChange={(e) => setConfig({ ...config, interval_seconds: Number(e.target.value) })} />
         </Field>
         <Field label="单 IP 超时（毫秒）">
           <Input type="number" min={250} max={10000} value={config.timeout_ms} onChange={(e) => setConfig({ ...config, timeout_ms: Number(e.target.value) })} />
         </Field>
-        <Field label="并发 ping 数">
+        <Field label="并发检测数">
           <Input type="number" min={1} max={512} value={config.concurrency} onChange={(e) => setConfig({ ...config, concurrency: Number(e.target.value) })} />
         </Field>
         <Field label="出口网卡（可选）">
@@ -415,4 +424,15 @@ function Field({ label, children }: { label: string; children: ReactElement<{ id
       {cloneElement(children, { id })}
     </div>
   );
+}
+
+function MeasurementFields({ config, onChange }: { config: Config; onChange: (value: Config) => void }) {
+  return <>
+    <Field label="检测方式"><select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={config.mode}
+      onChange={event => onChange({ ...config, mode: event.target.value as Config["mode"] })}>
+      <option value="tcp">TCP Ping</option><option value="icmp">ICMP Ping</option>
+    </select></Field>
+    {config.mode === "tcp" && <Field label="TCP 目标端口"><Input type="number" required min={1} max={65535} value={config.tcp_port}
+      onChange={event => onChange({ ...config, tcp_port: Number(event.target.value) })} /></Field>}
+  </>;
 }

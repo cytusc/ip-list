@@ -62,8 +62,10 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
   const x = (time: string | number) => plot.left + ((typeof time === "string" ? Date.parse(time) : time) - data.from) / (hours * 3600000) * plotWidth;
   const y = (delay: number) => plot.top + (1 - delay / yMax) * plotHeight;
   const current = data.latest;
+  const measurement = probe.mode === "tcp" ? `TCP 建连延迟 :${probe.tcp_port}` : "ICMP 往返延迟";
+  const failure = probe.mode === "tcp" ? "连接失败或超时" : "ICMP 超时";
   const stale = current && now - Date.parse(current.checked_at) > gapSeconds * 1000;
-  const state = !probe.enabled ? "已停用" : !probe.online ? "探针离线" : !current ? "等待检测" : stale ? "数据已过期" : current.success ? "ICMP 可达" : "ICMP 超时";
+  const state = !probe.enabled ? "已停用" : !probe.online ? "探针离线" : !current ? "等待检测" : stale ? "数据已过期" : current.success ? "检测成功" : failure;
   const hovered = selected == null ? undefined : data.samples[selected];
   function selectAt(clientX: number, bounds: DOMRect) {
     const position = Math.max(0, Math.min(1, ((clientX - bounds.left) / bounds.width * width - plot.left) / plotWidth));
@@ -82,7 +84,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-semibold">{probeName} 到 {ip}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">ICMP 往返延迟 · 检测间隔 {probe.interval_seconds} 秒 · 每 10 秒刷新</p>
+          <p className="mt-1 text-xs text-muted-foreground">{measurement} · 检测间隔 {probe.interval_seconds} 秒 · 每 10 秒刷新</p>
         </div>
         <div className="flex items-center gap-2">
           <select aria-label="选择历史时间范围" className="h-9 rounded-md border bg-white px-3 text-sm" value={hours} onChange={event => { setSelected(null); setHours(Number(event.target.value)); }}>
@@ -94,7 +96,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
       {error && <p role="alert" className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">{error}；当前保留上次成功获取的数据。</p>}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg bg-slate-50 p-3 text-sm">
         <span className="font-medium">{state}</span>
-        <span>最近一次：{current ? current.success ? ms(current.delay_ms) : "超时" : "—"}{current && (!probe.online || stale) ? "（历史值）" : ""}</span>
+        <span>最近一次：{current ? current.success ? ms(current.delay_ms) : failure : "—"}{current && (!probe.online || stale) ? "（历史值）" : ""}</span>
         <span className="text-xs text-muted-foreground">检测时间：{current ? timeLabel(current.checked_at) : "暂无"}</span>
         <span className="text-xs text-muted-foreground">心跳：{probe.last_seen ? timeLabel(probe.last_seen) : "尚未连接"}</span>
       </div>
@@ -103,13 +105,13 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
         <Stat label="最低 / 最高 (ms)" value={data.minimum == null ? "—" : `${data.minimum.toFixed(2)} / ${data.maximum?.toFixed(2)}`} />
         <Stat label="P95 延迟" value={ms(data.p95)} />
         <Stat label="平均相邻抖动" value={ms(data.jitter)} />
-        <Stat label="采样超时率" value={data.loss == null ? "—" : `${data.loss.toFixed(1)}%`} />
+        <Stat label="采样失败率" value={data.loss == null ? "—" : `${data.loss.toFixed(1)}%`} />
         <Stat label="成功 / 总采样" value={`${data.samples.length - data.failed.length} / ${data.samples.length}`} />
       </div>
       {data.samples.length ? (
         <div className="rounded-lg border bg-slate-50/50 p-2">
-          <p aria-live="polite" className="min-h-7 px-2 text-xs tabular-nums text-slate-600">{hovered ? `${timeLabel(hovered.checked_at)} · ${hovered.success ? ms(hovered.delay_ms) : "ICMP 超时"}` : "移动到曲线上查看采样，或聚焦后使用左右方向键。"}</p>
-          <svg viewBox={`0 0 ${width} ${height}`} className="w-full" role="img" aria-label={`${probeName} 对 ${ip} 的 ICMP 延迟历史曲线`} tabIndex={0}
+          <p aria-live="polite" className="min-h-7 px-2 text-xs tabular-nums text-slate-600">{hovered ? `${timeLabel(hovered.checked_at)} · ${hovered.success ? ms(hovered.delay_ms) : failure}` : "移动到曲线上查看采样，或聚焦后使用左右方向键。"}</p>
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full" role="img" aria-label={`${probeName} 对 ${ip} 的 ${measurement}历史曲线`} tabIndex={0}
             onPointerMove={event => selectAt(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerLeave={() => setSelected(null)}
             onKeyDown={event => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); setSelected(value => event.key === "Home" ? 0 : event.key === "End" ? data.samples.length - 1 : Math.max(0, Math.min(data.samples.length - 1, (value ?? data.samples.length - 1) + (event.key === "ArrowLeft" ? -1 : 1)))); } }}>
             {[0, .25, .5, .75, 1].map(fraction => <g key={fraction}>
@@ -120,7 +122,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
               const value = data.from + hours * 3600000 * fraction;
               return <text key={fraction} x={plot.left + fraction * plotWidth} y={height - 12} textAnchor={fraction === 0 ? "start" : fraction === 1 ? "end" : "middle"} className="fill-slate-500 text-[12px]">{new Date(value).toLocaleString("zh-CN", { ...(hours >= 24 ? { month: "2-digit", day: "2-digit" } as const : {}), hour: "2-digit", minute: "2-digit", hour12: false })}</text>;
             })}
-            <text x={plot.left - 10} y={height - 43} textAnchor="end" className="fill-red-600 text-[12px]">超时</text>
+            <text x={plot.left - 10} y={height - 43} textAnchor="end" className="fill-red-600 text-[12px]">失败</text>
             {data.failed.map(point => <line key={point.id} x1={x(point.checked_at)} x2={x(point.checked_at)} y1={height - 56} y2={height - 36} stroke="#ef4444" strokeWidth="2" />)}
             {data.segments.map((segment, index) => <g key={index} data-segment="latency">
               <polyline points={segment.map(point => `${x(point.checked_at)},${y(point.delay_ms)}`).join(" ")} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinejoin="round" />
@@ -133,7 +135,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
           </svg>
         </div>
       ) : <div className="rounded-lg border border-dashed py-14 text-center"><Activity className="mx-auto size-7 text-slate-300" /><p className="mt-3 text-sm font-medium">此时间段暂无延迟记录</p><p className="mt-1 text-xs text-muted-foreground">检查探针连接，或选择更长的时间范围。</p></div>}
-      <p className="text-xs text-muted-foreground">蓝线为 ICMP 延迟，红色标记为超时，断报留空且不连线。超时率仅统计已上报采样，缺失采样不计为丢包；抖动为连续成功采样延迟差的平均绝对值。目标屏蔽 ICMP 时仍可能支持代理连接。</p>
+      <p className="text-xs text-muted-foreground">蓝线为{measurement}，红色标记为检测失败，断报留空且不连线。失败率仅统计已上报采样；抖动为连续成功采样延迟差的平均绝对值。仅显示当前模式及端口的历史记录。</p>
     </section>
   );
 }

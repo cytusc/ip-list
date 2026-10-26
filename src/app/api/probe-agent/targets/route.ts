@@ -10,7 +10,7 @@ async function proxy(request: Request, method: string) {
       `${process.env.API_URL || "http://127.0.0.1:8081"}/probe-agent/targets`,
       {
         method,
-        headers: { Authorization: authorization, Accept: "application/json" },
+        headers: { Authorization: authorization, Accept: "application/json", "X-Probe-Features": request.headers.get("x-probe-features") || "" },
         cache: "no-store",
         signal: AbortSignal.timeout(120000),
       },

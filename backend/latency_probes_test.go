@@ -242,3 +242,111 @@ func TestProbeMonitoringStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestTCPProbeModeAndHistoryIsolation(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires TEST_DATABASE_URL")
+	}
+	ctx := context.Background()
+	db, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !strings.HasSuffix(db.Config().ConnConfig.Database, "_test") {
+		t.Fatal("requires test database")
+	}
+	if _, err = db.Exec(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	token, hash, err := newProbeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err = db.QueryRow(ctx, `INSERT INTO latency_probes(name,token_hash,mode,tcp_port) VALUES($1,$2,'tcp',443) RETURNING id::text`, "tcp-"+time.Now().Format("150405.000000000"), hash).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(ctx, "DELETE FROM latency_probes WHERE id=$1", id)
+	_, err = db.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at) VALUES('latency/tcp-test','198.18.98.1',true,1,now())`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(ctx, "DELETE FROM node_ip_pool WHERE protocol='latency/tcp-test'")
+	app := &app{db: db}
+	request := func(method, path, body string, handler http.HandlerFunc, capability bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		if capability {
+			r.Header.Set("X-Probe-Features", "tcp-ping-v1")
+		}
+		r.SetPathValue("id", id)
+		w := httptest.NewRecorder()
+		handler(w, r)
+		return w
+	}
+	if w := request("GET", "/targets", "", app.probeAgentTargets, false); w.Code != 409 {
+		t.Fatalf("old agent: %d %s", w.Code, w.Body.String())
+	}
+	if w := request("GET", "/targets", "", app.probeAgentTargets, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"mode":"tcp"`) {
+		t.Fatalf("tcp config: %d %s", w.Code, w.Body.String())
+	}
+	samples := `"results":[{"ip":"198.18.98.1","delay_ms":58.5,"success":true}]`
+	for _, metadata := range []string{"", `"mode":"tcp","tcp_port":80,`} {
+		if w := request("POST", "/results", "{"+metadata+samples+"}", app.reportProbeResults, true); w.Code != 409 {
+			t.Fatalf("mismatched report: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if w := request("POST", "/results", `{"mode":"tcp","tcp_port":443,`+samples+`}`, app.reportProbeResults, true); w.Code != 200 || !strings.Contains(w.Body.String(), `"saved":1`) {
+		t.Fatalf("report: %d %s", w.Code, w.Body.String())
+	}
+	_, err = db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,mode,tcp_port,delay_ms,success,checked_at) VALUES($1,'198.18.98.1','icmp',0,1,true,now()),($1,'198.18.98.1','tcp',80,2,true,now())`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := request("GET", "/history?ip=198.18.98.1", "", app.latencyProbeHistory, false)
+	var history []latencyProbeResult
+	if w.Code != 200 {
+		t.Fatalf("history: %d %s", w.Code, w.Body.String())
+	}
+	json.Unmarshal(w.Body.Bytes(), &history)
+	if len(history) != 1 || history[0].DelayMS != 58.5 {
+		t.Fatalf("mixed history: %+v", history)
+	}
+	w = request("GET", "/available-ips", "", app.availableIPs, false)
+	if w.Code != 200 {
+		t.Fatalf("available: %d %s", w.Code, w.Body.String())
+	}
+	var ips []availableIP
+	json.Unmarshal(w.Body.Bytes(), &ips)
+	found := false
+	for _, ip := range ips {
+		if ip.IP == "198.18.98.1" {
+			for _, p := range ip.ProbeDelays {
+				if p.ProbeID == id {
+					found = true
+					if p.Mode != "tcp" || p.TCPPort != 443 || p.DelayMS == nil || *p.DelayMS != 58.5 || len(p.Samples) != 1 {
+						t.Fatalf("mixed latest: %+v", p)
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing TCP probe")
+	}
+}
+
+func TestProbeMeasurementValidation(t *testing.T) {
+	for _, tc := range []struct {
+		mode  string
+		port  int
+		valid bool
+	}{{"tcp", 443, true}, {"icmp", 443, true}, {"", 0, true}, {"udp", 443, false}, {"tcp", 65536, false}, {"tcp", -1, false}} {
+		input := latencyProbeInput{Name: "test", Mode: tc.mode, TCPPort: tc.port, IntervalSeconds: 60, TimeoutMS: 1000, Concurrency: 10}
+		if got := len(validProbeInput(&input, false)) == 0; got != tc.valid {
+			t.Errorf("%s:%d valid=%v", tc.mode, tc.port, got)
+		}
+	}
+}
