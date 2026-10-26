@@ -63,6 +63,32 @@ CREATE TABLE IF NOT EXISTS node_ip_pool (
  checked_at timestamptz NOT NULL,
  PRIMARY KEY(protocol,ip)
 );
+
+-- Named client probes report direct ICMP latency for currently available IPs.
+CREATE TABLE IF NOT EXISTS latency_probes (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ name varchar(80) NOT NULL UNIQUE,
+ token_hash bytea NOT NULL UNIQUE,
+ interval_seconds integer NOT NULL DEFAULT 300 CHECK (interval_seconds BETWEEN 15 AND 86400),
+ timeout_ms integer NOT NULL DEFAULT 1000 CHECK (timeout_ms BETWEEN 250 AND 10000),
+ concurrency integer NOT NULL DEFAULT 64 CHECK (concurrency BETWEEN 1 AND 512),
+ interface_name varchar(100) NOT NULL DEFAULT '',
+ enabled boolean NOT NULL DEFAULT true,
+ last_seen timestamptz,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS latency_probe_results (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ probe_id uuid NOT NULL REFERENCES latency_probes(id) ON DELETE CASCADE,
+ ip inet NOT NULL,
+ delay_ms double precision NOT NULL DEFAULT 0 CHECK (delay_ms BETWEEN 0 AND 60000),
+ success boolean NOT NULL,
+ checked_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS latency_probe_results_probe_ip_time_idx
+ ON latency_probe_results(probe_id,ip,checked_at DESC);
+CREATE INDEX IF NOT EXISTS latency_probe_results_time_idx
+ ON latency_probe_results(checked_at);
 INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at)
  SELECT DISTINCT ON (protocol,ip) protocol,ip,available,delay_ms,checked_at FROM (
  SELECT CASE WHEN protocol LIKE '%/%' THEN protocol ELSE 'vless/'||protocol END AS protocol,

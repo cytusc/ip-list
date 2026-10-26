@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { api, ApiError, forwardSessionCookie } from "@/lib/api";
-import type { ActionResult } from "@/lib/types";
+import type { ActionResult, LatencyProbe } from "@/lib/types";
 function failure(error: unknown): Extract<ActionResult, { ok: false }> {
   if (error instanceof ApiError)
     return { ok: false, error: error.message, fields: error.fields };
@@ -221,6 +221,73 @@ export async function startScan(
       ok: false,
       error: error instanceof ApiError ? error.message : "任务启动失败，请重试",
     };
+  }
+}
+export async function createLatencyProbe(input: {
+  name: string;
+  interval_seconds: number;
+  timeout_ms: number;
+  concurrency: number;
+  interface_name: string;
+}): Promise<
+  | { ok: true; probe: LatencyProbe; token: string }
+  | { ok: false; error: string }
+> {
+  try {
+    const { data } = await api<{ probe: LatencyProbe; token: string }>(
+      "/latency-probes",
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    revalidatePath("/latency-probes");
+    revalidatePath("/available-ips");
+    return { ok: true, ...data };
+  } catch (error) {
+    return failure(error);
+  }
+}
+export async function updateLatencyProbe(
+  id: string,
+  input: {
+    name: string;
+    interval_seconds: number;
+    timeout_ms: number;
+    concurrency: number;
+    interface_name: string;
+    enabled: boolean;
+  },
+): Promise<ActionResult> {
+  try {
+    await api(`/latency-probes/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+    revalidatePath("/latency-probes");
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
+}
+export async function deleteLatencyProbe(id: string): Promise<ActionResult> {
+  try {
+    await api(`/latency-probes/${encodeURIComponent(id)}`, { method: "DELETE" });
+    revalidatePath("/latency-probes");
+    revalidatePath("/available-ips");
+    return { ok: true };
+  } catch (error) {
+    return failure(error);
+  }
+}
+export async function rotateLatencyProbeToken(
+  id: string,
+): Promise<{ ok: true; token: string } | { ok: false; error: string }> {
+  try {
+    const { data } = await api<{ token: string }>(
+      `/latency-probes/${encodeURIComponent(id)}/token`,
+      { method: "POST", body: "{}" },
+    );
+    return { ok: true, token: data.token };
+  } catch (error) {
+    return failure(error);
   }
 }
 export async function cancelScan(id: string): Promise<ActionResult> {

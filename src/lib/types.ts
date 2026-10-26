@@ -116,6 +116,33 @@ export type AvailableIP = {
   asn?: string;
   provider?: string;
   checks: IPCheck[];
+  probe_delays: ProbeIPDelay[];
+};
+export type LatencyProbe = {
+  id: string;
+  name: string;
+  interval_seconds: number;
+  timeout_ms: number;
+  concurrency: number;
+  interface_name: string;
+  enabled: boolean;
+  last_seen?: string | null;
+  created_at: string;
+  online: boolean;
+};
+export type ProbeIPDelay = {
+  probe_id: string;
+  name: string;
+  delay_ms: number | null;
+  success: boolean | null;
+  checked_at: string | null;
+};
+export type LatencyProbeResult = {
+  id: number;
+  ip: string;
+  delay_ms: number;
+  success: boolean;
+  checked_at: string;
 };
 export type BlacklistedIP = { ip: string; created_at: string };
 export type IPLocation = {

@@ -27,6 +27,27 @@
 
 列表通过 IPPure 基础信息接口异步查询当前页 IP 的归属地，展示国家或地区、国旗及省市信息。成功结果在 Redis 缓存 24 小时，失败缓存 1 分钟；查询失败显示「未知归属地」，不影响列表和节点链接。
 
+## 本机延迟探针
+
+打开「延迟探针」创建探针，填写显示名称（例如「电信」）、检测间隔、单 IP 超时、并发数和可选的出口网卡。创建后密钥只显示一次；可在页面重新生成密钥，旧密钥会立即失效。探针在「可用 IP」页显示各探针最近的 ICMP 延迟，点击名称查看最近 1 小时到 7 天的历史曲线。结果保留 30 天。
+
+把项目克隆到需要测量的电脑，在仓库的 `backend` 目录构建并运行探针。也可直接用 `go run`：
+
+```sh
+cd backend
+PROBE_SERVER='https://你的站点地址' PROBE_TOKEN='页面创建后显示的密钥' go run ./cmd/latency-probe
+```
+
+长期运行可构建为独立程序并交由本机服务管理器启动：
+
+```sh
+cd backend
+go build -o latency-probe ./cmd/latency-probe
+PROBE_SERVER='https://你的站点地址' PROBE_TOKEN='页面创建后显示的密钥' ./latency-probe
+```
+
+探针使用系统 `ping` 发 ICMP 包，测量电脑到目标 IP 的往返时间，不经过 HTTP/SOCKS 代理。启用 VPN/TUN 时，填写物理网卡名来绑定出口（macOS 例如 `en0`，Linux 例如 `eth0`）；不填则遵循系统路由。Windows 使用系统默认路由。探针需要能访问站点 HTTPS 地址；ICMP 超时可能是目标或网络屏蔽了 ICMP，不代表代理连接一定不可用。服务端只存储密钥的 SHA-256 哈希，探针请求通过 Bearer 密钥鉴权；上报只接受当前可用且未列入黑名单的 IP。数据库升级需执行 `npm run db:init`，再重启 Go API。
+
 ## 自动增量检测
 
 新增已启用网段、修改 CIDR 或重新启用网段后，保存操作会自动为当前已配置的节点协议池和 CF 共用池加入增量检测队列，无需再选择网段或点击开始。没有有效已启用节点的协议池、没有检测域名的 CF 池不创建任务。
@@ -86,7 +107,7 @@ Go 使用 godotenv 加载根目录 `.env`；Next.js 自动读取该文件。初�
 - `src/app`：Next.js 页面和服务端 API 代理。
 - `src/components/ui`：shadcn/ui 原生组件，交互基于 Radix UI。
 - `backend`：Go HTTP API，使用标准库路由。
-- `backend/schema.sql`：`users`、`nodes`、`networks`、`ip_results` 四张表。`ip_results` 仅保留每个节点/IP 的最近检测结果；节点名称、手动节点地址端口、同一节点的 CIDR 均有唯一约束，导入节点允许同一地址端口使用不同传输。
+- `backend/schema.sql`：管理员、节点、网段、可用 IP、延迟探针与结果等表。节点名称、手动节点地址端口、同一节点的 CIDR 均有唯一约束；探针结果保留 30 天。
 - pgx：PostgreSQL 连接池和参数化查询。
 - go-redis：Redis 连接；SCS + goredisstore：24 小时登录会话，登录时轮换令牌，退出时删除会话。
 - ulule/limiter：Redis 登录限流，同一用户名每 15 分钟最多尝试 10 次，成功后重置。
@@ -115,6 +136,11 @@ API 默认为 `127.0.0.1:8081`，浏览器通过 Next.js 服务端操作访问�
 | GET          | `/scan-records` | 按轮次的检测记录列表与进行中的任务 |
 | GET          | `/scan-records/{id}` | 单轮检测记录及该轮结果 |
 | GET          | `/available-ips` | 按 IP 汇总已测通协议、延迟及对应节点 |
+| GET / POST   | `/latency-probes` | 查看 / 创建本机延迟探针 |
+| PUT / DELETE | `/latency-probes/{id}` | 修改 / 删除探针 |
+| POST         | `/latency-probes/{id}/token` | 轮换探针密钥 |
+| GET          | `/latency-probes/{id}/history?ip=...&hours=24` | 查看单 IP 的探针延迟历史 |
+| GET / POST   | `/probe-agent/targets`、`/probe-agent/results` | 探针获取目标并上报结果（Bearer 密钥） |
 | GET          | `/health`        | PostgreSQL、Redis 连通性 |
 
 除登录和健康检查外均需登录；写请求需要 `Origin` 与 `APP_ORIGIN` 一致。错误返回 `error`，校验错误另有 `fields`。尚未定义重叠网段的规则优先级，将在实现流量过滤时处理。

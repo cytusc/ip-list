@@ -16,10 +16,19 @@ type ipCheck struct {
 }
 
 type availableIP struct {
-	ASN      string    `json:"asn"`
-	Provider string    `json:"provider"`
-	IP       string    `json:"ip"`
-	Checks   []ipCheck `json:"checks"`
+	ASN          string            `json:"asn"`
+	Provider     string            `json:"provider"`
+	IP           string            `json:"ip"`
+	Checks       []ipCheck         `json:"checks"`
+	ProbeDelays  []probeIPDelay    `json:"probe_delays"`
+}
+
+type probeIPDelay struct {
+	ProbeID   string     `json:"probe_id"`
+	Name      string     `json:"name"`
+	DelayMS   *float64   `json:"delay_ms"`
+	Success   *bool      `json:"success"`
+	CheckedAt *time.Time `json:"checked_at"`
 }
 
 // One bulk write per round; completed probes also survive a manual stop.
@@ -95,6 +104,43 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		last.Checks = append(last.Checks, check)
 	}
 	if err = rows.Err(); err != nil {
+		dbError(w, err)
+		return
+	}
+	probeRows, err := a.db.Query(r.Context(), `WITH targets AS (
+ SELECT DISTINCT ip FROM node_ip_pool WHERE available
+ AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=node_ip_pool.ip)
+), latest AS (
+ SELECT DISTINCT ON (probe_id,ip) probe_id,ip,delay_ms,success,checked_at
+ FROM latency_probe_results WHERE checked_at>now()-interval '30 days'
+ ORDER BY probe_id,ip,checked_at DESC,id DESC
+)
+SELECT host(t.ip),p.id::text,p.name,l.delay_ms,l.success,l.checked_at
+FROM latency_probes p CROSS JOIN targets t
+LEFT JOIN latest l ON l.probe_id=p.id AND l.ip=t.ip
+WHERE p.enabled ORDER BY t.ip,p.created_at`)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	defer probeRows.Close()
+	itemsByIP := make(map[string]*availableIP, len(items))
+	for i := range items {
+		itemsByIP[items[i].IP] = &items[i]
+		items[i].ProbeDelays = []probeIPDelay{}
+	}
+	for probeRows.Next() {
+		var ip string
+		var delay probeIPDelay
+		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.DelayMS, &delay.Success, &delay.CheckedAt); err != nil {
+			dbError(w, err)
+			return
+		}
+		if item := itemsByIP[ip]; item != nil {
+			item.ProbeDelays = append(item.ProbeDelays, delay)
+		}
+	}
+	if err = probeRows.Err(); err != nil {
 		dbError(w, err)
 		return
 	}

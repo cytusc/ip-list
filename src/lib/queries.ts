@@ -7,6 +7,8 @@ import type {
   AvailableIP,
   ScanRecordList,
   BlacklistedIP,
+  LatencyProbe,
+  LatencyProbeResult,
 } from "@/lib/types";
 export async function getNodes(): Promise<Node[]> {
   await requireUser();
@@ -23,6 +25,22 @@ export async function getAvailableIPs(): Promise<AvailableIP[]> {
 export async function getBlacklist(): Promise<BlacklistedIP[]> {
   await requireUser();
   return (await api<BlacklistedIP[]>("/blacklist")).data;
+}
+export async function getLatencyProbes(): Promise<LatencyProbe[]> {
+  await requireUser();
+  return (await api<LatencyProbe[]>("/latency-probes")).data;
+}
+export async function getLatencyProbeHistory(
+  id: string,
+  ip: string,
+  hours = 24,
+): Promise<LatencyProbeResult[]> {
+  await requireUser();
+  return (
+    await api<LatencyProbeResult[]>(
+      `/latency-probes/${encodeURIComponent(id)}/history?ip=${encodeURIComponent(ip)}&hours=${hours}`,
+    )
+  ).data;
 }
 export async function getScanRecords(): Promise<ScanRecordList> {
   await requireUser();

@@ -250,6 +250,7 @@ export function AvailableIPList({
               <TableHead>归属地</TableHead>
               <TableHead>ASN / 服务商</TableHead>
               <TableHead>支持的协议</TableHead>
+              <TableHead>探针延迟</TableHead>
               <TableHead className="hidden pr-5 md:table-cell">
                 最近测通
               </TableHead>
@@ -296,6 +297,31 @@ export function AvailableIPList({
                       {formatTime(latest.checked_at)}
                     </p>
                   </TableCell>
+                  <TableCell className="min-w-36 align-top">
+                    {item.probe_delays?.length ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {item.probe_delays.map((probe) => (
+                          <Link
+                            key={probe.probe_id}
+                            href={`/latency-probes/${probe.probe_id}?ip=${encodeURIComponent(item.ip)}`}
+                            title={probe.checked_at ? `检测时间：${formatTime(probe.checked_at)}` : "该探针尚未检测"}
+                            className="rounded-md border bg-slate-50 px-2 py-1 text-xs hover:border-primary hover:text-primary"
+                          >
+                            <span className="font-medium">{probe.name}</span>
+                            <span className="ml-1 font-mono tabular-nums">
+                              {probe.success == null
+                                ? "—"
+                                : probe.success
+                                  ? `${probe.delay_ms?.toFixed(2)} ms`
+                                  : "超时"}
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">尚未配置</span>
+                    )}
+                  </TableCell>
                   <TableCell className="hidden pr-5 text-xs text-muted-foreground md:table-cell">
                     {formatTime(latest.checked_at)}
                   </TableCell>
@@ -319,7 +345,7 @@ export function AvailableIPList({
             })}
             {!visible.length && (
               <TableRow>
-                <TableCell colSpan={6} className="h-44 text-center">
+                <TableCell colSpan={7} className="h-44 text-center">
                   <p className="font-medium">
                     {items.length ? "没有匹配的 IP" : "暂无可用 IP"}
                   </p>

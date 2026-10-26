@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Loader2,
   Ban,
+  Radio,
 } from "lucide-react";
 import { toast } from "sonner";
 import { logout } from "@/app/actions";
@@ -23,6 +24,7 @@ const navigation = [
   { href: "/cf", label: "CF 优选", icon: Cloud },
   { href: "/probes", label: "连通性测试", icon: Activity },
   { href: "/available-ips", label: "可用 IP", icon: ListChecks },
+  { href: "/latency-probes", label: "延迟探针", icon: Radio },
   { href: "/nodes", label: "节点管理", icon: Server },
   { href: "/networks", label: "网段配置", icon: Network },
   { href: "/blacklist", label: "IP 黑名单", icon: Ban },

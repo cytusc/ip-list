@@ -209,6 +209,14 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /available-ips/location", a.protected(http.HandlerFunc(a.availableIPLocation)))
 	mux.Handle("DELETE /protocol-networks/{id}", a.protected(http.HandlerFunc(a.restoreProtocolNetwork)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
+	mux.Handle("GET /latency-probes", a.protected(http.HandlerFunc(a.listLatencyProbes)))
+	mux.Handle("POST /latency-probes", a.protected(http.HandlerFunc(a.createLatencyProbe)))
+	mux.Handle("PUT /latency-probes/{id}", a.protected(http.HandlerFunc(a.updateLatencyProbe)))
+	mux.Handle("DELETE /latency-probes/{id}", a.protected(http.HandlerFunc(a.deleteLatencyProbe)))
+	mux.Handle("POST /latency-probes/{id}/token", a.protected(http.HandlerFunc(a.rotateLatencyProbeToken)))
+	mux.Handle("GET /latency-probes/{id}/history", a.protected(http.HandlerFunc(a.latencyProbeHistory)))
+	mux.HandleFunc("GET /probe-agent/targets", a.probeAgentTargets)
+	mux.HandleFunc("POST /probe-agent/results", a.reportProbeResults)
 	mux.Handle("GET /blacklist", a.protected(http.HandlerFunc(a.listBlacklist)))
 	mux.Handle("POST /blacklist", a.protected(http.HandlerFunc(a.addBlacklist)))
 	mux.Handle("DELETE /blacklist", a.protected(http.HandlerFunc(a.deleteBlacklist)))
@@ -224,7 +232,7 @@ func (a *app) routes() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// 浏览器跨站请求不可携带任意 Origin；Next.js 服务端代理也使用相同来源。
-		if r.Method != "GET" && r.Header.Get("Origin") != a.origin {
+		if r.Method != "GET" && !strings.HasPrefix(r.URL.Path, "/probe-agent/") && r.Header.Get("Origin") != a.origin {
 			apiError(w, 403, "请求来源不受信任", nil)
 			return
 		}
