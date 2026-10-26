@@ -4,15 +4,15 @@ import Link from "next/link";
 import { useState } from "react";
 import { Tooltip } from "radix-ui";
 import { latencyQuality, latencyThresholds } from "@/lib/latency-quality";
-import type { LatencyProbeResult, ProbeIPDelay } from "@/lib/types";
+import type { IPLocation, LatencyProbeResult, ProbeIPDelay } from "@/lib/types";
 
 const styles = { green: "bg-emerald-500", yellow: "bg-amber-400", red: "bg-rose-500", unknown: "bg-slate-200" };
 const qualityNames = { green: "低延迟", yellow: "中等延迟", red: "高延迟", unknown: "暂无采样" };
 const formatTime = (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false });
 
-export function ProbeLatencyStrip({ probe, ip, country }: { probe: ProbeIPDelay; ip: string; country?: string }) {
+export function ProbeLatencyStrip({ probe, ip, location }: { probe: ProbeIPDelay; ip: string; location?: IPLocation | null }) {
   const [hovered, setHovered] = useState<number | null>(null);
-  const thresholds = latencyThresholds(country);
+  const thresholds = latencyThresholds(location?.country, location?.region, location?.city);
   // Retain the last real sample for compatibility while API/web roll out.
   const samples: (LatencyProbeResult | null)[] = [...(probe.samples ?? (probe.checked_at && probe.success != null ? [{
     id: 0, ip, delay_ms: probe.delay_ms ?? 0, success: probe.success, checked_at: probe.checked_at,
@@ -21,7 +21,7 @@ export function ProbeLatencyStrip({ probe, ip, country }: { probe: ProbeIPDelay;
   if (stale && samples.length) samples.push(null);
   const cells = [...Array<null>(Math.max(0, 16 - samples.length)).fill(null), ...samples].slice(-16);
   const selected = hovered == null ? cells.at(-1) : cells[hovered];
-  const quality = selected ? latencyQuality(selected.delay_ms, selected.success, country) : "unknown";
+  const quality = selected ? latencyQuality(selected.delay_ms, selected.success, location?.country, location?.region, location?.city) : "unknown";
   const description = selected
     ? `${selected.success ? `${qualityNames[quality]} · ${selected.delay_ms.toFixed(2)} ms` : "ICMP 超时"}；${formatTime(selected.checked_at)}`
     : stale && probe.checked_at ? "暂无新采样，最近结果已转为历史记录" : "暂无采样";
@@ -35,7 +35,7 @@ export function ProbeLatencyStrip({ probe, ip, country }: { probe: ProbeIPDelay;
           <span className="max-w-20 truncate font-medium">{probe.name}</span>
           <span className="flex shrink-0 gap-0.5" aria-hidden="true">
             {cells.map((sample, index) => {
-              const quality = sample ? latencyQuality(sample.delay_ms, sample.success, country) : "unknown";
+              const quality = sample ? latencyQuality(sample.delay_ms, sample.success, location?.country, location?.region, location?.city) : "unknown";
               return <span key={index} data-quality={quality} onPointerEnter={() => setHovered(index)}
                 className={`h-5 w-1.5 rounded-[2px] ${styles[quality]} ${sample && !sample.success ? "bg-[repeating-linear-gradient(135deg,transparent,transparent_2px,rgba(0,0,0,0.15)_2px,rgba(0,0,0,0.15)_4px)]" : ""} ${hovered === index ? "ring-1 ring-slate-500 ring-offset-1" : ""}`} />;
             })}

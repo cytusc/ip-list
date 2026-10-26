@@ -55,9 +55,9 @@ export function AvailableIPList({
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const inFlight = useRef(false);
-  const [countries, setCountries] = useState<Record<string, string>>({});
+  const [locations, setLocations] = useState<Record<string, IPLocation | null>>({});
   const receiveLocation = useCallback((ip: string, location: IPLocation | null) => {
-    setCountries(current => current[ip] === (location?.country || "") ? current : { ...current, [ip]: location?.country || "" });
+    setLocations(current => JSON.stringify(current[ip]) === JSON.stringify(location) ? current : { ...current, [ip]: location });
   }, []);
   const filtered = items.filter(
     (item) =>
@@ -313,7 +313,7 @@ export function AvailableIPList({
                     {item.probe_delays?.length ? (
                       <div className="flex flex-wrap gap-1.5">
                         {item.probe_delays.map((probe) => (
-                          <ProbeLatencyStrip key={probe.probe_id} probe={probe} ip={item.ip} country={countries[item.ip]} />
+                          <ProbeLatencyStrip key={probe.probe_id} probe={probe} ip={item.ip} location={locations[item.ip]} />
                         ))}
                       </div>
                     ) : (

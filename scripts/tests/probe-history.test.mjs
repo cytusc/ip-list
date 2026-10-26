@@ -26,18 +26,27 @@ test('all timeouts have no fabricated latency and empty samples have no loss rat
  assert.equal(analyzeProbeHistory([],now,1,180).loss,null);
 });
 
-test('regional latency colors treat domestic-nearby and long-haul destinations differently', async () => {
- const { latencyQuality } = await import('../../src/lib/latency-quality.ts');
- assert.equal(latencyQuality(100,true,'HK'),'yellow');
- assert.equal(latencyQuality(100,true,'JP'),'green');
- assert.equal(latencyQuality(180,true,'SG'),'yellow');
- assert.equal(latencyQuality(180,true,'US'),'green');
- assert.equal(latencyQuality(300,true,'US'),'yellow');
- assert.equal(latencyQuality(301,true,'US'),'red');
- assert.equal(latencyQuality(80,true,'TW'),'green');
- assert.equal(latencyQuality(150,true,'TW'),'yellow');
- assert.equal(latencyQuality(151,true,'TW'),'red');
+test('regional quality targets distinguish nearby destinations and US regions', async () => {
+ const { latencyQuality, latencyThresholds } = await import('../../src/lib/latency-quality.ts');
+ for (const [country, region, city, green, yellow] of [
+  ['HK','','',50,80], ['MO','','',50,80], ['TW','','',60,100],
+  ['JP','','',70,110], ['KR','','',70,110], ['SG','','',80,120], ['MY','','',100,150],
+  ['US','California','Los Angeles',160,200], ['US','CA','',160,200],
+  ['US','加利福尼亚州','洛杉矶',160,200], ['US','','San Jose',160,200],
+  ['US','DC','Washington',200,240], ['US','Washington','Seattle',160,200], ['US','New York','',200,240], ['US','NJ','',200,240],
+  ['US','Texas','Dallas',180,220], ['US','','',160,200],
+  [undefined,'','',200,250],
+ ]) {
+  const thresholds = latencyThresholds(country,region,city);
+  assert.equal(thresholds.green,green); assert.equal(thresholds.yellow,yellow);
+  assert.equal(latencyQuality(green,true,country,region,city),'green');
+  assert.equal(latencyQuality(green+0.01,true,country,region,city),'yellow');
+  assert.equal(latencyQuality(yellow,true,country,region,city),'yellow');
+  assert.equal(latencyQuality(yellow+0.01,true,country,region,city),'red');
+ }
  assert.equal(latencyQuality(0,false,'HK'),'red');
  assert.equal(latencyQuality(null,null,'HK'),'unknown');
- assert.equal(latencyQuality(180,true,undefined),'green');
+ assert.equal(latencyQuality(NaN,true,'US'),'unknown');
+ assert.equal(latencyQuality(180,true,'US','California'),'yellow');
+ assert.equal(latencyQuality(180,true,'US','New York'),'green');
 });
