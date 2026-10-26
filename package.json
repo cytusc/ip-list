@@ -11,6 +11,7 @@
     "db:init": "go -C backend run . -init",
     "test": "go -C backend test ./...",
     "api:dev": "go -C backend run .",
+    "probe:build": "sh scripts/latency-probe/build.sh",
     "api:build": "go -C backend build -o ../bin/ipguard .",
     "test:e2e": "playwright test"
   },

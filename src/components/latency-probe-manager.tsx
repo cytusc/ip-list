@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition } from "react";
-import { Activity, Copy, KeyRound, Loader2, Plus, Radio, Save, Trash2 } from "lucide-react";
+import { useId, useState, useTransition, cloneElement, type ReactElement } from "react";
+import { Activity, Copy, Download, KeyRound, Loader2, Plus, Radio, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   createLatencyProbe,
@@ -12,6 +12,7 @@ import {
 } from "@/app/actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { LatencyProbe } from "@/lib/types";
@@ -34,10 +35,13 @@ const blank: Config = {
   enabled: true,
 };
 
-export function LatencyProbeManager({ initial }: { initial: LatencyProbe[] }) {
+export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe[]; tlsPin: string }) {
   const [items, setItems] = useState(initial);
   const [draft, setDraft] = useState(blank);
+  const [deploy, setDeploy] = useState<LatencyProbe | null>(null);
+  const [platform, setPlatform] = useState("darwin");
   const [credential, setCredential] = useState<{
+    id: string;
     name: string;
     token: string;
     server: string;
@@ -59,20 +63,28 @@ export function LatencyProbeManager({ initial }: { initial: LatencyProbe[] }) {
       setItems((current) => [result.probe, ...current]);
       setDraft(blank);
       setCredential({
+        id: result.probe.id,
         name: result.probe.name,
         token: result.token,
         server: window.location.origin,
       });
+      setDeploy(result.probe);
       toast.success("探针已创建，请在电脑上启动探针程序");
     });
   }
 
+  const currentToken = credential?.id === deploy?.id ? credential?.token || "" : "";
+  const origin = credential?.server || (typeof window !== "undefined" ? window.location.origin : "");
+  const quote = (value: string) => "'" + value.replaceAll("'", platform === "windows" ? "''" : "'\\''") + "'";
+  const pinArgs = tlsPin ? ` --insecure --pinnedpubkey ${quote(`sha256//${tlsPin}`)}` : "";
+  const command = platform === "windows"
+    ? `$p = Join-Path $env:TEMP ('ip-list-' + [guid]::NewGuid() + '.ps1'); curl.exe -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.ps1")} -o $p; if ($LASTEXITCODE -eq 0) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p -Server ${quote(origin)} -Token ${quote(currentToken)} ${tlsPin ? `-Pin ${quote(tlsPin)}` : ""}; Remove-Item $p }`
+    : `f=$(mktemp) && curl -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.sh")} -o "$f" && ${platform === "linux" ? "sudo " : ""}sh "$f" ${quote(origin)} ${quote(currentToken)} ${quote(tlsPin)}; rm -f "$f"`;
+
   async function copyCommand() {
-    if (!credential) return;
-    const command = `cd backend && PROBE_SERVER='${credential.server}' PROBE_TOKEN='${credential.token}' go run ./cmd/latency-probe`;
     try {
       await navigator.clipboard.writeText(command);
-      toast.success("启动命令已复制");
+      toast.success("部署命令已复制，请在探针电脑上运行");
     } catch {
       toast.error("复制失败，请手动选择命令复制");
     }
@@ -99,6 +111,7 @@ export function LatencyProbeManager({ initial }: { initial: LatencyProbe[] }) {
       return;
     }
     setCredential({
+      id: item.id,
       name: item.name,
       token: result.token,
       server: window.location.origin,
@@ -133,29 +146,38 @@ export function LatencyProbeManager({ initial }: { initial: LatencyProbe[] }) {
         </p>
       </div>
 
-      {credential && (
-        <section className="space-y-3 rounded-xl border border-blue-200 bg-blue-50 p-4 sm:p-5">
-          <div className="flex items-center gap-2 font-medium text-blue-950">
-            <KeyRound className="size-4" />
-            {credential.name} 的启动密钥
+      <Dialog open={!!deploy} onOpenChange={(open) => { if (!open) setDeploy(null); }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>部署探针 · {deploy?.name}</DialogTitle>
+            <DialogDescription>独立二进制，无需安装 Go、Node 或克隆项目。请在需要测量延迟的电脑上运行。</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-wrap gap-2">
+            {[['darwin', 'macOS'], ['linux', 'Linux'], ['windows', 'Windows']].map(([value, label]) => (
+              <Button key={value} variant={platform === value ? "default" : "outline"} size="sm" onClick={() => setPlatform(value)}>{label}</Button>
+            ))}
           </div>
-          <p className="text-sm leading-6 text-blue-900">
-            密钥只在此处显示。请复制并妥善保存；刷新或离开页面后无法再次查看，可重新生成。
-          </p>
-          <div className="overflow-x-auto rounded-md border bg-white p-3 font-mono text-xs whitespace-nowrap">
-            {credential.token}
+          <p className="text-sm text-muted-foreground">{platform === "darwin" ? "在终端粘贴运行，自动识别 Intel / Apple 芯片，安装为登录后自动运行的后台探针。" : platform === "linux" ? "在终端粘贴运行，自动识别 amd64 / arm64，使用 sudo 安装为 systemd 服务。需要系统 ping 和 curl。" : "在 PowerShell 粘贴运行，自动下载程序并创建登录后启动的计划任务。"}</p>
+          <Field label="部署密钥">
+            <Input type="password" autoComplete="off" value={currentToken} placeholder="粘贴已保存的密钥，或点击下方重新生成" onChange={(event) => deploy && setCredential({ id: deploy.id, name: deploy.name, server: window.location.origin, token: event.target.value.trim() })} />
+          </Field>
+          {!currentToken && <p className="text-xs text-muted-foreground">服务器只保存密钥哈希，无法找回旧密钥。重新生成后，旧密钥立即失效。</p>}
+          <Button variant="outline" disabled={pending} onClick={() => deploy && window.confirm("重新生成将使此探针的旧密钥立即失效，确定继续？") && startTransition(() => rotate(deploy))}><KeyRound />重新生成部署密钥</Button>
+          {currentToken && <>
+            <p className="text-xs text-muted-foreground">命令包含密钥，请妥善保存；刷新页面后无法再次查看。</p>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-xs text-slate-100">{command}</pre>
+            <Button onClick={copyCommand}><Copy />复制一键部署命令</Button>
+          </>}
+          <div className="space-y-2 border-t pt-3 text-sm">
+            <p className="font-medium">直接下载二进制</p>
+            <div className="flex flex-wrap gap-4">
+              {["amd64", "arm64"].map((arch) => <a key={arch} className="text-primary underline" href={`/probe-downloads/latency-probe-${platform}-${arch}${platform === "windows" ? ".exe" : ""}`}><Download className="mr-1 inline size-4" />{arch === "amd64" ? "Intel / AMD x64" : "ARM64 / Apple 芯片"}</a>)}
+              <a className="text-primary underline" href={`/probe-downloads/install.${platform === "windows" ? "ps1" : "sh"}`}>下载安装脚本</a>
+            </div>
+            <p className="text-xs text-muted-foreground">手动运行：程序支持 -server、-token、-tls-pin 或 -config 配置文件。建议使用上方命令，自动配置鉴权和后台运行。每台电脑建议单独创建探针。</p>
           </div>
-          <div className="overflow-x-auto rounded-md bg-slate-950 p-3 font-mono text-xs whitespace-nowrap text-slate-100">
-            cd /path/to/ip_list/backend &amp;&amp; PROBE_SERVER=&apos;{credential.server}&apos; PROBE_TOKEN=&apos;{credential.token}&apos; go run ./cmd/latency-probe
-          </div>
-          <Button size="sm" onClick={copyCommand}>
-            <Copy />复制启动命令
-          </Button>
-          <p className="text-xs leading-5 text-blue-900">
-            电脑需要安装 Go。把项目代码放到电脑后，在 backend 目录运行上面的命令；探针会在终端持续运行。
-          </p>
-        </section>
-      )}
+        </DialogContent>
+      </Dialog>
 
       <form onSubmit={create} className="space-y-4 rounded-xl border bg-white p-4 sm:p-5">
         <div>
@@ -224,20 +246,21 @@ export function LatencyProbeManager({ initial }: { initial: LatencyProbe[] }) {
           <h2 className="font-semibold">已配置的探针</h2>
           <span className="text-xs text-muted-foreground">{items.length} 个</span>
         </div>
-        {items.length ? items.map((item) => (
-          <ProbeCard
-            key={item.id}
-            item={item}
-            busy={pending}
-            onSave={(config) => void save(item, config)}
-            onRotate={() => void rotate(item)}
-            onDelete={() => void remove(item)}
-          />
-        )) : (
-          <div className="rounded-xl border border-dashed bg-white p-8 text-center text-sm text-muted-foreground">
-            还没有探针。创建后复制启动命令，在电脑上运行即可开始上报。
-          </div>
-        )}
+        {items.length ? <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full whitespace-nowrap text-sm">
+          <thead className="bg-slate-50 text-left text-muted-foreground"><tr>{["名称", "状态", "检测间隔", "出口网卡", "最后连接", "操作"].map((title) => <th key={title} className="px-4 py-3 font-medium">{title}</th>)}</tr></thead>
+          <tbody>{items.map((item) => <tr key={item.id} className="border-t">
+            <td className="px-4 py-3 font-medium">{item.name}</td>
+            <td className="px-4 py-3"><Badge variant={item.online ? "default" : "secondary"}>{!item.enabled ? "已停用" : item.online ? "在线" : "离线"}</Badge></td>
+            <td className="px-4 py-3">{item.interval_seconds} 秒</td>
+            <td className="px-4 py-3">{item.interface_name || "系统默认路由"}</td>
+            <td className="px-4 py-3 text-muted-foreground">{item.last_seen ? new Date(item.last_seen).toLocaleString("zh-CN", { hour12: false }) : "尚未连接"}</td>
+            <td className="px-4 py-3"><div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => setDeploy(item)}><Download />部署</Button>
+              <ProbeCard item={item} busy={pending} onSave={(config) => startTransition(() => save(item, config))} onDelete={() => startTransition(() => remove(item))} />
+              <Link className="text-primary hover:underline" href={`/latency-probes/${item.id}`}>延迟历史</Link>
+            </div></td>
+          </tr>)}</tbody>
+        </table></div> : <div className="rounded-xl border border-dashed bg-white p-8 text-center text-sm text-muted-foreground">还没有探针。创建后可获取一键部署命令。</div>}
       </section>
 
       <div className="rounded-lg border bg-slate-50 p-4 text-xs leading-5 text-muted-foreground">
@@ -254,13 +277,11 @@ function ProbeCard({
   item,
   busy,
   onSave,
-  onRotate,
   onDelete,
 }: {
   item: LatencyProbe;
   busy: boolean;
   onSave: (config: Config) => void;
-  onRotate: () => void;
   onDelete: () => void;
 }) {
   const [config, setConfig] = useState<Config>({
@@ -278,7 +299,11 @@ function ProbeCard({
     config.interface_name !== item.interface_name ||
     config.enabled !== item.enabled;
   return (
-    <article className="space-y-4 rounded-xl border bg-white p-4 sm:p-5">
+    <Dialog>
+      <DialogTrigger asChild><Button size="sm" variant="outline">编辑</Button></DialogTrigger>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogHeader><DialogTitle>编辑探针 · {item.name}</DialogTitle><DialogDescription>间隔、超时和网卡配置会在下一轮检测时生效。</DialogDescription></DialogHeader>
+      <form onSubmit={(event) => { event.preventDefault(); onSave(config); }} className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <h3 className="font-medium">{item.name}</h3>
@@ -314,28 +339,26 @@ function ProbeCard({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-        <Button size="sm" disabled={busy || !changed} onClick={() => onSave(config)}>
+        <Button type="submit" size="sm" disabled={busy || !changed}>
           <Save />保存配置
         </Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={onRotate}>
-          <KeyRound />重新生成密钥
-        </Button>
-        <Button size="sm" variant="ghost" className="text-destructive" disabled={busy} onClick={onDelete}>
+        <Button size="sm" type="button" variant="ghost" className="text-destructive" disabled={busy} onClick={onDelete}>
           <Trash2 />删除
         </Button>
         <Link className="ml-auto inline-flex items-center gap-1 text-sm text-primary hover:underline" href={`/latency-probes/${item.id}`}>
           查看延迟历史
         </Link>
       </div>
-    </article>
+    </form></DialogContent></Dialog>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: ReactElement<{ id?: string }> }) {
+  const id = useId();
   return (
     <div className="space-y-2">
-      <Label>{label}</Label>
-      {children}
+      <Label htmlFor={id}>{label}</Label>
+      {cloneElement(children, { id })}
     </div>
   );
 }

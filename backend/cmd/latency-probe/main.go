@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,8 +13,8 @@ import (
 	"io"
 	"log"
 	"math"
-	"net/netip"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"regexp"
@@ -26,14 +29,15 @@ var pingDelay = regexp.MustCompile(`(?i)(?:time|时间)[=<]\s*([0-9]+(?:\.[0-9]+
 type config struct {
 	Server string
 	Token  string
+	TLSPin string
 }
 
 type settings struct {
-	IPs            []string `json:"ips"`
-	Interval       int      `json:"interval_seconds"`
-	TimeoutMS      int      `json:"timeout_ms"`
-	Concurrency    int      `json:"concurrency"`
-	InterfaceName  string   `json:"interface_name"`
+	IPs           []string `json:"ips"`
+	Interval      int      `json:"interval_seconds"`
+	TimeoutMS     int      `json:"timeout_ms"`
+	Concurrency   int      `json:"concurrency"`
+	InterfaceName string   `json:"interface_name"`
 }
 
 type result struct {
@@ -46,15 +50,47 @@ type result struct {
 func main() {
 	server := flag.String("server", os.Getenv("PROBE_SERVER"), "网站地址，例如 https://example.com")
 	token := flag.String("token", os.Getenv("PROBE_TOKEN"), "探针密钥")
+	configPath := flag.String("config", "", "JSON 配置文件")
+	tlsPin := flag.String("tls-pin", "", "服务器公钥 SHA-256（base64）")
+	once := flag.Bool("once", false, "执行一轮检测并上报后退出")
+	check := flag.Bool("check", false, "检查连接和鉴权后退出")
 	flag.Parse()
+	if *configPath != "" {
+		content, err := os.ReadFile(*configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		var cfg config
+		if err = json.Unmarshal(content, &cfg); err != nil {
+			log.Fatal(err)
+		}
+		*server, *token, *tlsPin = cfg.Server, cfg.Token, cfg.TLSPin
+	}
 	if *server == "" || *token == "" {
 		log.Fatal("请设置 -server 和 -token，或设置 PROBE_SERVER、PROBE_TOKEN")
 	}
 	base := strings.TrimRight(*server, "/")
-	client := &http.Client{Timeout: 30 * time.Second}
+	client, err := newHTTPClient(*tlsPin)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *check {
+		cfg, err := loadSettings(client, base, *token)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err = exec.LookPath("ping"); err != nil {
+			log.Fatal("未找到系统 ping，请先安装 iputils-ping")
+		}
+		log.Printf("连接和鉴权成功：%d 个目标，间隔 %d 秒", len(cfg.IPs), cfg.Interval)
+		return
+	}
 	for {
 		settings, err := loadSettings(client, base, *token)
 		if err != nil {
+			if *once {
+				log.Fatal(err)
+			}
 			log.Printf("读取探针任务失败: %v", err)
 			time.Sleep(30 * time.Second)
 			continue
@@ -70,6 +106,9 @@ func main() {
 				}
 			}
 			if reportErr != nil {
+				if *once {
+					log.Fatal(reportErr)
+				}
 				log.Printf("上报检测结果失败: %v", reportErr)
 			} else {
 				ok := 0
@@ -81,12 +120,43 @@ func main() {
 				log.Printf("已检测 %d 个 IP：%d 可达，%d 超时", len(results), ok, len(results)-ok)
 			}
 		}
+		if *once {
+			return
+		}
 		wait := time.Duration(settings.Interval) * time.Second
 		if wait < 15*time.Second {
 			wait = 15 * time.Second
 		}
 		time.Sleep(wait)
 	}
+}
+
+func newHTTPClient(tlsPin string) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if tlsPin != "" {
+		expected, err := base64.StdEncoding.DecodeString(tlsPin)
+		if err != nil || len(expected) != sha256.Size {
+			return nil, fmt.Errorf("服务器公钥指纹格式无效")
+		}
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			// A pinned public key replaces CA validation for private/self-signed sites.
+			InsecureSkipVerify: true,
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return fmt.Errorf("服务器未提供证书")
+				}
+				actual := sha256.Sum256(cs.PeerCertificates[0].RawSubjectPublicKeyInfo)
+				if !bytes.Equal(expected, actual[:]) {
+					return fmt.Errorf("服务器公钥指纹不匹配")
+				}
+				return nil
+			},
+		}
+	}
+	return &http.Client{Timeout: 30 * time.Second, Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}, nil
 }
 
 func loadSettings(client *http.Client, base, token string) (settings, error) {
@@ -193,6 +263,7 @@ func ping(ip netip.Addr, timeout time.Duration, iface string) (float64, bool) {
 		binary = "ping6"
 	}
 	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	output, err := cmd.CombinedOutput()
 	match := pingDelay.FindSubmatch(output)
 	if len(match) != 2 {
