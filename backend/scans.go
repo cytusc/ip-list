@@ -30,9 +30,10 @@ const scanHeartbeat = 10 * time.Second
 const scanControlScript = `
 if redis.call('get',KEYS[1]) ~= ARGV[1] then return -1 end
 redis.call('expire',KEYS[1],45)
-return redis.call('exists',KEYS[2])`
+return redis.call('exists',unpack(KEYS,2))`
 
 type scanInput struct {
+	Incremental     bool     `json:"incremental"`
 	NodeID          string   `json:"node_id"`
 	NetworkIDs      []string `json:"network_ids"`
 	URL             string   `json:"url"`
@@ -51,6 +52,7 @@ type scanResult struct {
 	PreviousDelay *int   `json:"previous_delay_ms,omitempty"`
 }
 type scanJob struct {
+	LeaseID    string       `json:"-"`
 	TargetID   string       `json:"target_id,omitempty"`
 	Protocol   string       `json:"protocol,omitempty"`
 	ConfigHash string       `json:"-"`
@@ -74,6 +76,13 @@ type scanJob struct {
 	UpdatedAt  time.Time    `json:"updated_at"`
 }
 
+func (j scanJob) leaseID() string {
+	if j.LeaseID != "" {
+		return j.LeaseID
+	}
+	return j.ID
+}
+
 func scanKey(id string) string       { return "ipfilter:scan:job:" + id }
 func latestKey(userID string) string { return "ipfilter:scan:latest:" + userID }
 
@@ -91,6 +100,10 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 422, "网段 ID 无效", nil)
 			return
 		}
+	}
+	if input.Incremental && input.IntervalMinutes != 0 {
+		apiError(w, 422, "增量检测请使用单次检测；自动巡检请使用全量检测", nil)
+		return
 	}
 	if input.IntervalMinutes != 0 && (input.IntervalMinutes < 1 || input.IntervalMinutes > 1440 || input.FullEvery < 1 || input.FullEvery > 288) {
 		apiError(w, 422, "巡检间隔为 1–1440 分钟，全量扫描频率为 1–288 轮", nil)
@@ -145,9 +158,33 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "所选网段在当前协议池中均已禁用或删除，请恢复网段后重试", nil)
 		return
 	}
-	ips, err := expandPrefixes(cidrs)
+	var ips []netip.Addr
+	if input.Incremental {
+		var checked []string
+		checked, err = a.checkedScanIPs(r.Context(), cidrs, protocol)
+		if err == nil {
+			var total int
+			var targets iter.Seq[netip.Addr]
+			total, targets, err = scanTargetsExcluding(cidrs, checked)
+			if err == nil && total > 4096 {
+				err = errors.New("单次最多检测 4096 个新增 IP，请减少所选网段")
+			}
+			if err == nil {
+				ips = slices.Collect(targets)
+			}
+		} else {
+			dbError(w, err)
+			return
+		}
+	} else {
+		ips, err = expandPrefixes(cidrs)
+	}
 	if err != nil {
 		apiError(w, 422, err.Error(), nil)
+		return
+	}
+	if len(ips) == 0 {
+		apiError(w, 422, "所选网段已全部检测，无新增 IP；如需复测请选择全量检测", nil)
 		return
 	}
 	job, status, message := a.launchNodeScan(r.Context(), r.Context().Value(userContextKey{}).(user).ID, input, raw, name, template, cidrs, ips, false)
@@ -174,6 +211,9 @@ func (a *app) launchNodeScan(ctx context.Context, userID string, input scanInput
 		return scanJob{}, 409, "已有测试正在运行，请等待完成或停止当前任务"
 	}
 	job := scanJob{Input: input, Round: 1, Scope: "full", StartedAt: time.Now().UTC(), ID: id, UserID: userID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
+	if input.Incremental {
+		job.Scope = "incremental"
+	}
 	job.Protocol = protocol
 	// Configuration identity only, not a security hash. PostgreSQL compares md5(share_uri).
 	fingerprint := md5.Sum([]byte(raw))
@@ -368,7 +408,7 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 			done = nil // Drain workers before releasing the lease.
 		case <-ticker.C:
 			checkCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
-			control, err := a.redis.Eval(checkCtx, scanControlScript, []string{job.lockKey(), scanKey(job.ID) + ":cancel"}, job.ID).Int()
+			control, err := a.redis.Eval(checkCtx, scanControlScript, []string{job.lockKey(), scanKey(job.ID) + ":cancel", scanKey(job.leaseID()) + ":cancel"}, job.leaseID()).Int()
 			if err != nil || control < 0 {
 				job.Status = "interrupted"
 				job.Error = "任务租约失效或 Redis 连接中断，请重试"

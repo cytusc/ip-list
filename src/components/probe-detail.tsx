@@ -101,7 +101,7 @@ export function ProbeDetail({ initial }: { initial: ScanRecord }) {
             <span>{protocolLabels[record.protocol] || record.protocol}</span>
             <span>第 {record.round} 轮</span>
             <span>
-              {record.scope === "available" ? "复测可用 IP" : "全量扫描"}
+              {record.scope === "incremental" ? "增量检测" : record.scope === "available" ? "复测可用 IP" : "全量扫描"}
             </span>
             <span>开始于 {formatTime(record.started_at)}</span>
             <span>

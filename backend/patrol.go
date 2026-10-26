@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/netip"
 	"time"
 )
@@ -150,6 +151,17 @@ func (a *app) waitPatrol(job *scanJob) bool {
 		}
 		if !time.Now().Before(*job.NextRunAt) {
 			return true
+		}
+		// A waiting patrol retains its lease. Run one queued increment under that
+		// lease before the next round, without changing its selected ranges.
+		if a.db != nil && job.Protocol != "" {
+			worked, err := a.processAutomaticScan(a.scanContext, job.Protocol, job.ID)
+			if err != nil {
+				log.Printf("自动增量检测失败: %v", err)
+			}
+			if worked && !a.savePatrol(job) {
+				return false
+			}
 		}
 		if time.Since(job.UpdatedAt) >= scanHeartbeat && !a.savePatrol(job) {
 			return false

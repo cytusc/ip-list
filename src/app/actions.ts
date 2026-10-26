@@ -152,7 +152,7 @@ export async function deleteCFTarget(id: string): Promise<ActionResult> {
 }
 export async function startCFScan(
   id: string,
-  input: { network_ids: string[]; timeout_ms: number; concurrency: number },
+  input: { network_ids: string[]; timeout_ms: number; concurrency: number; incremental?: boolean },
 ) {
   try {
     const { data } = await api<import("@/lib/types").ScanJob>(

@@ -174,7 +174,13 @@ export function ConfigForm({
                 );
                 if (result.ok) {
                   if (result.warning) toast.warning(result.warning);
-                  else toast.success(`${label}已${item ? "更新" : "创建"}`);
+                  else {
+                    toast.success(`${label}已${item ? "更新" : "创建"}`, {
+                      description: !isNode && data.enabled
+                        ? "新增、修改 CIDR 或重新启用网段后会自动增量检测；已有任务时排队处理。"
+                        : undefined,
+                    });
+                  }
                   onClose();
                 } else {
                   setError(result.error);
@@ -230,6 +236,9 @@ export function ConfigForm({
                 "192.168.1.0/24",
                 "支持 IPv4 / IPv6，请填写网络地址，主机位需为 0。",
               )}
+              <p className="text-xs text-muted-foreground">
+                新增、修改 CIDR 或重新启用网段后，会使用已配置的节点和 CF 域名自动检测未测 IP。已有任务时排队处理，无需手动开始。
+              </p>
               <p className="text-xs text-muted-foreground">
                 根据网段自动查询 ASN 和所属机构；修改 CIDR 后会重新查询，
                 缺失数据由后台自动补全。以下信息可按需手动修正。

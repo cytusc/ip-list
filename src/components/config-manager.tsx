@@ -185,7 +185,7 @@ export function ConfigManager({
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground">
-            管理{label}的基础信息与启用状态
+            {isNode ? "管理节点的基础信息与启用状态" : "新增启用网段后自动增量检测，已有任务时排队处理"}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">

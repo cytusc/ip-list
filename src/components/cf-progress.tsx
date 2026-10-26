@@ -184,7 +184,7 @@ export function CFProgressView({
 
           <div className="grid gap-2 rounded-lg bg-slate-50 p-4 text-xs text-muted-foreground sm:grid-cols-3">
             <p>
-              检测网段 <span className="tabular-nums">{job.cidrs.length}</span>{" "}
+              {job.scope === "incremental" ? "增量检测" : "全量检测"} · 网段 <span className="tabular-nums">{job.cidrs.length}</span>{" "}
               个
             </p>
             <p>

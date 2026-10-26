@@ -104,6 +104,7 @@ func main() {
 	}
 	a.scanContext = ctx
 	go a.resumeNodeSchedules(ctx)
+	go a.maintainAutomaticScans(ctx)
 	go a.maintainNetworkMetadata(ctx)
 	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
@@ -361,10 +362,12 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 		return
 	}
 	warning := ""
+	autoScan := kind == "networks" && input.Enabled && id == ""
 	if kind == "networks" {
 		if id != "" {
 			var oldCIDR string
-			if err := a.db.QueryRow(r.Context(), "SELECT cidr::text FROM networks WHERE id=$1", id).Scan(&oldCIDR); err != nil {
+			var oldEnabled bool
+			if err := a.db.QueryRow(r.Context(), "SELECT cidr::text,enabled FROM networks WHERE id=$1", id).Scan(&oldCIDR, &oldEnabled); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					apiError(w, 404, "配置已被删除，请刷新列表", nil)
 				} else {
@@ -372,6 +375,7 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 				}
 				return
 			}
+			autoScan = input.Enabled && (oldCIDR != input.CIDR || !oldEnabled)
 			// Metadata from a previous address range must not follow an edited CIDR.
 			if oldCIDR != input.CIDR {
 				input.ASN, input.Provider = "", ""
@@ -415,12 +419,28 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 	}
 	query += " RETURNING id::text"
 	var savedID string
-	err := a.db.QueryRow(r.Context(), query, values...).Scan(&savedID)
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	err = tx.QueryRow(r.Context(), query, values...).Scan(&savedID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		apiError(w, 404, "配置已被删除，请刷新列表", nil)
 		return
 	}
 	if err != nil {
+		dbError(w, err)
+		return
+	}
+	if autoScan {
+		if err = enqueueAutomaticScans(r.Context(), tx, savedID, input.CIDR, r.Context().Value(userContextKey{}).(user).ID); err != nil {
+			dbError(w, err)
+			return
+		}
+	}
+	if err = tx.Commit(r.Context()); err != nil {
 		dbError(w, err)
 		return
 	}

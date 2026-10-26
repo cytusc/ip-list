@@ -456,6 +456,7 @@ function ScanConfigForm({
       networks.some((network) => network.id === id && network.enabled),
     ),
   );
+  const [incremental, setIncremental] = useState(true);
   const [timeout, setTimeoutValue] = useState(() => job?.input?.timeout_ms ?? 5000);
   const [concurrency, setConcurrency] = useState(
     () => job?.input?.concurrency ?? 16,
@@ -480,6 +481,7 @@ function ScanConfigForm({
           try {
             const result = await startCFScan(targetID, {
               network_ids: selected,
+              incremental,
               timeout_ms: timeout,
               concurrency,
             });
@@ -521,6 +523,19 @@ function ScanConfigForm({
             该域名只作为检测样本，决定请求的 Host 与证书校验目标。
           </p>
         </div>
+        <div className="space-y-2">
+          <Label htmlFor="cf-mode">检测方式</Label>
+          <Select value={incremental ? "incremental" : "full"} onValueChange={(value) => setIncremental(value === "incremental")} disabled={active || pending}>
+            <SelectTrigger id="cf-mode" className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="incremental">增量检测 · 仅检测新增 IP</SelectItem>
+              <SelectItem value="full">全量检测 · 复测全部所选地址</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs leading-5 text-muted-foreground">
+            增量检测跳过共用池中已检测的 IP（含失败结果），补测新增和上次未完成的地址，保留已有结果。
+          </p>
+        </div>
         <p className="text-sm font-medium">检测网段</p>
         <NetworkSelector
           networks={networks}
@@ -531,7 +546,7 @@ function ScanConfigForm({
         <p className="text-xs leading-5 text-muted-foreground">
           已选 {selectedNetworks.length} 个网段，地址总数上限{" "}
           {addressUpperCount.toString()}
-          （重叠地址自动去重）。检测覆盖所选网段的全部地址。
+          （重叠地址自动去重）。{incremental ? "实际仅检测其中未检测的地址。" : "检测覆盖所选网段的全部地址。"}
         </p>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
@@ -569,7 +584,7 @@ function ScanConfigForm({
           type="submit"
           disabled={active || pending || !selected.length || !targetID}
         >
-          {pending ? "处理中…" : "开始检测"}
+          {pending ? "处理中…" : incremental ? "开始增量检测" : "开始全量检测"}
         </Button>
         {active && (
           <Button type="button" variant="outline" asChild>

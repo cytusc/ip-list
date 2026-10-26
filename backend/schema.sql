@@ -205,3 +205,14 @@ INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
  HAVING NOT bool_or(s.available)
  AND count(*)=power(2::numeric,(CASE family(w.cidr) WHEN 4 THEN 32 ELSE 128 END)-masklen(w.cidr))
  ON CONFLICT(protocol,network_id) DO NOTHING;
+
+-- New ranges are queued atomically with their configuration. The per-pool
+-- Redis lease serializes workers; unfinished work survives process restarts.
+CREATE TABLE IF NOT EXISTS network_auto_scans (
+ network_id uuid NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+ cidr cidr NOT NULL,
+ protocol varchar(32) NOT NULL,
+ user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ created_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (network_id, protocol)
+);

@@ -116,7 +116,10 @@ function ProbeForm({
     () => defaults?.concurrency ?? 5,
   );
   const [interval, setIntervalMinutes] = useState(
-    () => defaults?.interval_minutes ?? 5,
+    () => defaults?.interval_minutes ?? 0,
+  );
+  const [incremental, setIncremental] = useState(
+    () => defaults?.incremental ?? !defaults?.interval_minutes,
   );
   const [fullEvery, setFullEvery] = useState(() => defaults?.full_every ?? 12);
   const [error, setError] = useState("");
@@ -140,7 +143,7 @@ function ProbeForm({
     (sum, network) => sum + size(network.cidr),
     BigInt(0),
   );
-  const tooLarge = selected.some(
+  const tooLarge = !incremental && selected.some(
     (network) => size(network.cidr) > BigInt(4096),
   );
   // 同一协议池共用任务锁，其他池可以并行检测。
@@ -164,6 +167,7 @@ function ProbeForm({
               concurrency,
               interval_minutes: interval,
               full_every: fullEvery,
+              incremental,
             });
             if (!result.ok) {
               setError(result.error);
@@ -238,7 +242,7 @@ function ProbeForm({
         />
         <p className="text-xs leading-5 text-muted-foreground">
           已选 {selected.length} 个网段，地址总数上限 {upperCount.toString()}
-          （重叠地址自动去重）。每次最多 4096 个 IP，包含网段内全部地址。
+          （重叠地址自动去重）。每次最多检测 4096 个 IP；增量模式仅计算未检测地址。
         </p>
         {tooLarge && (
           <p role="alert" className="text-sm text-destructive">
@@ -288,17 +292,21 @@ function ProbeForm({
         </div>
       )}
       <div className="space-y-3 rounded-lg bg-slate-50 p-4">
-        <Label htmlFor="patrol-interval">巡检方式</Label>
+        <Label htmlFor="patrol-interval">检测方式</Label>
         <Select
-          value={String(interval)}
-          onValueChange={(value) => setIntervalMinutes(Number(value))}
+          value={incremental ? "incremental" : String(interval)}
+          onValueChange={(value) => {
+            setIncremental(value === "incremental");
+            setIntervalMinutes(value === "incremental" ? 0 : Number(value));
+          }}
           disabled={busy}
         >
           <SelectTrigger id="patrol-interval" className="w-full sm:w-64">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="0">单次检测</SelectItem>
+            <SelectItem value="incremental">增量检测 · 仅检测新增 IP</SelectItem>
+            <SelectItem value="0">全量检测 · 单次</SelectItem>
             <SelectItem value="1">自动巡检 · 间隔 1 分钟</SelectItem>
             <SelectItem value="5">自动巡检 · 间隔 5 分钟</SelectItem>
             <SelectItem value="15">自动巡检 · 间隔 15 分钟</SelectItem>
@@ -306,6 +314,11 @@ function ProbeForm({
             <SelectItem value="60">自动巡检 · 间隔 60 分钟</SelectItem>
           </SelectContent>
         </Select>
+        {incremental && (
+          <p className="text-xs leading-5 text-muted-foreground">
+            跳过当前协议池中已检测的 IP（含失败结果），仅检测新增或上次未完成的地址，保留已有结果。需要复测时选择全量检测。
+          </p>
+        )}
         {interval > 0 && (
           <>
             <Label htmlFor="patrol-full">每隔多少轮重新扫描全部网段</Label>
@@ -367,7 +380,7 @@ function ProbeForm({
           disabled={busy || !nodeID || !selected.length || tooLarge}
         >
           {pending ? <Loader2 className="animate-spin" /> : <Play />}
-          {pending ? "正在启动…" : interval ? "开始巡检" : "开始测试"}
+          {pending ? "正在启动…" : interval ? "开始巡检" : incremental ? "开始增量检测" : "开始测试"}
         </Button>
       </div>
       {blocked && (

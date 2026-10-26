@@ -27,6 +27,10 @@ const cfLock = "ipfilter:cf:active"
 // Merge overlapping prefixes before counting or iterating. Large ranges stay
 // compact in memory; the worker queue pulls addresses only as they are needed.
 func cfScanTargets(cidrs []string) (int, iter.Seq[netip.Addr], error) {
+	return scanTargetsExcluding(cidrs, nil)
+}
+
+func scanTargetsExcluding(cidrs, checked []string) (int, iter.Seq[netip.Addr], error) {
 	var builder netipx.IPSetBuilder
 	for _, cidr := range cidrs {
 		prefix, err := netip.ParsePrefix(cidr)
@@ -34,6 +38,13 @@ func cfScanTargets(cidrs []string) (int, iter.Seq[netip.Addr], error) {
 			return 0, nil, errors.New("网段无效")
 		}
 		builder.AddPrefix(prefix)
+	}
+	for _, raw := range checked {
+		ip, err := netip.ParseAddr(raw)
+		if err != nil {
+			return 0, nil, err
+		}
+		builder.Remove(ip)
 	}
 	set, err := builder.IPSet()
 	if err != nil {
@@ -44,7 +55,7 @@ func cfScanTargets(cidrs []string) (int, iter.Seq[netip.Addr], error) {
 	for _, prefix := range prefixes {
 		count.Add(count, new(big.Int).Lsh(big.NewInt(1), uint(prefix.Addr().BitLen()-prefix.Bits())))
 	}
-	if count.Sign() == 0 {
+	if count.Sign() == 0 && len(checked) == 0 {
 		return 0, nil, errors.New("请选择至少一个网段")
 	}
 	if !count.IsInt64() || uint64(count.Int64()) > uint64(^uint(0)>>1) {
@@ -346,6 +357,7 @@ func (a *app) startCFScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
+		Incremental bool     `json:"incremental"`
 		NetworkIDs  []string `json:"network_ids"`
 		Timeout     int      `json:"timeout_ms"`
 		Concurrency int      `json:"concurrency"`
@@ -402,9 +414,21 @@ func (a *app) startCFScan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	total, targets, err := cfScanTargets(cidrs)
+	var checked []string
+	if input.Incremental {
+		checked, err = a.checkedScanIPs(r.Context(), cidrs, "")
+		if err != nil {
+			dbError(w, err)
+			return
+		}
+	}
+	total, targets, err := scanTargetsExcluding(cidrs, checked)
 	if err != nil {
 		apiError(w, 422, err.Error(), nil)
+		return
+	}
+	if total == 0 {
+		apiError(w, 422, "所选网段已全部检测，无新增 IP；如需复测请选择全量检测", nil)
 		return
 	}
 	bytes := make([]byte, 16)
@@ -422,8 +446,12 @@ func (a *app) startCFScan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 409, "已有 CF 检测正在运行，请等待完成或停止任务", nil)
 		return
 	}
-	in := scanInput{NetworkIDs: input.NetworkIDs, URL: raw, Timeout: input.Timeout, Concurrency: input.Concurrency}
+	in := scanInput{Incremental: input.Incremental, NetworkIDs: input.NetworkIDs, URL: raw, Timeout: input.Timeout, Concurrency: input.Concurrency}
 	job := scanJob{ID: jobID, TargetID: id, Input: in, StartedAt: time.Now().UTC(), UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: raw, CIDRs: cidrs, Status: "running", Total: total, Results: []scanResult{}}
+	job.Scope = "full"
+	if input.Incremental {
+		job.Scope = "incremental"
+	}
 	err = a.persistScan(r.Context(), &job)
 	if err != nil {
 		a.releaseLock(cfLock, jobID)

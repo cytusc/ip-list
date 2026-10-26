@@ -35,6 +35,7 @@ export type ScanResult = {
   error?: string;
 };
 export type ScanInput = {
+  incremental?: boolean;
   node_id: string;
   network_ids: string[];
   url: string;
@@ -47,7 +48,7 @@ export type ScanJob = {
   protocol?: string;
   input?: ScanInput;
   round?: number;
-  scope?: "full" | "available";
+  scope?: "full" | "available" | "incremental";
   next_run_at?: string;
   started_at?: string;
   finished_at?: string;
@@ -69,7 +70,7 @@ export type ScanRecord = {
   round: number;
   protocol: string;
   node_name: string;
-  scope: "full" | "available";
+  scope: "full" | "available" | "incremental";
   url: string;
   cidrs: string[];
   input: ScanInput;

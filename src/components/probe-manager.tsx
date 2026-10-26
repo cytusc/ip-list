@@ -322,7 +322,7 @@ function RecordTable({ items }: { items: ScanRecord[] }) {
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {protocolLabels[item.protocol] || item.protocol} · 第{" "}
                     {item.round} 轮 ·{" "}
-                    {item.scope === "available" ? "复测" : "全量"}
+                    {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测" : "全量"}
                   </p>
                 </div>
                 <Badge
@@ -395,7 +395,7 @@ function RecordTable({ items }: { items: ScanRecord[] }) {
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     第 {item.round} 轮 ·{" "}
-                    {item.scope === "available" ? "复测可用" : "全量"}
+                    {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测可用" : "全量"}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
                     <span className="font-medium text-emerald-700">
