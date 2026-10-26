@@ -1,3 +1,4 @@
+﻿# Keep this script UTF-8 with BOM for Windows PowerShell 5.1.
 param(
   [Parameter(Mandatory=$true)][string]$Server,
   [Parameter(Mandatory=$true)][string]$Token,
