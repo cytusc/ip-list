@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { saveNode, saveNetwork } from "@/app/actions";
+import { saveNode, saveNetwork, saveNetworks } from "@/app/actions";
 import type { Node, Network } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +29,7 @@ export function ConfigForm({
   onClose: () => void;
 }) {
   const isNode = kind === "nodes";
+  const isBulkNetwork = !isNode && !item;
   const label = isNode ? "节点" : "网段";
   const initial = {
     share_uri: item && "share_uri" in item ? item.share_uri : "",
@@ -129,12 +130,12 @@ export function ConfigForm({
       }}
     >
       <DialogContent
-        className="max-h-[90dvh] overflow-y-auto sm:max-w-[520px]"
+        className="max-h-[90dvh] overflow-y-auto sm:max-w-[600px]"
         onInteractOutside={(event) => event.preventDefault()}
       >
         <DialogHeader>
           <DialogTitle>
-            {item ? "编辑" : "新增"}
+            {isBulkNetwork ? "批量添加" : item ? "编辑" : "新增"}
             {label}
           </DialogTitle>
           <DialogDescription>
@@ -149,6 +150,16 @@ export function ConfigForm({
             event.preventDefault();
             setError("");
             setFields({});
+            const cidrs = isBulkNetwork
+              ? values.cidr
+                  .split(/\r?\n/)
+                  .map((cidr) => cidr.trim())
+                  .filter(Boolean)
+              : [];
+            if (isBulkNetwork && !cidrs.length) {
+              setFields({ cidr: "请至少输入一个网段" });
+              return;
+            }
             const data = isNode
               ? {
                   share_uri: values.share_uri,
@@ -168,6 +179,26 @@ export function ConfigForm({
                 };
             startTransition(async () => {
               try {
+                if (isBulkNetwork) {
+                  const result = await saveNetworks(
+                    cidrs,
+                    values.enabled,
+                    values.description,
+                  );
+                  if (!result.ok) {
+                    setError(result.error);
+                    return;
+                  }
+                  toast.success(
+                    `批量添加完成：新增 ${result.created} 条，跳过重复 ${result.skipped} 条`,
+                  );
+                  if (result.failures.length)
+                    toast.error(
+                      `${result.failures.length} 条添加失败：${result.failures.slice(0, 3).join("；")}`,
+                    );
+                  onClose();
+                  return;
+                }
                 const result = await (isNode ? saveNode : saveNetwork)(
                   item?.id || null,
                   data,
@@ -192,11 +223,12 @@ export function ConfigForm({
             });
           }}
         >
-          {field(
-            "name",
-            `${label}名称`,
-            isNode ? "例如：上海主节点" : "例如：办公网络",
-          )}
+          {(!isBulkNetwork || isNode) &&
+            field(
+              "name",
+              `${label}名称`,
+              isNode ? "例如：上海主节点" : "例如：办公网络",
+            )}
           {isNode && (
             <div className="space-y-2">
               <Label htmlFor="share_uri">VLESS 链接（选填）</Label>
@@ -230,51 +262,86 @@ export function ConfigForm({
             </div>
           ) : (
             <>
-              {field(
-                "cidr",
-                "CIDR 网段",
-                "192.168.1.0/24",
-                "支持 IPv4 / IPv6，请填写网络地址，主机位需为 0。",
+              {isBulkNetwork ? (
+                <div className="space-y-2">
+                  <Label htmlFor="cidr">
+                    CIDR 网段（每行一个）
+                    <span className="text-destructive">*</span>
+                  </Label>
+                  <Textarea
+                    id="cidr"
+                    value={values.cidr}
+                    onChange={(event) => set("cidr", event.target.value)}
+                    disabled={pending}
+                    maxLength={65536}
+                    rows={8}
+                    placeholder={
+                      "45.66.129.0/24\n45.66.130.0/24\n45.66.131.0/24"
+                    }
+                    aria-invalid={Boolean(fields.cidr)}
+                    aria-describedby={fields.cidr ? "cidr-error" : "cidr-help"}
+                    className="font-mono text-xs"
+                  />
+                  <p id="cidr-help" className="text-xs text-muted-foreground">
+                    每行一个 IPv4 或 IPv6 网段；名称自动使用 CIDR，已存在或重复的网段会跳过。每批最多 256 条。
+                  </p>
+                  {fields.cidr && (
+                    <p id="cidr-error" className="text-xs text-destructive">
+                      {fields.cidr}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                field(
+                  "cidr",
+                  "CIDR 网段",
+                  "192.168.1.0/24",
+                  "支持 IPv4 / IPv6，请填写网络地址，主机位需为 0。",
+                )
               )}
               <p className="text-xs text-muted-foreground">
                 新增、修改 CIDR 或重新启用网段后，会使用已配置的节点和 CF 域名自动检测未测 IP。已有任务时排队处理，无需手动开始。
               </p>
-              <p className="text-xs text-muted-foreground">
-                根据网段自动查询 ASN 和所属机构；修改 CIDR 后会重新查询，
-                缺失数据由后台自动补全。以下信息可按需手动修正。
-              </p>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {(
-                  [
-                    ["asn", "ASN", "留空自动获取"],
-                    ["provider", "服务商", "留空自动获取"],
-                  ] as const
-                ).map(([key, title, placeholder]) => (
-                  <div key={key} className="space-y-2">
-                    <Label htmlFor={key}>{title}</Label>
-                    <Input
-                      id={key}
-                      value={values[key]}
-                      placeholder={placeholder}
-                      maxLength={key === "asn" ? 255 : 100}
-                      disabled={pending}
-                      onChange={(e) => set(key, e.target.value)}
-                      aria-invalid={Boolean(fields[key])}
-                      aria-describedby={
-                        fields[key] ? `${key}-error` : undefined
-                      }
-                    />
-                    {fields[key] && (
-                      <p
-                        id={`${key}-error`}
-                        className="text-xs text-destructive"
-                      >
-                        {fields[key]}
-                      </p>
-                    )}
+              {!isBulkNetwork && (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    根据网段自动查询 ASN 和所属机构；修改 CIDR 后会重新查询，
+                    缺失数据由后台自动补全。以下信息可按需手动修正。
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {(
+                      [
+                        ["asn", "ASN", "留空自动获取"],
+                        ["provider", "服务商", "留空自动获取"],
+                      ] as const
+                    ).map(([key, title, placeholder]) => (
+                      <div key={key} className="space-y-2">
+                        <Label htmlFor={key}>{title}</Label>
+                        <Input
+                          id={key}
+                          value={values[key]}
+                          placeholder={placeholder}
+                          maxLength={key === "asn" ? 255 : 100}
+                          disabled={pending}
+                          onChange={(e) => set(key, e.target.value)}
+                          aria-invalid={Boolean(fields[key])}
+                          aria-describedby={
+                            fields[key] ? `${key}-error` : undefined
+                          }
+                        />
+                        {fields[key] && (
+                          <p
+                            id={`${key}-error`}
+                            className="text-xs text-destructive"
+                          >
+                            {fields[key]}
+                          </p>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </>
+              )}
             </>
           )}
           <div className="space-y-2">
@@ -341,7 +408,7 @@ export function ConfigForm({
                   正在保存…
                 </>
               ) : (
-                "保存配置"
+                isBulkNetwork ? "批量添加" : "保存配置"
               )}
             </Button>
           </DialogFooter>

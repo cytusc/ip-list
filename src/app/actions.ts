@@ -70,6 +70,81 @@ export async function saveNode(id: string | null, input: unknown) {
 export async function saveNetwork(id: string | null, input: unknown) {
   return save("networks", id, input);
 }
+export async function saveNetworks(
+  inputCidrs: string[],
+  enabled: boolean,
+  description: string,
+): Promise<
+  | { ok: true; created: number; skipped: number; failures: string[] }
+  | { ok: false; error: string }
+> {
+  if (
+    !Array.isArray(inputCidrs) ||
+    inputCidrs.some((cidr) => typeof cidr !== "string")
+  )
+    return { ok: false, error: "网段列表格式无效" };
+  if (inputCidrs.length > 256)
+    return { ok: false, error: "一次最多批量添加 256 个网段" };
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  let skipped = 0;
+  for (const value of inputCidrs) {
+    const cidr = value.trim();
+    if (!cidr) continue;
+    if (seen.has(cidr)) {
+      skipped++;
+      continue;
+    }
+    seen.add(cidr);
+    unique.push(cidr);
+  }
+  if (!unique.length) return { ok: false, error: "请至少输入一个网段" };
+
+  let created = 0;
+  const failures: string[] = [];
+  for (const cidr of unique) {
+    try {
+      await api("/networks", {
+        method: "POST",
+        body: JSON.stringify({
+          name: cidr,
+          cidr,
+          enabled,
+          description,
+          asn: "",
+          provider: "",
+        }),
+      });
+      created++;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        skipped++;
+        continue;
+      }
+      const detail =
+        error instanceof ApiError
+          ? error.fields?.cidr || error.message
+          : "请求失败，请稍后重试";
+      failures.push(`${cidr}：${detail}`);
+      if (
+        error instanceof ApiError &&
+        (error.status === 401 || error.status >= 500)
+      )
+        break;
+    }
+  }
+
+  if (created) {
+    revalidatePath("/nodes");
+    revalidatePath("/networks");
+    revalidatePath("/available-ips");
+    revalidatePath("/cf", "layout");
+  }
+  if (!created && !skipped && failures.length)
+    return { ok: false, error: failures.slice(0, 5).join("；") };
+  return { ok: true, created, skipped, failures };
+}
 export async function deleteConfig(
   kind: "nodes" | "networks",
   id: string,
