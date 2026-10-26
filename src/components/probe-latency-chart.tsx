@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { LatencyProbeResult } from "@/lib/types";
@@ -27,7 +27,7 @@ export function ProbeLatencyChart({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
-  async function refresh(signal?: AbortSignal) {
+  const refresh = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
     try {
       const response = await fetch(
@@ -44,11 +44,10 @@ export function ProbeLatencyChart({
     } finally {
       setRefreshing(false);
     }
-  }
+  }, [hours, ip, probeID]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal);
     const timer = window.setInterval(() => {
       if (!document.hidden) void refresh(controller.signal);
     }, 15000);
@@ -56,19 +55,21 @@ export function ProbeLatencyChart({
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [probeID, ip, hours]);
+  }, [refresh]);
 
-  const { points, failures, stats, labels } = useMemo(() => {
+  const { points, failures, stats, labels, endTime } = useMemo(() => {
     const good = items.filter((item) => item.success);
     const bad = items.filter((item) => !item.success);
-    const now = Date.now();
-    const from = now - hours * 60 * 60 * 1000;
+    const endTime = items.length
+      ? new Date(items[items.length - 1].checked_at).getTime()
+      : 0;
+    const from = endTime - hours * 60 * 60 * 1000;
     const values = good.map((item) => item.delay_ms);
     const maxValue = Math.max(10, ...values);
     const yMax = Math.ceil(maxValue / 5) * 5;
     const plotWidth = width - plot.left - plot.right;
     const plotHeight = height - plot.top - plot.bottom;
-    const x = (time: number) => plot.left + ((time - from) / (now - from)) * plotWidth;
+    const x = (time: number) => plot.left + ((time - from) / (endTime - from)) * plotWidth;
     const y = (delay: number) => plot.top + (1 - delay / yMax) * plotHeight;
     const points = good.map((item) => ({
       ...item,
@@ -90,6 +91,7 @@ export function ProbeLatencyChart({
       points,
       failures,
       labels,
+      endTime,
       stats: {
         count: total,
         loss: total ? Math.round((bad.length / total) * 100) : 0,
@@ -144,7 +146,7 @@ export function ProbeLatencyChart({
             ))}
             {[0, 0.25, 0.5, 0.75, 1].map((fraction) => {
               const x = plot.left + fraction * (width - plot.left - plot.right);
-              const value = Date.now() - hours * 60 * 60 * 1000 * (1 - fraction);
+              const value = endTime - hours * 60 * 60 * 1000 * (1 - fraction);
               return <text key={fraction} x={x} y={height - 12} textAnchor={fraction === 0 ? "start" : fraction === 1 ? "end" : "middle"} className="fill-slate-500 text-[12px]">{new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</text>;
             })}
             {points.length > 1 && <polyline points={line} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />}
