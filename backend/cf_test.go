@@ -47,22 +47,22 @@ func TestCFScanTargetsBeyondNodeLimit(t *testing.T) {
 	}
 }
 
-func TestCFScanRoundHasNoTimeLimit(t *testing.T) {
+func TestScanRoundHasNoTimeLimit(t *testing.T) {
 	parent, stop := context.WithCancel(context.Background())
 	defer stop()
-	ctx, cancel := scanRoundContext(parent, true)
+	ctx, cancel := scanRoundContext(parent)
 	defer cancel()
 	if _, ok := ctx.Deadline(); ok {
-		t.Fatal("CF scan must not have a round deadline")
+		t.Fatal("scan must not have a round deadline")
 	}
 	stop()
 	if ctx.Err() != context.Canceled {
-		t.Fatal("CF scan must still stop when its parent is cancelled")
+		t.Fatal("scan must still stop when its parent is cancelled")
 	}
-	nodeCtx, nodeCancel := scanRoundContext(context.Background(), false)
+	nodeCtx, nodeCancel := scanRoundContext(context.Background())
 	defer nodeCancel()
-	if _, ok := nodeCtx.Deadline(); !ok {
-		t.Fatal("node scan must retain its round deadline")
+	if _, ok := nodeCtx.Deadline(); ok {
+		t.Fatal("node scan must not have a round deadline")
 	}
 }
 

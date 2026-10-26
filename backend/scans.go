@@ -293,7 +293,7 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 }
 
 func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInput, template map[string]any, total int, targets iter.Seq[netip.Addr], previous map[string]scanResult) scanJob {
-	ctx, cancel := scanRoundContext(parent, job.TargetID != "")
+	ctx, cancel := scanRoundContext(parent)
 	defer cancel()
 	workerCount := min(input.Concurrency, total)
 	// External Xray processes need a smaller memory budget than embedded probes.
@@ -372,7 +372,7 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 				if job.Status == "running" {
 					if ctx.Err() != nil {
 						job.Status = "interrupted"
-						job.Error = scanRoundInterruptedMessage(job.TargetID != "")
+						job.Error = scanRoundInterruptedMessage()
 					} else {
 						job.Status = "completed"
 					}
@@ -403,7 +403,7 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 		case <-done:
 			if job.Status == "running" {
 				job.Status = "interrupted"
-				job.Error = scanRoundInterruptedMessage(job.TargetID != "")
+				job.Error = scanRoundInterruptedMessage()
 			}
 			done = nil // Drain workers before releasing the lease.
 		case <-ticker.C:
@@ -433,18 +433,12 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 	}
 }
 
-func scanRoundContext(parent context.Context, cf bool) (context.Context, context.CancelFunc) {
-	if cf {
-		return context.WithCancel(parent)
-	}
-	return context.WithTimeout(parent, 30*time.Minute)
+func scanRoundContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(parent)
 }
 
-func scanRoundInterruptedMessage(cf bool) string {
-	if cf {
-		return "服务停止，请重新测试"
-	}
-	return "服务停止或任务超过 30 分钟，请重新测试"
+func scanRoundInterruptedMessage() string {
+	return "服务停止，请重新测试"
 }
 func probeError(err error) string {
 	var netErr net.Error
