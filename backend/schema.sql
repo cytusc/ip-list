@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS latency_probes (
  last_seen timestamptz,
  created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS token_encrypted bytea;
+ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS deployment_platform text NOT NULL DEFAULT 'darwin';
 CREATE TABLE IF NOT EXISTS latency_probe_results (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  probe_id uuid NOT NULL REFERENCES latency_probes(id) ON DELETE CASCADE,

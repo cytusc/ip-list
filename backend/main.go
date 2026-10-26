@@ -214,6 +214,8 @@ func (a *app) routes() http.Handler {
 	mux.Handle("PUT /latency-probes/{id}", a.protected(http.HandlerFunc(a.updateLatencyProbe)))
 	mux.Handle("DELETE /latency-probes/{id}", a.protected(http.HandlerFunc(a.deleteLatencyProbe)))
 	mux.Handle("POST /latency-probes/{id}/token", a.protected(http.HandlerFunc(a.rotateLatencyProbeToken)))
+	mux.Handle("GET /latency-probes/{id}/deployment", a.protected(http.HandlerFunc(a.probeDeployment)))
+	mux.Handle("PUT /latency-probes/{id}/deployment", a.protected(http.HandlerFunc(a.probeDeployment)))
 	mux.Handle("GET /latency-probes/{id}/history", a.protected(http.HandlerFunc(a.latencyProbeHistory)))
 	mux.HandleFunc("GET /probe-agent/targets", a.probeAgentTargets)
 	mux.HandleFunc("POST /probe-agent/results", a.reportProbeResults)

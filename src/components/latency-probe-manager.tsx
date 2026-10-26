@@ -6,6 +6,8 @@ import { Activity, Copy, Download, KeyRound, Loader2, Plus, Radio, Save, Trash2 
 import { toast } from "sonner";
 import {
   createLatencyProbe,
+  getProbeDeployment,
+  saveProbeDeployment,
   deleteLatencyProbe,
   rotateLatencyProbeToken,
   updateLatencyProbe,
@@ -75,18 +77,34 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
   }
   const command = deploymentCommand(currentToken || "请先生成或填写部署密钥", platform);
 
+  async function openEditor(item: LatencyProbe) {
+    setDeploy(item);
+    const result = await getProbeDeployment(item.id);
+    if (!result.ok) { toast.error(result.error); return; }
+    setCredentials((current) => ({ ...current, [item.id]: result.token }));
+    setPlatforms((current) => ({ ...current, [item.id]: result.platform }));
+  }
+
   async function copyCommand(item: LatencyProbe) {
-    const token = credentials[item.id];
-    if (!token) {
-      toast.error("请先点击编辑，填写或生成部署密钥并选择系统，再复制部署命令");
-      return;
-    }
     try {
-      await navigator.clipboard.writeText(deploymentCommand(token, platforms[item.id] || "darwin"));
-      toast.success("部署命令已复制，请在探针电脑上运行");
+      const result = await getProbeDeployment(item.id);
+      if (!result.ok) { toast.error(result.error); return; }
+      if (!result.token) {
+        toast.error("旧探针密钥尚未保存，请等待探针连接自动补存，或在编辑中填写原密钥保存");
+        return;
+      }
+      await navigator.clipboard.writeText(deploymentCommand(result.token, result.platform));
+      toast.success("部署命令已复制，使用已保存的密钥");
     } catch {
       toast.error("复制失败，请在编辑中手动选择命令复制");
     }
+  }
+
+  async function saveDeployment() {
+    if (!deploy) return;
+    const result = await saveProbeDeployment(deploy.id, currentToken, platform);
+    if (!result.ok) { toast.error(result.error); return; }
+    toast.success("部署配置已保存，刷新后可继续复制，原密钥保持有效");
   }
 
   async function save(item: LatencyProbe, config: Config) {
@@ -136,13 +154,14 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
           </div>
           <p className="text-sm text-muted-foreground">{platform === "darwin" ? "在终端粘贴运行，自动识别 Intel / Apple 芯片，安装为登录后自动运行的后台探针。" : platform === "linux" ? "在终端粘贴运行，自动识别 amd64 / arm64，使用 sudo 安装为 systemd 服务。需要系统 ping 和 curl。" : "在 PowerShell 粘贴运行，自动下载程序并创建登录后启动的计划任务。"}</p>
           <Field label="部署密钥">
-            <Input type="password" autoComplete="off" value={currentToken} placeholder="粘贴已保存的密钥，或点击下方重新生成" onChange={(event) => deploy && setCredentials((current) => ({ ...current, [deploy.id]: event.target.value.trim() }))} />
+            <Input type="password" autoComplete="off" value={currentToken} placeholder="服务器已保存的密钥；旧探针可填写原密钥补存" onChange={(event) => deploy && setCredentials((current) => ({ ...current, [deploy.id]: event.target.value.trim() }))} />
           </Field>
-          {!currentToken && <p className="text-xs text-muted-foreground">服务器只保存密钥哈希，无法找回旧密钥。重新生成后，旧密钥立即失效。</p>}
-          <Button variant="outline" disabled={pending} onClick={() => deploy && window.confirm("重新生成将使此探针的旧密钥立即失效，确定继续？") && startTransition(() => rotate(deploy))}><KeyRound />生成新密钥并获取部署命令</Button>
+          {!currentToken && <p className="text-xs text-muted-foreground">旧版探针连接成功后会自动补存原密钥，也可填写原密钥后保存，无需重新生成。</p>}
+          <Button variant="outline" disabled={pending} onClick={() => deploy && window.confirm("重新生成将使此探针的旧密钥立即失效，确定继续？") && startTransition(() => rotate(deploy))}><KeyRound />重新生成密钥</Button>
+          <Button disabled={pending} onClick={() => startTransition(saveDeployment)}><Save />保存部署配置</Button>
           <div className="space-y-3 rounded-lg border p-3">
             <p className="text-sm font-medium">一键部署命令</p>
-            <p className="text-xs text-muted-foreground">{currentToken ? "命令已包含服务器地址和鉴权密钥，复制后直接执行。密钥仅在当前页面保留；刷新后需重新填写，服务器无法找回明文。" : "请先填写已有密钥，或点击上方按钮生成新密钥；下方为命令预览。"}</p>
+            <p className="text-xs text-muted-foreground">{currentToken ? "密钥在服务器加密保存，刷新后可继续复制。修改系统或补填原密钥后，请保存部署配置；只有手动重新生成才会更换密钥。" : "等待旧探针连接自动补存，或填写原密钥并保存；下方为命令预览。"}</p>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-xs text-slate-100">{command}</pre>
             <Button disabled={!currentToken} onClick={() => deploy && copyCommand(deploy)}><Copy />复制一键部署命令</Button>
           </div>
@@ -250,7 +269,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
             <td className="px-4 py-3 text-muted-foreground">{item.last_seen ? new Date(item.last_seen).toLocaleString("zh-CN", { hour12: false }) : "尚未连接"}</td>
             <td className="px-4 py-3"><div className="flex items-center gap-2">
               <Button size="sm" onClick={() => copyCommand(item)}><Copy />一键部署</Button>
-              <ProbeCard item={item} open={deploy?.id === item.id} onOpenChange={(open) => setDeploy(open ? item : null)} deploymentSettings={deploy?.id === item.id ? deploymentSettings : null} busy={pending} onSave={(config) => startTransition(() => save(item, config))} onDelete={() => startTransition(() => remove(item))} />
+              <ProbeCard item={item} open={deploy?.id === item.id} onOpenChange={(open) => open ? startTransition(() => openEditor(item)) : setDeploy(null)} deploymentSettings={deploy?.id === item.id ? deploymentSettings : null} busy={pending} onSave={(config) => startTransition(() => save(item, config))} onDelete={() => startTransition(() => remove(item))} />
               <Link className="text-primary hover:underline" href={`/latency-probes/${item.id}`}>延迟历史</Link>
             </div></td>
           </tr>)}</tbody>

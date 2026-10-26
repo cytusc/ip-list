@@ -277,6 +277,22 @@ export async function deleteLatencyProbe(id: string): Promise<ActionResult> {
     return failure(error);
   }
 }
+export async function getProbeDeployment(id: string): Promise<
+  { ok: true; token: string; platform: string } | { ok: false; error: string }
+> {
+  try {
+    const { data } = await api<{ token: string; platform: string }>(`/latency-probes/${encodeURIComponent(id)}/deployment`);
+    return { ok: true, ...data };
+  } catch (error) { return failure(error); }
+}
+export async function saveProbeDeployment(id: string, token: string, platform: string): Promise<ActionResult> {
+  try {
+    await api(`/latency-probes/${encodeURIComponent(id)}/deployment`, {
+      method: "PUT", body: JSON.stringify({ token, platform }),
+    });
+    return { ok: true };
+  } catch (error) { return failure(error); }
+}
 export async function rotateLatencyProbeToken(
   id: string,
 ): Promise<{ ok: true; token: string } | { ok: false; error: string }> {

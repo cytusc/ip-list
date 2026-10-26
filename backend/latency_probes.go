@@ -134,12 +134,17 @@ func (a *app) createLatencyProbe(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
+	encrypted, err := encryptProbeToken(token)
+	if err != nil {
+		apiError(w, 503, err.Error(), nil)
+		return
+	}
 	var item latencyProbe
 	err = a.db.QueryRow(r.Context(), `INSERT INTO latency_probes
-(name,token_hash,interval_seconds,timeout_ms,concurrency,interface_name,enabled)
-VALUES($1,$2,$3,$4,$5,$6,true)
+(name,token_hash,interval_seconds,timeout_ms,concurrency,interface_name,enabled,token_encrypted)
+VALUES($1,$2,$3,$4,$5,$6,true,$7)
 RETURNING id::text,name,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,false`,
-		input.Name, tokenHash, input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName).
+		input.Name, tokenHash, input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName, encrypted).
 		Scan(&item.ID, &item.Name, &item.IntervalSeconds, &item.TimeoutMS, &item.Concurrency,
 			&item.InterfaceName, &item.Enabled, &item.LastSeen, &item.CreatedAt, &item.Online)
 	if err != nil {
@@ -211,7 +216,12 @@ func (a *app) rotateLatencyProbeToken(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	result, err := a.db.Exec(r.Context(), "UPDATE latency_probes SET token_hash=$2 WHERE id=$1", id, tokenHash)
+	encrypted, err := encryptProbeToken(token)
+	if err != nil {
+		apiError(w, 503, err.Error(), nil)
+		return
+	}
+	result, err := a.db.Exec(r.Context(), "UPDATE latency_probes SET token_hash=$2,token_encrypted=$3 WHERE id=$1", id, tokenHash, encrypted)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -288,6 +298,12 @@ func (a *app) authorizeLatencyProbe(r *http.Request) (string, bool) {
 	var id string
 	err := a.db.QueryRow(r.Context(), `SELECT id::text FROM latency_probes
 WHERE token_hash=$1 AND enabled`, probeTokenHash(token)).Scan(&id)
+	if err == nil {
+		// Recover legacy credentials only after successful hash authentication.
+		if encrypted, sealErr := encryptProbeToken(token); sealErr == nil {
+			_, _ = a.db.Exec(r.Context(), "UPDATE latency_probes SET token_encrypted=$2 WHERE id=$1 AND token_encrypted IS NULL AND token_hash=$3", id, encrypted, probeTokenHash(token))
+		}
+	}
 	return id, err == nil
 }
 
