@@ -212,4 +212,33 @@ func TestProbeMonitoringStatus(t *testing.T) {
 	if !getStatus().Online {
 		t.Fatal("legacy interval-based status changed")
 	}
+	// The compact list history is bounded and chronological, including failures.
+	_, err = db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
+ SELECT $1,'198.18.98.1',i,i%2=0,now()-make_interval(secs=>i*60) FROM generate_series(1,20) AS i`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	a.availableIPs(w, httptest.NewRequest("GET", "/available-ips", nil))
+	if w.Code != 200 {
+		t.Fatalf("history: %d %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &ips); err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range ips {
+		for _, delay := range ip.ProbeDelays {
+			if ip.IP != "198.18.98.1" || delay.ProbeID != id {
+				continue
+			}
+			if len(delay.Samples) != 16 || delay.Samples[0].DelayMS != 15 || delay.Samples[0].Success || delay.Samples[15].DelayMS != 42 {
+				t.Fatalf("unexpected compact history: %+v", delay.Samples)
+			}
+			for i := 1; i < len(delay.Samples); i++ {
+				if delay.Samples[i].CheckedAt.Before(delay.Samples[i-1].CheckedAt) {
+					t.Fatal("history must be oldest first")
+				}
+			}
+		}
+	}
 }

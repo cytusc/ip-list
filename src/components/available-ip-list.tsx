@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { NodeLinksDialog } from "@/components/node-links-dialog";
 import { IPLocationCell } from "@/components/ip-location";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Check, Copy, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -23,10 +23,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { AvailableIP } from "@/lib/types";
+import type { AvailableIP, IPLocation } from "@/lib/types";
 import { toast } from "sonner";
 import { addBlacklist } from "@/app/actions";
 
+import { ProbeLatencyStrip } from "@/components/probe-latency-strip";
 import { protocolLabels } from "@/lib/protocol";
 const protocolBadgeColors: Record<string, string> = {
   "vless/httpupgrade": "border-blue-200 bg-blue-50 text-blue-800",
@@ -54,6 +55,10 @@ export function AvailableIPList({
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const inFlight = useRef(false);
+  const [countries, setCountries] = useState<Record<string, string>>({});
+  const receiveLocation = useCallback((ip: string, location: IPLocation | null) => {
+    setCountries(current => current[ip] === (location?.country || "") ? current : { ...current, [ip]: location?.country || "" });
+  }, []);
   const filtered = items.filter(
     (item) =>
       (item.ip.includes(search.trim()) ||
@@ -186,7 +191,7 @@ export function AvailableIPList({
               </span>
             </h2>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              复测失败只移除对应协议池中的 IP；延迟来自该池最近一次成功检测。
+              色条每格代表一次探针采样，左旧右新，最多显示 16 次。悬停查看延迟，点击查看曲线。
             </p>
           </div>
           <div className="flex gap-2">
@@ -243,6 +248,13 @@ export function AvailableIPList({
             </SelectContent>
           </Select>
         </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 pb-4 text-xs text-muted-foreground" aria-label="探针色条图例">
+          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-emerald-500" />低延迟</span>
+          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-amber-400" />中等延迟</span>
+          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-rose-500" />高延迟 / 超时</span>
+          <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-slate-200" />缺失 / 过期</span>
+          <span>按 IP 地区分级 · 悬停查看阈值</span>
+        </div>
         <Table>
           <TableHeader>
             <TableRow>
@@ -271,7 +283,7 @@ export function AvailableIPList({
                     {item.ip}
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
-                    <IPLocationCell key={`${item.ip}:${locationVersion}`} ip={item.ip} />
+                    <IPLocationCell key={`${item.ip}:${locationVersion}`} ip={item.ip} onResolved={receiveLocation} />
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
                     <p className="font-mono">{item.asn || "—"}</p>
@@ -301,22 +313,7 @@ export function AvailableIPList({
                     {item.probe_delays?.length ? (
                       <div className="flex flex-wrap gap-1.5">
                         {item.probe_delays.map((probe) => (
-                          <Link
-                            key={probe.probe_id}
-                            href={`/latency-probes/${probe.probe_id}?ip=${encodeURIComponent(item.ip)}`}
-                            title={probe.checked_at ? `最近检测：${formatTime(probe.checked_at)}；${!probe.online ? "探针离线，延迟为历史值" : !probe.fresh ? "数据已过期，等待新检测" : "当前检测结果"}` : "该探针尚未检测"}
-                            className="rounded-md border bg-slate-50 px-2 py-1 text-xs hover:border-primary hover:text-primary"
-                          >
-                            <span className="font-medium">{probe.name}</span>
-                            <span className="ml-1 font-mono tabular-nums">
-                              {!probe.online ? "离线 · 历史 " : !probe.fresh && probe.checked_at ? "过期 · " : ""}
-                              {probe.success == null
-                                ? "—"
-                                : probe.success
-                                  ? `${probe.delay_ms?.toFixed(2)} ms`
-                                  : "超时"}
-                            </span>
-                          </Link>
+                          <ProbeLatencyStrip key={probe.probe_id} probe={probe} ip={item.ip} country={countries[item.ip]} />
                         ))}
                       </div>
                     ) : (

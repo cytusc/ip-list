@@ -132,6 +132,7 @@ export type LatencyProbe = {
   sample_window_seconds: number;
 };
 export type ProbeIPDelay = {
+  samples: LatencyProbeResult[];
   online: boolean;
   fresh: boolean;
   probe_id: string;

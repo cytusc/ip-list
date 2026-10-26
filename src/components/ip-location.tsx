@@ -5,7 +5,7 @@ import type { IPLocation } from "@/lib/types";
 
 const countryNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
 
-export function IPLocationCell({ ip }: { ip: string }) {
+export function IPLocationCell({ ip, onResolved }: { ip: string; onResolved?: (ip: string, location: IPLocation | null) => void }) {
   const [location, setLocation] = useState<IPLocation | null>();
 
   useEffect(() => {
@@ -17,12 +17,13 @@ export function IPLocationCell({ ip }: { ip: string }) {
         if (!response.ok) throw new Error("查询失败");
         const data: IPLocation = await response.json();
         setLocation(data);
+        onResolved?.(ip, data);
       })
       .catch(() => {
-        if (!controller.signal.aborted) setLocation(null);
+        if (!controller.signal.aborted) { setLocation(null); onResolved?.(ip, null); }
       });
     return () => controller.abort();
-  }, [ip]);
+  }, [ip, onResolved]);
 
   if (location === undefined) {
     return <span className="text-muted-foreground">查询中…</span>;

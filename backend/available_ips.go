@@ -24,13 +24,14 @@ type availableIP struct {
 }
 
 type probeIPDelay struct {
-	Online    bool       `json:"online"`
-	Fresh     bool       `json:"fresh"`
-	ProbeID   string     `json:"probe_id"`
-	Name      string     `json:"name"`
-	DelayMS   *float64   `json:"delay_ms"`
-	Success   *bool      `json:"success"`
-	CheckedAt *time.Time `json:"checked_at"`
+	Samples   []latencyProbeResult `json:"samples"`
+	Online    bool                 `json:"online"`
+	Fresh     bool                 `json:"fresh"`
+	ProbeID   string               `json:"probe_id"`
+	Name      string               `json:"name"`
+	DelayMS   *float64             `json:"delay_ms"`
+	Success   *bool                `json:"success"`
+	CheckedAt *time.Time           `json:"checked_at"`
 }
 
 // One bulk write per round; completed probes also survive a manual stop.
@@ -118,9 +119,17 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
  ORDER BY probe_id,ip,checked_at DESC,id DESC
 )
 SELECT host(t.ip),p.id::text,p.name,l.delay_ms,l.success,l.checked_at,`+probeOnlineSQL+`,
-COALESCE(l.checked_at>now()-make_interval(secs=>`+probeSampleWindowSQL+`*2),false)
+COALESCE(l.checked_at>now()-make_interval(secs=>`+probeSampleWindowSQL+`*2),false),
+COALESCE(recent.samples,'[]'::jsonb)
 FROM latency_probes p CROSS JOIN targets t
 LEFT JOIN latest l ON l.probe_id=p.id AND l.ip=t.ip
+LEFT JOIN LATERAL (
+ SELECT jsonb_agg(sample ORDER BY sample.checked_at,sample.id) AS samples FROM (
+  SELECT id,host(ip) AS ip,delay_ms,success,checked_at FROM latency_probe_results
+  WHERE probe_id=p.id AND ip=t.ip AND checked_at>now()-interval '30 days'
+  ORDER BY checked_at DESC,id DESC LIMIT 16
+ ) sample
+) recent ON true
 WHERE p.enabled ORDER BY t.ip,p.created_at`)
 	if err != nil {
 		dbError(w, err)
@@ -135,7 +144,12 @@ WHERE p.enabled ORDER BY t.ip,p.created_at`)
 	for probeRows.Next() {
 		var ip string
 		var delay probeIPDelay
-		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.DelayMS, &delay.Success, &delay.CheckedAt, &delay.Online, &delay.Fresh); err != nil {
+		var samples []byte
+		if err = probeRows.Scan(&ip, &delay.ProbeID, &delay.Name, &delay.DelayMS, &delay.Success, &delay.CheckedAt, &delay.Online, &delay.Fresh, &samples); err != nil {
+			dbError(w, err)
+			return
+		}
+		if err = json.Unmarshal(samples, &delay.Samples); err != nil {
 			dbError(w, err)
 			return
 		}

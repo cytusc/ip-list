@@ -25,3 +25,19 @@ test('all timeouts have no fabricated latency and empty samples have no loss rat
  assert.equal(data.segments.length,0);assert.equal(data.loss,100);
  assert.equal(analyzeProbeHistory([],now,1,180).loss,null);
 });
+
+test('regional latency colors treat domestic-nearby and long-haul destinations differently', async () => {
+ const { latencyQuality } = await import('../../src/lib/latency-quality.ts');
+ assert.equal(latencyQuality(100,true,'HK'),'yellow');
+ assert.equal(latencyQuality(100,true,'JP'),'green');
+ assert.equal(latencyQuality(180,true,'SG'),'yellow');
+ assert.equal(latencyQuality(180,true,'US'),'green');
+ assert.equal(latencyQuality(300,true,'US'),'yellow');
+ assert.equal(latencyQuality(301,true,'US'),'red');
+ assert.equal(latencyQuality(80,true,'TW'),'green');
+ assert.equal(latencyQuality(150,true,'TW'),'yellow');
+ assert.equal(latencyQuality(151,true,'TW'),'red');
+ assert.equal(latencyQuality(0,false,'HK'),'red');
+ assert.equal(latencyQuality(null,null,'HK'),'unknown');
+ assert.equal(latencyQuality(180,true,undefined),'green');
+});
