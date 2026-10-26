@@ -1,10 +1,10 @@
 "use client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Activity, ArrowRight, Clock, History, Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
-import { cancelScan } from "@/app/actions";
+import { cancelScan, startScan } from "@/app/actions";
 import { protocolLabels } from "@/lib/protocol";
 import { availabilityTone, formatDuration, formatTime, percent } from "@/lib/cf";
 import { NewProbeDialog } from "@/components/probe-form";
