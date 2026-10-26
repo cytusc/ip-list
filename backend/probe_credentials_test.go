@@ -67,7 +67,9 @@ func TestProbeDeploymentPersistenceAndLegacyMigration(t *testing.T) {
 	}
 	a := &app{db: db}
 	create := httptest.NewRecorder()
-	a.createLatencyProbe(create, httptest.NewRequest("POST", "/latency-probes", strings.NewReader(`{"name":"credential-`+time.Now().Format("150405.000000000")+`","interval_seconds":60,"timeout_ms":1000,"concurrency":2,"enabled":true}`)))
+	createReq := httptest.NewRequest("POST", "/latency-probes", strings.NewReader(`{"name":"credential-`+time.Now().Format("150405.000000000")+`","interval_seconds":60,"timeout_ms":1000,"concurrency":2,"enabled":true}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	a.createLatencyProbe(create, createReq)
 	if create.Code != 201 {
 		t.Fatalf("create: %d %s", create.Code, create.Body.String())
 	}
@@ -83,6 +85,7 @@ func TestProbeDeploymentPersistenceAndLegacyMigration(t *testing.T) {
 		t.Helper()
 		req := httptest.NewRequest(method, "/deployment", strings.NewReader(body))
 		req.SetPathValue("id", created.Probe.ID)
+		req.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		a.probeDeployment(response, req)
 		var data map[string]string
