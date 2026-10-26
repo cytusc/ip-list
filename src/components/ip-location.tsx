@@ -1,30 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import type { IPLocation } from "@/lib/types";
 
 const countryNames = new Intl.DisplayNames(["zh-CN"], { type: "region" });
 
-export function IPLocationCell({ ip, onResolved }: { ip: string; onResolved?: (ip: string, location: IPLocation | null) => void }) {
-  const [location, setLocation] = useState<IPLocation | null>();
+export function countryName(code: string) {
+  return countryNames.of(code) || code;
+}
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch(`/api/available-ips/location?ip=${encodeURIComponent(ip)}`, {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("查询失败");
-        const data: IPLocation = await response.json();
-        setLocation(data);
-        onResolved?.(ip, data);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) { setLocation(null); onResolved?.(ip, null); }
-      });
-    return () => controller.abort();
-  }, [ip, onResolved]);
-
+export function IPLocationCell({ location }: { location: IPLocation | null | undefined }) {
   if (location === undefined) {
     return <span className="text-muted-foreground">查询中…</span>;
   }
@@ -32,7 +16,7 @@ export function IPLocationCell({ ip, onResolved }: { ip: string; onResolved?: (i
   if (!/^[A-Z]{2}$/.test(code)) {
     return <span className="text-muted-foreground">未知归属地</span>;
   }
-  const country = countryNames.of(code) || code;
+  const country = countryName(code);
   const flag = String.fromCodePoint(
     ...[...code].map((letter) => 0x1f1e6 + letter.charCodeAt(0) - 65),
   );

@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { NodeLinksDialog } from "@/components/node-links-dialog";
-import { IPLocationCell } from "@/components/ip-location";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { countryName, IPLocationCell } from "@/components/ip-location";
+import { useEffect, useRef, useState } from "react";
 import { Ban, Check, Copy, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -49,6 +49,8 @@ export function AvailableIPList({
   const [items, setItems] = useState(initialItems);
   const [search, setSearch] = useState("");
   const [protocol, setProtocol] = useState("all");
+  const [region, setRegion] = useState("all");
+  const [provider, setProvider] = useState("all");
   const [page, setPage] = useState(1);
   const [refreshing, setRefreshing] = useState(false);
   const [locationVersion, setLocationVersion] = useState(0);
@@ -56,9 +58,47 @@ export function AvailableIPList({
   const [copied, setCopied] = useState(false);
   const inFlight = useRef(false);
   const [locations, setLocations] = useState<Record<string, IPLocation | null>>({});
-  const receiveLocation = useCallback((ip: string, location: IPLocation | null) => {
-    setLocations(current => JSON.stringify(current[ip]) === JSON.stringify(location) ? current : { ...current, [ip]: location });
-  }, []);
+  const locationCache = useRef<Record<string, IPLocation | null>>({});
+  const locationIPs = items.map(item => item.ip).join(",");
+
+  // Resolve every page with bounded concurrency; telemetry refreshes do not
+  // restart lookups for addresses whose location has already been resolved.
+  useEffect(() => {
+    const controller = new AbortController();
+    const pending = locationIPs.split(",").filter(ip => ip && locationCache.current[ip] === undefined);
+    let next = 0;
+    async function worker() {
+      while (!controller.signal.aborted && next < pending.length) {
+        const ip = pending[next++];
+        let location: IPLocation | null = null;
+        try {
+          const response = await fetch(`/api/available-ips/location?ip=${encodeURIComponent(ip)}`, { signal: controller.signal });
+          if (!response.ok) throw new Error("查询失败");
+          const data: IPLocation = await response.json();
+          if (/^[A-Z]{2}$/.test(data.country)) location = data;
+        } catch { /* Failed lookups remain available under unknown region. */ }
+        if (controller.signal.aborted) return;
+        locationCache.current[ip] = location;
+        setLocations(current => ({ ...current, [ip]: location }));
+      }
+    }
+    for (let workerIndex = 0; workerIndex < Math.min(4, pending.length); workerIndex++) void worker();
+    return () => controller.abort();
+  }, [locationIPs, locationVersion]);
+
+  const countries = [...new Set([
+    ...items.flatMap(item => locations[item.ip]?.country ? [locations[item.ip]!.country] : []),
+    ...(region !== "all" && region !== "unknown" ? [region] : []),
+  ])].sort((a, b) => countryName(a).localeCompare(countryName(b), "zh-CN"));
+  const providers = [...new Set([
+    ...items.map(item => item.provider?.trim() || "").filter(Boolean),
+    ...(provider.startsWith("provider:") ? [provider.slice(9)] : []),
+  ])].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const locationsResolved = items.filter(item => locations[item.ip] !== undefined).length;
+  const filtersActive = search !== "" || protocol !== "all" || region !== "all" || provider !== "all";
+  function clearFilters() {
+    setSearch(""); setProtocol("all"); setRegion("all"); setProvider("all"); setPage(1);
+  }
   const filtered = items.filter(
     (item) =>
       (item.ip.includes(search.trim()) ||
@@ -68,7 +108,9 @@ export function AvailableIPList({
         item.checks.some((c) =>
           c.node_name.toLowerCase().includes(search.trim().toLowerCase()),
         )) &&
-      (protocol === "all" || item.checks.some((c) => c.protocol === protocol)),
+      (protocol === "all" || item.checks.some((c) => c.protocol === protocol)) &&
+      (region === "all" || (region === "unknown" ? locations[item.ip] === null : locations[item.ip]?.country === region)) &&
+      (provider === "all" || (provider === "missing" ? !item.provider?.trim() : item.provider?.trim() === provider.slice(9))),
   );
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, pageCount);
@@ -116,6 +158,8 @@ export function AvailableIPList({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       setItems(data);
+      locationCache.current = {};
+      setLocations({});
       setLocationVersion((version) => version + 1);
       setError("");
     } catch (error) {
@@ -214,8 +258,8 @@ export function AvailableIPList({
             </Button>
           </div>
         </div>
-        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:p-5">
-          <div className="relative flex-1 sm:max-w-sm">
+        <div className="flex flex-col flex-wrap gap-3 p-4 sm:flex-row sm:p-5">
+          <div className="relative min-w-48 flex-1 sm:max-w-sm">
             <Search className="pointer-events-none absolute top-3 left-3 size-4 text-muted-foreground" />
             <Input
               aria-label="搜索 IP、节点、ASN 或服务商"
@@ -247,7 +291,28 @@ export function AvailableIPList({
               ))}
             </SelectContent>
           </Select>
+          <Select value={region} onValueChange={value => { setRegion(value); setPage(1); }}>
+            <SelectTrigger aria-label="地区筛选" className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部地区</SelectItem>
+              {countries.map(code => <SelectItem key={code} value={code}>{countryName(code)}</SelectItem>)}
+              <SelectItem value="unknown">未知地区</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={provider} onValueChange={value => { setProvider(value); setPage(1); }}>
+            <SelectTrigger aria-label="服务商筛选" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部服务商</SelectItem>
+              {providers.map(value => <SelectItem key={value} value={`provider:${value}`}>{value}</SelectItem>)}
+              <SelectItem value="missing">未填写服务商</SelectItem>
+            </SelectContent>
+          </Select>
+          {filtersActive && <Button variant="ghost" onClick={clearFilters}>清除筛选</Button>}
         </div>
+        <p className="px-5 pb-3 text-xs text-muted-foreground" role="status">
+          匹配 {filtered.length} / {items.length} 个 IP
+          {locationsResolved < items.length ? ` · 地区查询中 ${locationsResolved}/${items.length}，筛选结果会随查询更新` : " · 地区信息已加载"}
+        </p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 pb-4 text-xs text-muted-foreground" aria-label="探针色条图例">
           <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-emerald-500" />低延迟</span>
           <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-amber-400" />中等延迟</span>
@@ -283,7 +348,7 @@ export function AvailableIPList({
                     {item.ip}
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
-                    <IPLocationCell key={`${item.ip}:${locationVersion}`} ip={item.ip} onResolved={receiveLocation} />
+                    <IPLocationCell location={locations[item.ip]} />
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
                     <p className="font-mono">{item.asn || "—"}</p>
@@ -349,9 +414,10 @@ export function AvailableIPList({
                   </p>
                   <p className="mt-2 text-sm text-muted-foreground">
                     {items.length
-                      ? "调整搜索词或协议筛选后重试。"
+                      ? "调整搜索词、地区、服务商或协议筛选后重试。"
                       : "先完成一次连通性测试，测通的 IP 会自动出现在这里。"}
                   </p>
+                  {filtersActive && <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>清除筛选</Button>}
                 </TableCell>
               </TableRow>
             )}
