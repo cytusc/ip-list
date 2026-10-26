@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useState, useTransition, cloneElement, type ReactElement } from "react";
+import { useId, useState, useTransition, cloneElement, type ReactNode, type ReactElement } from "react";
 import { Activity, Copy, Download, KeyRound, Loader2, Plus, Radio, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -39,13 +39,8 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
   const [items, setItems] = useState(initial);
   const [draft, setDraft] = useState(blank);
   const [deploy, setDeploy] = useState<LatencyProbe | null>(null);
-  const [platform, setPlatform] = useState("darwin");
-  const [credential, setCredential] = useState<{
-    id: string;
-    name: string;
-    token: string;
-    server: string;
-  } | null>(null);
+  const [platforms, setPlatforms] = useState<Record<string, string>>({});
+  const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
 
   function updateDraft<K extends keyof Config>(key: K, value: Config[K]) {
@@ -62,33 +57,35 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
       }
       setItems((current) => [result.probe, ...current]);
       setDraft(blank);
-      setCredential({
-        id: result.probe.id,
-        name: result.probe.name,
-        token: result.token,
-        server: window.location.origin,
-      });
+      setCredentials((current) => ({ ...current, [result.probe.id]: result.token }));
       setDeploy(result.probe);
       toast.success("探针已创建，请在电脑上启动探针程序");
     });
   }
 
-  const currentToken = credential?.id === deploy?.id ? credential?.token || "" : "";
-  const origin = credential?.server || (typeof window !== "undefined" ? window.location.origin : "");
-  const quote = (value: string) => "'" + value.replaceAll("'", platform === "windows" ? "''" : "'\\''") + "'";
-  const deploymentToken = currentToken || "请先生成或填写部署密钥";
-  const pinArgs = tlsPin ? ` --insecure --pinnedpubkey ${quote(`sha256//${tlsPin}`)}` : "";
-  const command = platform === "windows"
-    ? `$p = Join-Path $env:TEMP ('ip-list-' + [guid]::NewGuid() + '.ps1'); curl.exe -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.ps1")} -o $p; if ($LASTEXITCODE -eq 0) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p -Server ${quote(origin)} -Token ${quote(deploymentToken)} ${tlsPin ? `-Pin ${quote(tlsPin)}` : ""}; Remove-Item $p }`
-    : `( f=$(mktemp) || exit 1; trap 'rm -f "$f"' EXIT; curl -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.sh")} -o "$f" && ${platform === "linux" ? "sudo " : ""}sh "$f" ${quote(origin)} ${quote(deploymentToken)} ${quote(tlsPin)} )`;
+  const currentToken = deploy ? credentials[deploy.id] || "" : "";
+  const platform = deploy ? platforms[deploy.id] || "darwin" : "darwin";
+  function deploymentCommand(token: string, targetPlatform: string) {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const quote = (value: string) => "'" + value.replaceAll("'", targetPlatform === "windows" ? "''" : "'\\''") + "'";
+    const pinArgs = tlsPin ? ` --insecure --pinnedpubkey ${quote(`sha256//${tlsPin}`)}` : "";
+    return targetPlatform === "windows"
+      ? `$p = Join-Path $env:TEMP ('ip-list-' + [guid]::NewGuid() + '.ps1'); curl.exe -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.ps1")} -o $p; if ($LASTEXITCODE -eq 0) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p -Server ${quote(origin)} -Token ${quote(token)} ${tlsPin ? `-Pin ${quote(tlsPin)}` : ""}; Remove-Item $p }`
+      : `( f=$(mktemp) || exit 1; trap 'rm -f "$f"' EXIT; curl -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.sh")} -o "$f" && ${targetPlatform === "linux" ? "sudo " : ""}sh "$f" ${quote(origin)} ${quote(token)} ${quote(tlsPin)} )`;
+  }
+  const command = deploymentCommand(currentToken || "请先生成或填写部署密钥", platform);
 
-  async function copyCommand() {
-    if (!currentToken) return;
+  async function copyCommand(item: LatencyProbe) {
+    const token = credentials[item.id];
+    if (!token) {
+      toast.error("请先点击编辑，填写或生成部署密钥并选择系统，再复制部署命令");
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(command);
+      await navigator.clipboard.writeText(deploymentCommand(token, platforms[item.id] || "darwin"));
       toast.success("部署命令已复制，请在探针电脑上运行");
     } catch {
-      toast.error("复制失败，请手动选择命令复制");
+      toast.error("复制失败，请在编辑中手动选择命令复制");
     }
   }
 
@@ -112,12 +109,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
       toast.error(result.error);
       return;
     }
-    setCredential({
-      id: item.id,
-      name: item.name,
-      token: result.token,
-      server: window.location.origin,
-    });
+    setCredentials((current) => ({ ...current, [item.id]: result.token }));
     toast.success("密钥已更新，正在运行的旧探针需要重新配置");
   }
 
@@ -132,6 +124,38 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
     setItems((current) => current.filter((value) => value.id !== item.id));
     toast.success("探针及其历史记录已删除");
   }
+
+  const deploymentSettings = (
+    <section className="space-y-3 border-t pt-4">
+      <h3 className="font-medium">部署配置</h3>
+      <p className="text-sm text-muted-foreground">选择探针电脑的系统并配置密钥，随后可在列表点击“一键部署”直接复制命令。命令会自动下载二进制、写入配置并启动后台服务。</p>
+          <div className="flex flex-wrap gap-2">
+            {[['darwin', 'macOS'], ['linux', 'Linux'], ['windows', 'Windows']].map(([value, label]) => (
+              <Button key={value} variant={platform === value ? "default" : "outline"} size="sm" onClick={() => deploy && setPlatforms((current) => ({ ...current, [deploy.id]: value }))}>{label}</Button>
+            ))}
+          </div>
+          <p className="text-sm text-muted-foreground">{platform === "darwin" ? "在终端粘贴运行，自动识别 Intel / Apple 芯片，安装为登录后自动运行的后台探针。" : platform === "linux" ? "在终端粘贴运行，自动识别 amd64 / arm64，使用 sudo 安装为 systemd 服务。需要系统 ping 和 curl。" : "在 PowerShell 粘贴运行，自动下载程序并创建登录后启动的计划任务。"}</p>
+          <Field label="部署密钥">
+            <Input type="password" autoComplete="off" value={currentToken} placeholder="粘贴已保存的密钥，或点击下方重新生成" onChange={(event) => deploy && setCredentials((current) => ({ ...current, [deploy.id]: event.target.value.trim() }))} />
+          </Field>
+          {!currentToken && <p className="text-xs text-muted-foreground">服务器只保存密钥哈希，无法找回旧密钥。重新生成后，旧密钥立即失效。</p>}
+          <Button variant="outline" disabled={pending} onClick={() => deploy && window.confirm("重新生成将使此探针的旧密钥立即失效，确定继续？") && startTransition(() => rotate(deploy))}><KeyRound />生成新密钥并获取部署命令</Button>
+          <div className="space-y-3 rounded-lg border p-3">
+            <p className="text-sm font-medium">一键部署命令</p>
+            <p className="text-xs text-muted-foreground">{currentToken ? "命令已包含服务器地址和鉴权密钥，复制后直接执行。密钥仅在当前页面保留；刷新后需重新填写，服务器无法找回明文。" : "请先填写已有密钥，或点击上方按钮生成新密钥；下方为命令预览。"}</p>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-xs text-slate-100">{command}</pre>
+            <Button disabled={!currentToken} onClick={() => deploy && copyCommand(deploy)}><Copy />复制一键部署命令</Button>
+          </div>
+          <details className="space-y-2 border-t pt-3 text-sm">
+            <summary className="cursor-pointer font-medium">手动下载（可选）</summary>
+            <div className="flex flex-wrap gap-4">
+              {["amd64", "arm64"].map((arch) => <a key={arch} className="text-primary underline" href={`/probe-downloads/latency-probe-${platform}-${arch}${platform === "windows" ? ".exe" : ""}`}><Download className="mr-1 inline size-4" />{arch === "amd64" ? "Intel / AMD x64" : "ARM64 / Apple 芯片"}</a>)}
+              <a className="text-primary underline" href={`/probe-downloads/install.${platform === "windows" ? "ps1" : "sh"}`}>下载安装脚本</a>
+            </div>
+            <p className="text-xs text-muted-foreground">手动运行：程序支持 -server、-token、-tls-pin 或 -config 配置文件。建议使用上方命令，自动配置鉴权和后台运行。每台电脑建议单独创建探针。</p>
+          </details>
+    </section>
+  );
 
   return (
     <div className="space-y-6">
@@ -148,39 +172,6 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
         </p>
       </div>
 
-      <Dialog open={!!deploy} onOpenChange={(open) => { if (!open) setDeploy(null); }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>一键部署探针 · {deploy?.name}</DialogTitle>
-            <DialogDescription>复制一条命令到需要测量延迟的电脑执行，自动下载对应系统的探针二进制、写入鉴权配置并启动后台服务。无需安装 Go、Node 或克隆项目。</DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-wrap gap-2">
-            {[['darwin', 'macOS'], ['linux', 'Linux'], ['windows', 'Windows']].map(([value, label]) => (
-              <Button key={value} variant={platform === value ? "default" : "outline"} size="sm" onClick={() => setPlatform(value)}>{label}</Button>
-            ))}
-          </div>
-          <p className="text-sm text-muted-foreground">{platform === "darwin" ? "在终端粘贴运行，自动识别 Intel / Apple 芯片，安装为登录后自动运行的后台探针。" : platform === "linux" ? "在终端粘贴运行，自动识别 amd64 / arm64，使用 sudo 安装为 systemd 服务。需要系统 ping 和 curl。" : "在 PowerShell 粘贴运行，自动下载程序并创建登录后启动的计划任务。"}</p>
-          <Field label="部署密钥">
-            <Input type="password" autoComplete="off" value={currentToken} placeholder="粘贴已保存的密钥，或点击下方重新生成" onChange={(event) => deploy && setCredential({ id: deploy.id, name: deploy.name, server: window.location.origin, token: event.target.value.trim() })} />
-          </Field>
-          {!currentToken && <p className="text-xs text-muted-foreground">服务器只保存密钥哈希，无法找回旧密钥。重新生成后，旧密钥立即失效。</p>}
-          <Button variant="outline" disabled={pending} onClick={() => deploy && window.confirm("重新生成将使此探针的旧密钥立即失效，确定继续？") && startTransition(() => rotate(deploy))}><KeyRound />生成新密钥并获取部署命令</Button>
-          <div className="space-y-3 rounded-lg border p-3">
-            <p className="text-sm font-medium">一键部署命令</p>
-            <p className="text-xs text-muted-foreground">{currentToken ? "命令已包含服务器地址和鉴权密钥，复制后直接执行。请妥善保存；刷新页面后无法再次查看密钥。" : "请先填写已有密钥，或点击上方按钮生成新密钥；下方为命令预览。"}</p>
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-xs text-slate-100">{command}</pre>
-            <Button disabled={!currentToken} onClick={copyCommand}><Copy />复制一键部署命令</Button>
-          </div>
-          <details className="space-y-2 border-t pt-3 text-sm">
-            <summary className="cursor-pointer font-medium">手动下载（可选）</summary>
-            <div className="flex flex-wrap gap-4">
-              {["amd64", "arm64"].map((arch) => <a key={arch} className="text-primary underline" href={`/probe-downloads/latency-probe-${platform}-${arch}${platform === "windows" ? ".exe" : ""}`}><Download className="mr-1 inline size-4" />{arch === "amd64" ? "Intel / AMD x64" : "ARM64 / Apple 芯片"}</a>)}
-              <a className="text-primary underline" href={`/probe-downloads/install.${platform === "windows" ? "ps1" : "sh"}`}>下载安装脚本</a>
-            </div>
-            <p className="text-xs text-muted-foreground">手动运行：程序支持 -server、-token、-tls-pin 或 -config 配置文件。建议使用上方命令，自动配置鉴权和后台运行。每台电脑建议单独创建探针。</p>
-          </details>
-        </DialogContent>
-      </Dialog>
 
       <form onSubmit={create} className="space-y-4 rounded-xl border bg-white p-4 sm:p-5">
         <div>
@@ -258,8 +249,8 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
             <td className="px-4 py-3">{item.interface_name || "系统默认路由"}</td>
             <td className="px-4 py-3 text-muted-foreground">{item.last_seen ? new Date(item.last_seen).toLocaleString("zh-CN", { hour12: false }) : "尚未连接"}</td>
             <td className="px-4 py-3"><div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => setDeploy(item)}><Download />一键部署</Button>
-              <ProbeCard item={item} busy={pending} onSave={(config) => startTransition(() => save(item, config))} onDelete={() => startTransition(() => remove(item))} />
+              <Button size="sm" onClick={() => copyCommand(item)}><Copy />一键部署</Button>
+              <ProbeCard item={item} open={deploy?.id === item.id} onOpenChange={(open) => setDeploy(open ? item : null)} deploymentSettings={deploy?.id === item.id ? deploymentSettings : null} busy={pending} onSave={(config) => startTransition(() => save(item, config))} onDelete={() => startTransition(() => remove(item))} />
               <Link className="text-primary hover:underline" href={`/latency-probes/${item.id}`}>延迟历史</Link>
             </div></td>
           </tr>)}</tbody>
@@ -278,11 +269,17 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
 
 function ProbeCard({
   item,
+  open,
+  onOpenChange,
+  deploymentSettings,
   busy,
   onSave,
   onDelete,
 }: {
   item: LatencyProbe;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  deploymentSettings: ReactNode;
   busy: boolean;
   onSave: (config: Config) => void;
   onDelete: () => void;
@@ -302,7 +299,7 @@ function ProbeCard({
     config.interface_name !== item.interface_name ||
     config.enabled !== item.enabled;
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild><Button size="sm" variant="outline">编辑</Button></DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
       <DialogHeader><DialogTitle>编辑探针 · {item.name}</DialogTitle><DialogDescription>间隔、超时和网卡配置会在下一轮检测时生效。</DialogDescription></DialogHeader>
@@ -352,7 +349,9 @@ function ProbeCard({
           查看延迟历史
         </Link>
       </div>
-    </form></DialogContent></Dialog>
+    </form>
+    {deploymentSettings}
+    </DialogContent></Dialog>
   );
 }
 
