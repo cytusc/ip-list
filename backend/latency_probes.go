@@ -95,7 +95,7 @@ func validProbeInput(input *latencyProbeInput, create bool) map[string]string {
 func (a *app) listLatencyProbes(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `SELECT id::text,name,interval_seconds,timeout_ms,concurrency,
 interface_name,enabled,last_seen,created_at,
-(enabled AND last_seen>now()-make_interval(secs=>interval_seconds*3)) AS online
+COALESCE(enabled AND last_seen>now()-make_interval(secs=>interval_seconds*3),false) AS online
 FROM latency_probes ORDER BY created_at DESC`)
 	if err != nil {
 		dbError(w, err)
@@ -167,7 +167,7 @@ func (a *app) updateLatencyProbe(w http.ResponseWriter, r *http.Request) {
 	err := a.db.QueryRow(r.Context(), `UPDATE latency_probes SET name=$2,interval_seconds=$3,
 timeout_ms=$4,concurrency=$5,interface_name=$6,enabled=$7 WHERE id=$1
 RETURNING id::text,name,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,
-(enabled AND last_seen>now()-make_interval(secs=>interval_seconds*3))`, id, input.Name,
+COALESCE(enabled AND last_seen>now()-make_interval(secs=>interval_seconds*3),false)`, id, input.Name,
 		input.IntervalSeconds, input.TimeoutMS, input.Concurrency, input.InterfaceName, input.Enabled).
 		Scan(&item.ID, &item.Name, &item.IntervalSeconds, &item.TimeoutMS, &item.Concurrency,
 			&item.InterfaceName, &item.Enabled, &item.LastSeen, &item.CreatedAt, &item.Online)
