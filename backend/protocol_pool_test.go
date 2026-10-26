@@ -141,6 +141,25 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	if !enabled {
 		t.Fatal("globally disabled range")
 	}
+	// A recheck bypasses the disable entry; new success must restore only its pool.
+	recovered := later.Add(time.Second)
+	job.FinishedAt = &recovered
+	job.Results[5].Status = "success"
+	save()
+	if disabled(job.Protocol) {
+		t.Fatal("successful full recheck did not restore range")
+	}
+	// A stale successful scan must not clear a newer failed recheck.
+	failedAgain := recovered.Add(time.Second)
+	job.FinishedAt = &failedAgain
+	job.Results[5].Status = "failed"
+	save()
+	job.FinishedAt = &recovered
+	job.Results[5].Status = "success"
+	save()
+	if !disabled(job.Protocol) {
+		t.Fatal("stale success restored a newer disabled range")
+	}
 	request := httptest.NewRequest("DELETE", "/protocol-networks/"+networkID+"?protocol=vless%2Fgrpc", nil)
 	request.SetPathValue("id", networkID)
 	w := httptest.NewRecorder()
@@ -149,7 +168,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 		t.Fatal("restore failed")
 	}
 	// Older failed full rounds cannot disable a pool with newer successful evidence.
-	newer := later.Add(time.Second)
+	newer := failedAgain.Add(time.Second)
 	job.FinishedAt = &newer
 	job.Results[5].Status = "success"
 	save()

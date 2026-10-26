@@ -150,52 +150,59 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, err.Error(), nil)
 		return
 	}
-	bytes := make([]byte, 16)
-	if _, err = rand.Read(bytes); err != nil {
-		apiError(w, 500, "无法创建任务", nil)
+	job, status, message := a.launchNodeScan(r.Context(), r.Context().Value(userContextKey{}).(user).ID, input, raw, name, template, cidrs, ips, false)
+	if message != "" {
+		apiError(w, status, message, nil)
 		return
+	}
+	respond(w, status, job)
+}
+
+// Rechecks share the normal task lease and persistence, but keep existing patrol schedules.
+func (a *app) launchNodeScan(ctx context.Context, userID string, input scanInput, raw, name string, template map[string]any, cidrs []string, ips []netip.Addr, keepSchedule bool) (scanJob, int, string) {
+	protocol := nodePoolProtocol(raw)
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return scanJob{}, 500, "无法创建任务"
 	}
 	id := hex.EncodeToString(bytes)
-	locked, err := a.redis.SetNX(r.Context(), scanLock+":"+protocol, id, 45*time.Second).Result()
+	locked, err := a.redis.SetNX(ctx, scanLock+":"+protocol, id, 45*time.Second).Result()
 	if err != nil {
-		apiError(w, 503, "任务服务暂时不可用", nil)
-		return
+		return scanJob{}, 503, "任务服务暂时不可用"
 	}
 	if !locked {
-		apiError(w, 409, "已有测试正在运行，请等待完成或停止当前任务", nil)
-		return
+		return scanJob{}, 409, "已有测试正在运行，请等待完成或停止当前任务"
 	}
-	job := scanJob{Input: input, Round: 1, Scope: "full", StartedAt: time.Now().UTC(), ID: id, UserID: r.Context().Value(userContextKey{}).(user).ID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
+	job := scanJob{Input: input, Round: 1, Scope: "full", StartedAt: time.Now().UTC(), ID: id, UserID: userID, NodeName: name, URL: input.URL, CIDRs: cidrs, Status: "running", Total: len(ips), Results: []scanResult{}}
 	job.Protocol = protocol
 	// Configuration identity only, not a security hash. PostgreSQL compares md5(share_uri).
 	fingerprint := md5.Sum([]byte(raw))
 	job.ConfigHash = hex.EncodeToString(fingerprint[:])
-	if err = a.persistScan(r.Context(), &job); err == nil {
-		err = a.redis.Set(r.Context(), latestKey(job.UserID), id, scanTTL).Err()
+	if err = a.persistScan(ctx, &job); err == nil {
+		err = a.redis.Set(ctx, latestKey(job.UserID), id, scanTTL).Err()
 	}
 	if err != nil {
 		a.releaseLock(job.lockKey(), id)
-		a.discardScanRecord(r.Context(), job.ID)
-		apiError(w, 503, "任务保存失败，请重试", nil)
-		return
+		a.discardScanRecord(ctx, job.ID)
+		return scanJob{}, 503, "任务保存失败，请重试"
 	}
 	if input.IntervalMinutes > 0 {
 		data, _ := json.Marshal(job)
-		if _, err = a.db.Exec(r.Context(), `INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES($1,$2,$3)
+		if _, err = a.db.Exec(ctx, `INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES($1,$2,$3)
    ON CONFLICT(protocol) DO UPDATE SET job_id=excluded.job_id,job=excluded.job,enabled=true,updated_at=now()`, job.Protocol, job.ID, data); err != nil {
 			a.releaseLock(job.lockKey(), id)
-			a.discardScanRecord(r.Context(), job.ID)
-			dbError(w, err)
-			return
+			a.discardScanRecord(ctx, job.ID)
+			return scanJob{}, 500, "任务保存失败，请重试"
 		}
-	} else if _, err = a.db.Exec(r.Context(), "UPDATE node_scan_schedules SET enabled=false,updated_at=now() WHERE protocol=$1", job.Protocol); err != nil {
-		a.releaseLock(job.lockKey(), id)
-		a.discardScanRecord(r.Context(), job.ID)
-		dbError(w, err)
-		return
+	} else if !keepSchedule {
+		if _, err = a.db.Exec(ctx, "UPDATE node_scan_schedules SET enabled=false,updated_at=now() WHERE protocol=$1", job.Protocol); err != nil {
+			a.releaseLock(job.lockKey(), id)
+			a.discardScanRecord(ctx, job.ID)
+			return scanJob{}, 500, "任务保存失败，请重试"
+		}
 	}
 	go a.runScan(job, input, template, ips)
-	respond(w, 202, job)
+	return job, 202, ""
 }
 func (a *app) persistScan(ctx context.Context, job *scanJob) error {
 	job.UpdatedAt = time.Now().UTC()

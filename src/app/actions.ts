@@ -194,3 +194,17 @@ export async function restoreProtocolNetwork(
     return failure(error);
   }
 }
+
+export async function recheckNetwork(id: string) {
+  try {
+    const { data } = await api<{
+      protocol: string;
+      job_id?: string;
+      error?: string;
+    }[]>(`/networks/${encodeURIComponent(id)}/recheck`, { method: "POST" });
+    revalidatePath("/probes");
+    return { ok: true as const, items: data };
+  } catch (error) {
+    return failure(error);
+  }
+}

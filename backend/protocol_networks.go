@@ -34,7 +34,16 @@ func (a *app) disableEmptyNetworks(ctx context.Context, tx pgx.Tx, job scanJob) 
 			}
 		}
 		expected := new(big.Int).Lsh(big.NewInt(1), uint(prefix.Addr().BitLen()-prefix.Bits()))
-		if success || expected.Cmp(big.NewInt(int64(count))) != 0 {
+		if success {
+			// Successful new evidence restores this pool, without clearing a newer disable.
+			_, err = tx.Exec(ctx, `DELETE FROM protocol_networks WHERE protocol=$1 AND network_id=ANY($2::uuid[])
+ AND cidr=$3::cidr AND checked_at<=$4`, job.Protocol, job.Input.NetworkIDs, cidr, job.FinishedAt)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if expected.Cmp(big.NewInt(int64(count))) != 0 {
 			continue
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)

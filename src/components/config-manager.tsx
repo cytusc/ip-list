@@ -47,6 +47,7 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
+import { NetworkRecheck } from "@/components/network-recheck";
 import { NodeImport } from "@/components/node-import";
 import { ConfigForm } from "@/components/config-form";
 
@@ -133,7 +134,7 @@ export function ConfigManager({
           <p className="mt-2 text-sm text-muted-foreground">
             {isNode
               ? "集中管理接入节点，维护节点地址与基础配置。"
-              : "统一维护网段与协议池状态。整段检测均失败时，仅在对应协议池禁用，可在连通性测试中恢复。"}
+              : "统一维护网段与协议池状态。整段检测均失败时，仅在对应协议池禁用，可点击重新检测复测各协议。"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -325,6 +326,7 @@ export function ConfigManager({
                 </TableCell>
                 <TableCell className="pr-5 text-right">
                   <div className="flex justify-end gap-1">
+                    {"cidr" in item && <NetworkRecheck network={item} />}
                     <Button
                       variant="ghost"
                       size="icon"

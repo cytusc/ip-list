@@ -79,6 +79,7 @@ func TestIntegration(t *testing.T) {
 		_ = json.Unmarshal(raw, &result)
 		return result
 	}
+	request("POST", "/networks/invalid/recheck", nil, 401)
 	request("GET", "/nodes", nil, 401)
 	request("GET", "/scans/latest", nil, 401)
 	request("GET", "/available-ips", nil, 401)
@@ -216,9 +217,51 @@ func TestIntegration(t *testing.T) {
 	if err = db.QueryRow(ctx, "SELECT available,protocol FROM ip_results WHERE node_id=$1 AND ip='127.0.0.1'", nodeID).Scan(&available, &protocol); err != nil || available || protocol != "vless/tcp" {
 		t.Fatalf("scan did not persist latest IP check: %v %s %v", available, protocol, err)
 	}
+	// A disabled protocol range still gets a full recheck; one-off rechecks retain patrol schedules.
+	recheckDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(recheckDeadline) && rdb.Exists(ctx, scanLock+":vless/tcp").Val() != 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err = db.Exec(ctx, "UPDATE node_scan_schedules SET enabled=true WHERE protocol='vless/tcp'"); err != nil {
+		t.Fatal(err)
+	}
+	reqRecheck, _ := http.NewRequest("POST", server.URL+"/networks/"+networkID+"/recheck", nil)
+	reqRecheck.Header.Set("Origin", "http://localhost:3000")
+	recheckResponse, err := client.Do(reqRecheck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rechecks []networkRecheckItem
+	err = json.NewDecoder(recheckResponse.Body).Decode(&rechecks)
+	recheckResponse.Body.Close()
+	if recheckResponse.StatusCode != 202 || err != nil {
+		t.Fatalf("recheck: status=%d err=%v", recheckResponse.StatusCode, err)
+	}
+	found := false
+	for _, item := range rechecks {
+		if item.Protocol != "vless/tcp" {
+			continue
+		}
+		if found || item.JobID == "" || item.Error != "" {
+			t.Fatalf("unexpected recheck: %+v", rechecks)
+		}
+		found = true
+		checked := waitScan(item.JobID)
+		if checked["completed"] != float64(1) {
+			t.Fatalf("disabled range was not rechecked: %+v", checked)
+		}
+	}
+	if !found {
+		t.Fatalf("TCP recheck missing: %+v", rechecks)
+	}
+	if err = db.QueryRow(ctx, "SELECT enabled FROM node_scan_schedules WHERE protocol='vless/tcp'").Scan(&scheduleEnabled); err != nil || !scheduleEnabled {
+		t.Fatalf("recheck disabled the patrol schedule: %v", err)
+	}
+	request("POST", "/networks/invalid/recheck", nil, 422)
 	network["cidr"] = "2001:db8::/32"
 	request("PUT", "/networks/"+networkID, network, 200)
 	request("POST", "/scans", scanInput, 422)
+	request("POST", "/networks/"+networkID+"/recheck", nil, 422)
 
 	network["cidr"] = "2001:db8::/32"
 	request("PUT", "/networks/"+networkID, network, 200)
