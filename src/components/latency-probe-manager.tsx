@@ -76,12 +76,14 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
   const currentToken = credential?.id === deploy?.id ? credential?.token || "" : "";
   const origin = credential?.server || (typeof window !== "undefined" ? window.location.origin : "");
   const quote = (value: string) => "'" + value.replaceAll("'", platform === "windows" ? "''" : "'\\''") + "'";
+  const deploymentToken = currentToken || "请先生成或填写部署密钥";
   const pinArgs = tlsPin ? ` --insecure --pinnedpubkey ${quote(`sha256//${tlsPin}`)}` : "";
   const command = platform === "windows"
-    ? `$p = Join-Path $env:TEMP ('ip-list-' + [guid]::NewGuid() + '.ps1'); curl.exe -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.ps1")} -o $p; if ($LASTEXITCODE -eq 0) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p -Server ${quote(origin)} -Token ${quote(currentToken)} ${tlsPin ? `-Pin ${quote(tlsPin)}` : ""}; Remove-Item $p }`
-    : `f=$(mktemp) && curl -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.sh")} -o "$f" && ${platform === "linux" ? "sudo " : ""}sh "$f" ${quote(origin)} ${quote(currentToken)} ${quote(tlsPin)}; rm -f "$f"`;
+    ? `$p = Join-Path $env:TEMP ('ip-list-' + [guid]::NewGuid() + '.ps1'); curl.exe -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.ps1")} -o $p; if ($LASTEXITCODE -eq 0) { powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p -Server ${quote(origin)} -Token ${quote(deploymentToken)} ${tlsPin ? `-Pin ${quote(tlsPin)}` : ""}; Remove-Item $p }`
+    : `( f=$(mktemp) || exit 1; trap 'rm -f "$f"' EXIT; curl -fSs${pinArgs} ${quote(origin + "/probe-downloads/install.sh")} -o "$f" && ${platform === "linux" ? "sudo " : ""}sh "$f" ${quote(origin)} ${quote(deploymentToken)} ${quote(tlsPin)} )`;
 
   async function copyCommand() {
+    if (!currentToken) return;
     try {
       await navigator.clipboard.writeText(command);
       toast.success("部署命令已复制，请在探针电脑上运行");
@@ -149,8 +151,8 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
       <Dialog open={!!deploy} onOpenChange={(open) => { if (!open) setDeploy(null); }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>部署探针 · {deploy?.name}</DialogTitle>
-            <DialogDescription>独立二进制，无需安装 Go、Node 或克隆项目。请在需要测量延迟的电脑上运行。</DialogDescription>
+            <DialogTitle>一键部署探针 · {deploy?.name}</DialogTitle>
+            <DialogDescription>复制一条命令到需要测量延迟的电脑执行，自动下载对应系统的探针二进制、写入鉴权配置并启动后台服务。无需安装 Go、Node 或克隆项目。</DialogDescription>
           </DialogHeader>
           <div className="flex flex-wrap gap-2">
             {[['darwin', 'macOS'], ['linux', 'Linux'], ['windows', 'Windows']].map(([value, label]) => (
@@ -162,20 +164,21 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
             <Input type="password" autoComplete="off" value={currentToken} placeholder="粘贴已保存的密钥，或点击下方重新生成" onChange={(event) => deploy && setCredential({ id: deploy.id, name: deploy.name, server: window.location.origin, token: event.target.value.trim() })} />
           </Field>
           {!currentToken && <p className="text-xs text-muted-foreground">服务器只保存密钥哈希，无法找回旧密钥。重新生成后，旧密钥立即失效。</p>}
-          <Button variant="outline" disabled={pending} onClick={() => deploy && window.confirm("重新生成将使此探针的旧密钥立即失效，确定继续？") && startTransition(() => rotate(deploy))}><KeyRound />重新生成部署密钥</Button>
-          {currentToken && <>
-            <p className="text-xs text-muted-foreground">命令包含密钥，请妥善保存；刷新页面后无法再次查看。</p>
+          <Button variant="outline" disabled={pending} onClick={() => deploy && window.confirm("重新生成将使此探针的旧密钥立即失效，确定继续？") && startTransition(() => rotate(deploy))}><KeyRound />生成新密钥并获取部署命令</Button>
+          <div className="space-y-3 rounded-lg border p-3">
+            <p className="text-sm font-medium">一键部署命令</p>
+            <p className="text-xs text-muted-foreground">{currentToken ? "命令已包含服务器地址和鉴权密钥，复制后直接执行。请妥善保存；刷新页面后无法再次查看密钥。" : "请先填写已有密钥，或点击上方按钮生成新密钥；下方为命令预览。"}</p>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950 p-3 text-xs text-slate-100">{command}</pre>
-            <Button onClick={copyCommand}><Copy />复制一键部署命令</Button>
-          </>}
-          <div className="space-y-2 border-t pt-3 text-sm">
-            <p className="font-medium">直接下载二进制</p>
+            <Button disabled={!currentToken} onClick={copyCommand}><Copy />复制一键部署命令</Button>
+          </div>
+          <details className="space-y-2 border-t pt-3 text-sm">
+            <summary className="cursor-pointer font-medium">手动下载（可选）</summary>
             <div className="flex flex-wrap gap-4">
               {["amd64", "arm64"].map((arch) => <a key={arch} className="text-primary underline" href={`/probe-downloads/latency-probe-${platform}-${arch}${platform === "windows" ? ".exe" : ""}`}><Download className="mr-1 inline size-4" />{arch === "amd64" ? "Intel / AMD x64" : "ARM64 / Apple 芯片"}</a>)}
               <a className="text-primary underline" href={`/probe-downloads/install.${platform === "windows" ? "ps1" : "sh"}`}>下载安装脚本</a>
             </div>
             <p className="text-xs text-muted-foreground">手动运行：程序支持 -server、-token、-tls-pin 或 -config 配置文件。建议使用上方命令，自动配置鉴权和后台运行。每台电脑建议单独创建探针。</p>
-          </div>
+          </details>
         </DialogContent>
       </Dialog>
 
@@ -255,7 +258,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
             <td className="px-4 py-3">{item.interface_name || "系统默认路由"}</td>
             <td className="px-4 py-3 text-muted-foreground">{item.last_seen ? new Date(item.last_seen).toLocaleString("zh-CN", { hour12: false }) : "尚未连接"}</td>
             <td className="px-4 py-3"><div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => setDeploy(item)}><Download />部署</Button>
+              <Button size="sm" onClick={() => setDeploy(item)}><Download />一键部署</Button>
               <ProbeCard item={item} busy={pending} onSave={(config) => startTransition(() => save(item, config))} onDelete={() => startTransition(() => remove(item))} />
               <Link className="text-primary hover:underline" href={`/latency-probes/${item.id}`}>延迟历史</Link>
             </div></td>
