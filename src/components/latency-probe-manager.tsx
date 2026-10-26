@@ -167,7 +167,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
         <h1 className="text-2xl font-semibold tracking-tight">延迟探针</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
           在电脑运行探针后，它会直接用系统 ping 测量当前可用 IP，并定期上报。ICMP
-          不使用 HTTP 或 SOCKS 代理；若电脑启用了 VPN/TUN，请填写真实网卡名来指定出口。
+          会绑定出口网卡；留空时自动选择已连接的物理网卡，存在多个出口时需手动指定。
           每个探针可使用不同名称和检测间隔。
         </p>
       </div>
@@ -224,7 +224,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
             <Input
               value={draft.interface_name}
               maxLength={100}
-              placeholder="留空使用系统路由，例如 en0 / eth0"
+              placeholder="留空自动选择物理网卡，例如 en0 / eth0"
               onChange={(event) => updateDraft("interface_name", event.target.value)}
             />
           </Field>
@@ -246,7 +246,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
             <td className="px-4 py-3 font-medium">{item.name}</td>
             <td className="px-4 py-3"><Badge variant={item.online ? "default" : "secondary"}>{!item.enabled ? "已停用" : item.online ? "在线" : "离线"}</Badge></td>
             <td className="px-4 py-3">{item.interval_seconds} 秒</td>
-            <td className="px-4 py-3">{item.interface_name || "系统默认路由"}</td>
+            <td className="px-4 py-3">{item.interface_name || "自动选择物理网卡"}</td>
             <td className="px-4 py-3 text-muted-foreground">{item.last_seen ? new Date(item.last_seen).toLocaleString("zh-CN", { hour12: false }) : "尚未连接"}</td>
             <td className="px-4 py-3"><div className="flex items-center gap-2">
               <Button size="sm" onClick={() => copyCommand(item)}><Copy />一键部署</Button>
@@ -329,7 +329,7 @@ function ProbeCard({
           <Input type="number" min={1} max={512} value={config.concurrency} onChange={(e) => setConfig({ ...config, concurrency: Number(e.target.value) })} />
         </Field>
         <Field label="出口网卡（可选）">
-          <Input value={config.interface_name} maxLength={100} placeholder="en0 / eth0" onChange={(e) => setConfig({ ...config, interface_name: e.target.value })} />
+          <Input value={config.interface_name} maxLength={100} placeholder="留空自动选择物理网卡，例如 en0 / eth0" onChange={(e) => setConfig({ ...config, interface_name: e.target.value })} />
         </Field>
         <div className="flex items-end pb-2">
           <label className="flex items-center gap-2 text-sm">

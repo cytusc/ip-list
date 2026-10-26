@@ -7,12 +7,12 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -91,6 +91,11 @@ func main() {
 		if _, err = exec.LookPath("ping"); err != nil {
 			log.Fatal("未找到系统 ping，请先安装 iputils-ping")
 		}
+		iface, interfaceErr := measurementInterface(cfg.InterfaceName)
+		if interfaceErr != nil {
+			log.Fatal(interfaceErr)
+		}
+		log.Printf("ICMP 检测绑定出口网卡：%s", iface.Name)
 		log.Printf("连接和鉴权成功：%d 个目标，间隔 %d 秒", len(cfg.IPs), cfg.Interval)
 		return
 	}
@@ -104,6 +109,17 @@ func main() {
 			time.Sleep(30 * time.Second)
 			continue
 		}
+		iface, interfaceErr := measurementInterface(settings.InterfaceName)
+		if interfaceErr != nil {
+			if *once {
+				log.Fatal(interfaceErr)
+			}
+			log.Printf("停止本轮检测，未上报延迟：%v", interfaceErr)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+		settings.InterfaceName = iface.Name
+		log.Printf("ICMP 检测绑定出口网卡：%s", iface.Name)
 		results := runPings(settings)
 		if len(results) > 0 {
 			reportErr := error(nil)
@@ -121,12 +137,18 @@ func main() {
 				log.Printf("上报检测结果失败: %v", reportErr)
 			} else {
 				ok := 0
+				minDelay, maxDelay := math.Inf(1), 0.0
 				for _, item := range results {
 					if item.Success {
 						ok++
+						minDelay = math.Min(minDelay, item.DelayMS)
+						maxDelay = math.Max(maxDelay, item.DelayMS)
 					}
 				}
 				log.Printf("已检测 %d 个 IP：%d 可达，%d 超时", len(results), ok, len(results)-ok)
+				if ok > 0 {
+					log.Printf("物理出口 %s 延迟范围：%.2f–%.2f ms", settings.InterfaceName, minDelay, maxDelay)
+				}
 			}
 		}
 		if *once {
@@ -267,6 +289,17 @@ func ping(ip netip.Addr, timeout time.Duration, iface string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout+2*time.Second)
 	defer cancel()
 	args := pingArgs(ip, timeout, iface)
+	if runtime.GOOS == "windows" {
+		selected, err := net.InterfaceByName(iface)
+		if err != nil {
+			return 0, false
+		}
+		source := interfaceAddress(*selected, ip.Is6())
+		if source == "" {
+			return 0, false
+		}
+		args = append(args[:len(args)-1], "-S", source, ip.String())
+	}
 	binary := "ping"
 	if runtime.GOOS == "darwin" && ip.Is6() {
 		binary = "ping6"
@@ -275,10 +308,7 @@ func ping(ip netip.Addr, timeout time.Duration, iface string) (float64, bool) {
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	output, err := cmd.CombinedOutput()
 	match := pingDelay.FindSubmatch(output)
-	if len(match) != 2 {
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			return 0, false
-		}
+	if err != nil || len(match) != 2 {
 		return 0, false
 	}
 	var delay float64
@@ -300,8 +330,8 @@ func pingArgs(ip netip.Addr, timeout time.Duration, iface string) []string {
 		return []string{family, "-n", "1", "-w", fmt.Sprint(timeout.Milliseconds()), ip.String()}
 	}
 	if runtime.GOOS == "darwin" && ip.Is6() {
-		// macOS provides separate ping6 and ping binaries.
-		args := []string{"-n", "-c", "1", "-W", fmt.Sprint(timeout.Milliseconds())}
+		// macOS ping6 has no ping-compatible -W timeout; the command context bounds it.
+		args := []string{"-n", "-c", "1"}
 		if iface != "" {
 			args = append(args, "-b", iface)
 		}
@@ -325,4 +355,76 @@ func pingArgs(ip netip.Addr, timeout time.Duration, iface string) []string {
 	}
 	args = append(args, ip.String())
 	return args
+}
+
+// Never silently use the default route: TUN software may synthesize ICMP replies.
+func measurementInterface(configured string) (net.Interface, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return net.Interface{}, err
+	}
+	return selectMeasurementInterface(interfaces, strings.TrimSpace(configured), interfaceAddress)
+}
+
+func selectMeasurementInterface(interfaces []net.Interface, configured string, address func(net.Interface, bool) string) (net.Interface, error) {
+	candidates := []net.Interface{}
+	for _, iface := range interfaces {
+		if configured != "" && iface.Name != configured {
+			continue
+		}
+		if !physicalInterface(iface) || (address(iface, false) == "" && address(iface, true) == "") {
+			continue
+		}
+		candidates = append(candidates, iface)
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if configured != "" {
+		return net.Interface{}, fmt.Errorf("出口网卡 %q 不存在、未连接或属于虚拟隧道；请填写已连接的物理网卡", configured)
+	}
+	if len(candidates) == 0 {
+		return net.Interface{}, fmt.Errorf("未找到可用物理网卡，拒绝使用系统默认路由；请在探针编辑中配置出口网卡")
+	}
+	names := []string{}
+	for _, iface := range candidates {
+		names = append(names, iface.Name)
+	}
+	return net.Interface{}, fmt.Errorf("存在多个物理出口（%s），请在探针编辑中明确选择出口网卡", strings.Join(names, ", "))
+}
+
+func physicalInterface(iface net.Interface) bool {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 || len(iface.HardwareAddr) == 0 {
+		return false
+	}
+	name := strings.ToLower(iface.Name)
+	for _, prefix := range []string{"utun", "tun", "tap", "wg", "tailscale", "docker", "veth", "br-", "bridge", "virbr", "vmnet", "awdl", "llw", "anpi", "gif", "stf", "ipsec", "zt"} {
+		if strings.HasPrefix(name, prefix) {
+			return false
+		}
+	}
+	for _, marker := range []string{"clash", "mihomo", "sing-box", "wintun", "wireguard", "vpn", "loopback"} {
+		if strings.Contains(name, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func interfaceAddress(iface net.Interface, ipv6 bool) string {
+	addresses, err := iface.Addrs()
+	if err != nil {
+		return ""
+	}
+	for _, raw := range addresses {
+		prefix, err := netip.ParsePrefix(raw.String())
+		if err != nil {
+			continue
+		}
+		ip := prefix.Addr().Unmap()
+		if ip.Is6() == ipv6 && ip.IsGlobalUnicast() {
+			return ip.String()
+		}
+	}
+	return ""
 }

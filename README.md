@@ -31,17 +31,17 @@
 
 打开「延迟探针」创建探针，填写显示名称（例如「电信」）、检测间隔、单 IP 超时、并发数和可选的出口网卡。创建后密钥只显示一次；可在页面重新生成密钥，旧密钥会立即失效。探针在「可用 IP」页显示各探针最近的 ICMP 延迟，点击名称查看最近 1 小时到 7 天的历史曲线。结果保留 30 天。
 
-已配置探针以列表展示，点击「部署」，选择 macOS、Linux 或 Windows，再复制一键部署命令到被测电脑运行。直接下载预编译二进制，无需 Go、Node 或项目源码；也可在部署弹窗直接下载 x64 / ARM64 程序。已有探针需粘贴原密钥，或明确重新生成密钥（旧密钥立即失效）。
+已配置探针以列表展示，点击「编辑」配置系统和密钥，再在列表点击「一键部署」复制命令到被测电脑运行。直接下载预编译二进制，无需 Go、Node 或项目源码；也可在编辑弹窗直接下载 x64 / ARM64 程序。已有探针需粘贴原密钥，或明确重新生成密钥（旧密钥立即失效）。
 
 - macOS：安装到 `~/Library/Application Support/ip-list-probe`，通过 LaunchAgent 在登录后自动运行，日志位于该目录 `probe.log`。
 - Linux：使用 sudo 安装到 `/opt/ip-list-probe`，注册 systemd 服务 `ip-list-probe`。需要 curl、系统 ping 和 systemd；日志 `journalctl -u ip-list-probe -f`。
 - Windows：PowerShell 下载到 `%LOCALAPPDATA%\ip-list-probe`，使用当前用户的计划任务在登录后运行。
 
-每台电脑安装一个探针，重复安装会更新该电脑的配置。配置文件只允许当前用户读取（Linux 为 root），密钥不放在后台进程参数或下载链接中。安装前会校验站点连接、密钥和系统 ping，失败时保留原安装。手动运行支持 `-server`、`-token`、`-tls-pin` 或 `-config config.json`；`-check` 检查连接和鉴权后退出。
+每台电脑安装一个探针，重复安装会更新该电脑的配置。配置文件只允许当前用户读取（Linux 为 root），密钥不放在后台进程参数或下载链接中。安装前会校验站点连接、密钥、系统 ping 和物理出口网卡，失败时保留原安装。手动运行支持 `-server`、`-token`、`-tls-pin` 或 `-config config.json`；`-check` 检查连接、鉴权和物理出口后退出。
 
 站点发布时先运行 `npm run probe:build`（服务器需要 Go），生成六个平台的静态二进制到 `bin/latency-probe`，再构建并重启 Web。下载入口 `/probe-downloads/` 只提供固定白名单中的公共安装文件，不包含探针密钥。自签证书站点在 Web 服务环境配置 `PROBE_TLS_PIN` 为 TLS 证书公钥的 SHA-256 base64 指纹，部署命令、下载和探针请求都会校验此公钥；证书公钥变更后需重新部署探针。公有 CA 证书可不设置，使用系统证书校验。
 
-探针使用系统 `ping` 发 ICMP 包，测量电脑到目标 IP 的往返时间，不经过 HTTP/SOCKS 代理。启用 VPN/TUN 时，填写物理网卡名来绑定出口（macOS 例如 `en0`，Linux 例如 `eth0`）；不填则遵循系统路由。Windows 使用系统默认路由。探针需要能访问站点 HTTPS 地址；ICMP 超时可能是目标或网络屏蔽了 ICMP，不代表代理连接一定不可用。服务端只存储密钥的 SHA-256 哈希，探针请求通过 Bearer 密钥鉴权；上报只接受当前可用且未列入黑名单的 IP。数据库升级需执行 `npm run db:init`，再重启 Go API。
+探针使用系统 `ping` 发 ICMP 包，测量电脑到目标 IP 的往返时间，不经过 HTTP/SOCKS 代理。探针会绑定物理网卡（macOS `ping -b`，Linux `ping -I`，Windows `ping -S` 绑定该网卡源地址）。网卡留空时自动选择唯一已连接且有 IP 的非隧道网卡；多个候选、无可用网卡或指定虚拟隧道时停止本轮检测并记录错误，不回退到默认路由。macOS 例如 `en0`，Linux 例如 `eth0`；Windows 的源地址绑定不能保证绕过所有第三方 VPN/TUN，请关闭 TUN 或为检测目标配置直连规则。日志会输出实际选择的网卡。探针需要能访问站点 HTTPS 地址；ICMP 超时可能是目标或网络屏蔽了 ICMP，不代表代理连接一定不可用。服务端只存储密钥的 SHA-256 哈希，探针请求通过 Bearer 密钥鉴权；上报只接受当前可用且未列入黑名单的 IP。数据库升级需执行 `npm run db:init`，再重启 Go API。
 
 ## 自动增量检测
 
