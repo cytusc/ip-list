@@ -13,7 +13,7 @@ $temp = Join-Path $env:TEMP ('ip-list-probe-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
   $binary = Join-Path $temp 'latency-probe.exe'
-  $curlArgs = @('--fail', '--silent', '--show-error', '--connect-timeout', '15', '--max-time', '180')
+  $curlArgs = @('--compressed', '--retry', '2', '--fail', '--silent', '--show-error', '--connect-timeout', '15', '--max-time', '180')
   if ($Pin) { $curlArgs += @('--insecure', '--pinnedpubkey', "sha256//$Pin") }
   & curl.exe @curlArgs "$($Server.TrimEnd('/'))/probe-downloads/latency-probe-windows-$arch.exe" -o $binary
   if ($LASTEXITCODE -ne 0) { throw '下载探针失败' }

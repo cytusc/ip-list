@@ -25,9 +25,9 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 url="$server/probe-downloads/latency-probe-$os-$arch"
 if [ -n "$pin" ]; then
-  curl --fail --silent --show-error --connect-timeout 15 --max-time 180 --insecure --pinnedpubkey "sha256//$pin" "$url" -o "$tmp/probe"
+  curl --compressed --retry 2 --fail --silent --show-error --connect-timeout 15 --max-time 180 --insecure --pinnedpubkey "sha256//$pin" "$url" -o "$tmp/probe"
 else
-  curl --fail --silent --show-error --connect-timeout 15 --max-time 180 "$url" -o "$tmp/probe"
+  curl --compressed --retry 2 --fail --silent --show-error --connect-timeout 15 --max-time 180 "$url" -o "$tmp/probe"
 fi
 chmod 700 "$tmp/probe"
 printf '{"Server":"%s","Token":"%s","TLSPin":"%s"}\n' "$server" "$token" "$pin" > "$tmp/config.json"

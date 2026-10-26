@@ -75,7 +75,16 @@ func main() {
 		log.Fatal(err)
 	}
 	if *check {
-		cfg, err := loadSettings(client, base, *token)
+		var cfg settings
+		for attempt := 0; attempt < 3; attempt++ {
+			cfg, err = loadSettings(client, base, *token)
+			if err == nil {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(2 * time.Second)
+			}
+		}
 		if err != nil {
 			log.Fatal(err)
 		}
