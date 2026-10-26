@@ -105,7 +105,9 @@ func (a *app) networkMetadata(ctx context.Context, prefix netip.Prefix) (network
 			return cached, nil
 		}
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Leave time in the API request budget for the actual network write after
+	// this optional external lookup. Missing metadata is retried in the background.
+	lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	result, err := lookupNetworkMetadata(lookupCtx, http.DefaultClient, "https://stat.ripe.net", prefix)
 	if err == nil && a.redis != nil {
