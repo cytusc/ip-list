@@ -306,9 +306,9 @@ RETURNING interval_seconds,timeout_ms,concurrency,interface_name`, id).
 		dbError(w, err)
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT DISTINCT host(p.ip) FROM node_ip_pool p
+	rows, err := a.db.Query(r.Context(), `SELECT host(p.ip) FROM node_ip_pool p
 WHERE p.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
-ORDER BY p.ip`)
+GROUP BY p.ip ORDER BY p.ip`)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -400,4 +400,3 @@ SELECT count(*) FROM inserted`, id, string(body)).Scan(&saved)
 	}
 	respond(w, http.StatusOK, map[string]int64{"saved": saved})
 }
-
