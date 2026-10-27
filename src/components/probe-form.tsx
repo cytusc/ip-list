@@ -212,7 +212,7 @@ function ProbeForm({
           </p>
           {!availableNodes.length && (
             <Link className="text-sm text-primary underline" href="/nodes">
-              前往节点管理导入 VLESS 链接
+              前往节点管理导入 VLESS / Trojan 链接
             </Link>
           )}
         </div>

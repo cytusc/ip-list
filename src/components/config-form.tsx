@@ -231,7 +231,7 @@ export function ConfigForm({
             )}
           {isNode && (
             <div className="space-y-2">
-              <Label htmlFor="share_uri">VLESS 链接（选填）</Label>
+              <Label htmlFor="share_uri">VLESS / Trojan 链接（选填）</Label>
               <Textarea
                 id="share_uri"
                 value={values.share_uri}

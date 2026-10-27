@@ -130,7 +130,7 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 	}
 	template, _, err := parseShare(raw)
 	if err != nil {
-		apiError(w, 422, "请先为该节点添加有效的 VLESS 链接", nil)
+		apiError(w, 422, "请先为该节点添加有效的 VLESS / Trojan 链接", nil)
 		return
 	}
 	protocol := nodePoolProtocol(raw)

@@ -68,13 +68,7 @@ func probeXray(ctx context.Context, template map[string]any, ip netip.Addr, targ
 		"inbounds": []any{map[string]any{
 			"listen": socket, "protocol": "http", "settings": map[string]any{},
 		}},
-		"outbounds": []any{map[string]any{
-			"protocol": "vless", "streamSettings": stream,
-			"settings": map[string]any{"vnext": []any{map[string]any{
-				"address": ip.String(), "port": port,
-				"users": []any{map[string]any{"id": template["uuid"], "encryption": "none"}},
-			}}},
-		}},
+		"outbounds": []any{xrayOutbound(template, ip, port, stream)},
 	}
 	if env("PROBE_DEBUG", "") == "1" {
 		config["log"] = map[string]any{"loglevel": "info"}
@@ -104,7 +98,7 @@ func probeXray(ctx context.Context, template map[string]any, ip netip.Addr, targ
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		case <-done:
-			detail := strings.ReplaceAll(output.String(), fmt.Sprint(template["uuid"]), "[uuid]")
+			detail := strings.ReplaceAll(strings.ReplaceAll(output.String(), fmt.Sprint(template["uuid"]), "[credential]"), fmt.Sprint(template["password"]), "[credential]")
 			return 0, fmt.Errorf("Xray 配置加载失败: %s", strings.TrimSpace(detail))
 		case <-ticker.C:
 		}
@@ -128,7 +122,7 @@ func probeXray(ctx context.Context, template map[string]any, ip netip.Addr, targ
 		_ = cmd.Process.Kill()
 		<-done
 		if env("PROBE_DEBUG", "") == "1" {
-			detail := strings.ReplaceAll(output.String(), fmt.Sprint(template["uuid"]), "[uuid]")
+			detail := strings.ReplaceAll(strings.ReplaceAll(output.String(), fmt.Sprint(template["uuid"]), "[credential]"), fmt.Sprint(template["password"]), "[credential]")
 			detail = strings.ReplaceAll(detail, target, "[test-url]")
 			log.Printf("xray probe ip=%s details=%q", ip, detail)
 		}
@@ -136,4 +130,17 @@ func probeXray(ctx context.Context, template map[string]any, ip netip.Addr, targ
 	}
 	_ = response.Body.Close()
 	return max(1, int(time.Since(start).Milliseconds())), nil
+}
+
+func xrayOutbound(template map[string]any, ip netip.Addr, port int, stream map[string]any) map[string]any {
+	protocol := "vless"
+	settings := map[string]any{"vnext": []any{map[string]any{
+		"address": ip.String(), "port": port,
+		"users": []any{map[string]any{"id": template["uuid"], "encryption": "none"}},
+	}}}
+	if template["type"] == "trojan" {
+		protocol = "trojan"
+		settings = map[string]any{"servers": []any{map[string]any{"address": ip.String(), "port": port, "password": template["password"]}}}
+	}
+	return map[string]any{"protocol": protocol, "streamSettings": stream, "settings": settings}
 }

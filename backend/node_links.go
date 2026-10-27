@@ -89,10 +89,10 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, links)
 }
 
-// Current imports support VLESS; transport is the protocol-pool boundary.
+// Keep both proxy protocol and transport as the protocol-pool boundary.
 func nodePoolProtocol(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "vless" {
+	if err != nil || (u.Scheme != "vless" && u.Scheme != "trojan") {
 		return ""
 	}
 	protocol := u.Query().Get("type")

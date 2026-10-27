@@ -22,7 +22,7 @@ export function NodeImport() {
   return (
     <>
       <Button variant="outline" onClick={() => setOpen(true)}>
-        导入 VLESS 节点
+        导入 VLESS / Trojan 节点
       </Button>
       <Dialog
         open={open}
@@ -36,7 +36,7 @@ export function NodeImport() {
       >
         <DialogContent onInteractOutside={(event) => event.preventDefault()}>
           <DialogHeader>
-            <DialogTitle>导入 VLESS 节点</DialogTitle>
+            <DialogTitle>导入 VLESS / Trojan 节点</DialogTitle>
             <DialogDescription>
               每行一条，最多 20 条。使用链接中的名称，支持
               HTTPUpgrade、XHTTP、gRPC、WS 和 TCP。

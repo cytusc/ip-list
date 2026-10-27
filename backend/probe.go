@@ -19,15 +19,15 @@ import (
 // the whole URI when testing an IP, since SNI and HTTP Host must stay unchanged.
 func parseShare(raw string) (map[string]any, *url.URL, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u == nil || u.Scheme != "vless" || u.User == nil || u.Hostname() == "" || len(raw) > 8192 || strings.ContainsAny(raw, "\r\n\t ") {
-		return nil, nil, errors.New("请输入一条有效的 VLESS 链接")
+	if err != nil || u == nil || (u.Scheme != "vless" && u.Scheme != "trojan") || u.User == nil || u.Hostname() == "" || len(raw) > 8192 || strings.ContainsAny(raw, "\r\n\t ") {
+		return nil, nil, errors.New("请输入一条有效的 VLESS 或 Trojan 链接")
 	}
 	port, err := strconv.Atoi(u.Port())
-	if err != nil || port < 1 || port > 65535 || validate.Var(u.User.Username(), "uuid") != nil {
-		return nil, nil, errors.New("VLESS 链接需包含有效的 UUID、服务器地址和端口")
+	if err != nil || port < 1 || port > 65535 || (u.Scheme == "vless" && validate.Var(u.User.Username(), "uuid") != nil) || u.User.Username() == "" {
+		return nil, nil, errors.New("链接需包含有效的凭据、服务器地址和端口")
 	}
 	if _, set := u.User.Password(); set || u.Path != "" {
-		return nil, nil, errors.New("VLESS 链接格式无效")
+		return nil, nil, errors.New("节点链接格式无效")
 	}
 	q, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
@@ -59,6 +59,17 @@ func parseShare(raw string) (map[string]any, *url.URL, error) {
 			return nil, nil, errors.New("XHTTP mode 无效")
 		}
 	}
+	if u.Scheme == "trojan" {
+		if q.Get("security") == "none" {
+			return nil, nil, errors.New("Trojan 节点必须启用 TLS")
+		}
+		switch q.Get("type") {
+		case "", "tcp", "ws", "grpc":
+		default:
+			return nil, nil, errors.New("Trojan 目前支持 WS、gRPC 和 TCP")
+		}
+		q.Set("security", "tls")
+	}
 	// Set defaults before conversion so changing server never changes implicit SNI/Host.
 	if q.Get("sni") == "" {
 		sni := u.Hostname()
@@ -81,9 +92,19 @@ func parseShare(raw string) (map[string]any, *url.URL, error) {
 	normalized.RawQuery = q.Encode()
 	configs, err := convert.ConvertsV2Ray([]byte(normalized.String()))
 	if err != nil || len(configs) != 1 {
-		return nil, nil, errors.New("无法解析该 VLESS 链接，请检查参数")
+		return nil, nil, errors.New("无法解析该节点链接，请检查参数")
 	}
 	config := configs[0]
+	if u.Scheme == "trojan" {
+		// Mihomo uses implicit TLS and sni; Xray uses explicit TLS and servername.
+		config["tls"] = true
+		config["servername"] = q.Get("sni")
+		if q.Get("type") == "ws" {
+			opts := config["ws-opts"].(map[string]any)
+			headers := opts["headers"].(map[string]any)
+			headers["Host"] = q.Get("host")
+		}
+	}
 	// v1.19.33's URI converter leaves network=httpupgrade, while the outbound
 	// implements HTTPUpgrade via the WS transport flag. Normalize that mapping.
 	if q.Get("type") == "httpupgrade" {

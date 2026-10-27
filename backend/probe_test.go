@@ -88,7 +88,7 @@ func TestExpandPrefixes(t *testing.T) {
 	}
 }
 
-// A real mihomo VLESS server terminates the proxy transport. The tunnel only
+// Real mihomo VLESS and Trojan servers terminate the proxy transport. The tunnel only
 // supplies a deterministic HTTP response, keeping tests independent of WANs.
 type probeTestTunnel struct {
 	status atomic.Int32
@@ -131,18 +131,28 @@ func TestProbeThroughRealMihomoTransports(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ca.ResetCertificate()
-	for _, transport := range []string{"httpupgrade", "xhttp", "grpc"} {
+	for _, transport := range []string{"httpupgrade", "xhttp", "grpc", "ws", "trojan-ws"} {
 		t.Run(transport, func(t *testing.T) {
 			options := inbound.VlessOption{BaseOption: inbound.BaseOption{NameStr: "test", Listen: "127.0.0.1", Port: "0"}, Users: []inbound.VlessUser{{Username: "test", UUID: testUUID}}, Certificate: certPEM, PrivateKey: keyPEM}
 			switch transport {
-			case "httpupgrade":
+			case "httpupgrade", "ws", "trojan-ws":
 				options.WsPath = "/hu"
 			case "xhttp":
 				options.XHTTPConfig = inbound.XHTTPConfig{Path: "/hu", Host: "host.example", Mode: "packet-up"}
 			case "grpc":
 				options.GrpcServiceName = "svc"
 			}
-			server, err := inbound.NewVless(&options)
+			var server interface {
+				Listen(C.Tunnel) error
+				Address() string
+				Close() error
+			}
+			var err error
+			if transport == "trojan-ws" {
+				server, err = inbound.NewTrojan(&inbound.TrojanOption{BaseOption: options.BaseOption, Users: []inbound.TrojanUser{{Username: "test", Password: "test-password"}}, WsPath: options.WsPath, Certificate: certPEM, PrivateKey: keyPEM})
+			} else {
+				server, err = inbound.NewVless(&options)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -157,6 +167,10 @@ func TestProbeThroughRealMihomoTransports(t *testing.T) {
 				t.Fatal(err)
 			}
 			raw := fmt.Sprintf("vless://%s@not-resolvable.invalid:%d?encryption=none&security=tls&sni=sni.example&type=%s&path=%%2Fhu&host=host.example&mode=packet-up&serviceName=svc", testUUID, addr.Port(), transport)
+			if transport == "trojan-ws" {
+				raw = strings.Replace(raw, "vless://"+testUUID, "trojan://test-password", 1)
+				raw = strings.Replace(raw, "type=trojan-ws", "type=ws", 1)
+			}
 			if transport == "grpc" {
 				raw = strings.Replace(raw, "host=host.example", "host=sni.example", 1)
 				raw += "&alpn=h2"
@@ -269,5 +283,40 @@ func TestProbeInterface(t *testing.T) {
 	}
 	if template["server"] != "original.example" || template["interface-name"] != nil {
 		t.Fatal("probe modified shared template")
+	}
+}
+
+func TestTrojanShareCompatibility(t *testing.T) {
+	for _, kernel := range []string{"mihomo", "xray"} {
+		t.Run(kernel, func(t *testing.T) {
+			t.Setenv("PROBE_KERNEL", kernel)
+			raw := "trojan://test-password@original.example:443?security=tls&sni=sni.example&type=ws&path=%2Ftrojan-ws&host=host.example#Trojan"
+			template, _, err := parseShare(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if template["type"] != "trojan" || template["password"] != "test-password" || template["servername"] != "sni.example" {
+				t.Fatal("Trojan credentials or SNI lost")
+			}
+			encoded, _ := json.Marshal(template["ws-opts"])
+			if !strings.Contains(string(encoded), "/trojan-ws") || !strings.Contains(string(encoded), "host.example") {
+				t.Fatal("WS path or Host lost")
+			}
+			ip := netip.MustParseAddr("192.0.2.1")
+			out := xrayOutbound(template, ip, 443, map[string]any{"network": "ws"})
+			encoded, _ = json.Marshal(out)
+			if out["protocol"] != "trojan" || !strings.Contains(string(encoded), `"password":"test-password"`) || strings.Contains(string(encoded), "vnext") {
+				t.Fatal("wrong Xray Trojan outbound")
+			}
+			link, err := nodeLink(raw, "Trojan", ip)
+			if err != nil || nodePoolProtocol(link) != "trojan/ws" || !strings.Contains(link, "sni=sni.example") || !strings.Contains(link, "192.0.2.1:443") {
+				t.Fatal("Trojan pool or generated link invalid", err)
+			}
+		})
+	}
+	for _, raw := range []string{"trojan://@original.example:443?type=ws", "trojan://pass@original.example:443?security=none&type=ws"} {
+		if _, _, err := parseShare(raw); err == nil {
+			t.Fatal("accepted invalid Trojan")
+		}
 	}
 }
