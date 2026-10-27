@@ -49,7 +49,7 @@ func enqueueAutomaticScans(ctx context.Context, tx pgx.Tx, id, cidr, userID stri
 	}
 	for protocol := range protocols {
 		_, err = tx.Exec(ctx, `INSERT INTO network_auto_scans(network_id,cidr,protocol,user_id) VALUES($1,$2::cidr,$3,$4)
-   ON CONFLICT(network_id,protocol) DO UPDATE SET cidr=excluded.cidr,user_id=excluded.user_id,created_at=now()`, id, cidr, protocol, userID)
+   ON CONFLICT(network_id,protocol) DO UPDATE SET cidr=excluded.cidr,user_id=excluded.user_id,created_at=now(),recheck_after=NULL`, id, cidr, protocol, userID)
 		if err != nil {
 			return err
 		}
@@ -119,10 +119,12 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 		defer a.releaseLock(job.lockKey(), job.ID)
 	}
 	var networkID, cidr string
-	err := a.db.QueryRow(ctx, `SELECT q.network_id::text,q.cidr::text,q.user_id::text
+	var createdAt time.Time
+	var recheckAfter *time.Time
+	err := a.db.QueryRow(ctx, `SELECT q.network_id::text,q.cidr::text,q.user_id::text,q.created_at,q.recheck_after
   FROM network_auto_scans q JOIN networks w ON w.id=q.network_id
   WHERE q.protocol=$1 AND w.enabled AND w.cidr=q.cidr
-  ORDER BY q.created_at,q.network_id LIMIT 1`, protocol).Scan(&networkID, &cidr, &job.UserID)
+  ORDER BY q.created_at,q.network_id LIMIT 1`, protocol).Scan(&networkID, &cidr, &job.UserID, &createdAt, &recheckAfter)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -138,6 +140,10 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 		return false, nil
 	}
 	input.Incremental, input.IntervalMinutes = true, 0
+	if recheckAfter != nil {
+		input.Incremental = false
+		job.Scope = "full"
+	}
 	input.NetworkIDs = []string{networkID}
 	job.Input, job.NodeName, job.URL = input, name, input.URL
 	job.CIDRs = []string{cidr}
@@ -152,7 +158,7 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 		fingerprint := md5.Sum([]byte(raw))
 		job.ConfigHash = hex.EncodeToString(fingerprint[:])
 	}
-	checked, err := a.checkedScanIPs(ctx, job.CIDRs, job.Protocol)
+	checked, err := a.checkedScanIPsSince(ctx, job.CIDRs, job.Protocol, recheckAfter)
 	if err != nil {
 		return false, err
 	}
@@ -161,13 +167,13 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 		return false, err
 	}
 	remove := func() error {
-		_, err := a.db.Exec(ctx, "DELETE FROM network_auto_scans WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr", networkID, protocol, cidr)
+		_, err := a.db.Exec(ctx, "DELETE FROM network_auto_scans WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND created_at=$4 AND recheck_after IS NOT DISTINCT FROM $5::timestamptz", networkID, protocol, cidr, createdAt, recheckAfter)
 		return err
 	}
 	if total == 0 {
 		return false, remove()
 	}
-	if protocol != "cf" && total > 4096 {
+	if (protocol != "cf" || recheckAfter != nil) && total > 4096 {
 		// Large node ranges are automatically drained in bounded batches.
 		batch := make([]netip.Addr, 0, 4096)
 		for ip := range targets {
@@ -184,6 +190,9 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 	}
 	job = a.runScanTargets(ctx, job, input, template, total, targets, nil)
 	if job.Status == "cancelled" {
+		if ctx.Err() != nil {
+			return true, ctx.Err()
+		}
 		return true, remove()
 	}
 	if job.Status != "completed" {

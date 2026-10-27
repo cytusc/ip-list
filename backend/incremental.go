@@ -1,10 +1,19 @@
 package main
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+)
 
 // Both successful and failed probes count as checked. Pool rows persist beyond
 // task snapshots and record retention; unfinished addresses have no row.
 func (a *app) checkedScanIPs(ctx context.Context, cidrs []string, protocol string) ([]string, error) {
+	return a.checkedScanIPsSince(ctx, cidrs, protocol, nil)
+}
+
+// A shared cutoff lets full rechecks resume and deduplicate overlapping ranges.
+func (a *app) checkedScanIPsSince(ctx context.Context, cidrs []string, protocol string, since *time.Time) ([]string, error) {
 	query := `SELECT host(ip) FROM cf_ip_pool WHERE ip <<= ANY($1::cidr[])`
 	args := []any{cidrs}
 	if protocol != "" {
@@ -17,6 +26,10 @@ func (a *app) checkedScanIPs(ctx context.Context, cidrs []string, protocol strin
  AND (NOT p.available OR p.certificate->>'status' IN ('passed','not_required'))
  AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash)`
 		args = append(args, protocol)
+	}
+	if since != nil {
+		args = append(args, *since)
+		query += fmt.Sprintf(" AND checked_at >= $%d", len(args))
 	}
 	rows, err := a.db.Query(ctx, query, args...)
 	if err != nil {

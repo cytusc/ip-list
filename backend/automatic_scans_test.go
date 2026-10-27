@@ -168,6 +168,41 @@ func TestAutomaticNetworkScans(t *testing.T) {
 	if n := count(); n != 1 {
 		t.Fatalf("completed node queue not drained: %d", n)
 	}
+	// A full recheck must revisit both old successes and fresh failures, then
+	// drain without repeating them. It preserves results until replacements arrive.
+	cutoff := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err = db.Exec(ctx, `INSERT INTO network_auto_scans(network_id,cidr,protocol,user_id,recheck_after)
+ VALUES($1,'127.0.0.0/30',$2,$3,$4)`, networkID, protocol, userID, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if worked, err := a.processAutomaticScan(ctx, protocol, "patrol-owner"); err != nil || !worked {
+		t.Fatalf("full recheck: %v %v", worked, err)
+	}
+	var scope string
+	var incremental bool
+	var fullTotal int
+	if err = db.QueryRow(ctx, `SELECT scope,total,(input->>'incremental')::boolean FROM node_scan_rounds
+ WHERE protocol=$1 AND node_name=$2 ORDER BY started_at DESC LIMIT 1`, protocol, "auto"+suffix).Scan(&scope, &fullTotal, &incremental); err != nil {
+		t.Fatal(err)
+	}
+	if scope != "full" || fullTotal != 4 || incremental {
+		t.Fatalf("full recheck scope=%s total=%d incremental=%v", scope, fullTotal, incremental)
+	}
+	if worked, err := a.processAutomaticScan(ctx, protocol, "patrol-owner"); err != nil || worked {
+		t.Fatalf("full recheck did not drain: %v %v", worked, err)
+	}
+	checkedSince, err := a.checkedScanIPsSince(ctx, []string{"127.0.0.0/29"}, protocol, &cutoff)
+	if err != nil || len(checkedSince) != 4 {
+		t.Fatalf("overlapping range did not reuse fresh results: %v %v", checkedSince, err)
+	}
+	// Existing CF rows older than the request must also be rechecked.
+	if _, err = db.Exec(ctx, `INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
+ VALUES('127.0.0.2',true,42,200,$1) ON CONFLICT(ip) DO UPDATE SET checked_at=$1`, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(ctx, "UPDATE network_auto_scans SET recheck_after=$2 WHERE network_id=$1 AND protocol='cf'", networkID, cutoff); err != nil {
+		t.Fatal(err)
+	}
 	rdb.Del(ctx, lock)
 	// Starting the background worker alone is enough to detect the queued CF
 	// range; no start-scan request is sent.
@@ -186,6 +221,9 @@ func TestAutomaticNetworkScans(t *testing.T) {
 	var total int
 	if err = db.QueryRow(ctx, "SELECT count(*) FROM cf_ip_pool WHERE ip <<= '127.0.0.0/30'::cidr").Scan(&total); err != nil || total != 4 {
 		t.Fatalf("automatic CF results: %d %v", total, err)
+	}
+	if err = db.QueryRow(ctx, "SELECT checked_at FROM cf_ip_pool WHERE ip='127.0.0.2'").Scan(&checked); err != nil || checked.Before(cutoff) {
+		t.Fatalf("CF full recheck retained old result: %v %v", checked, err)
 	}
 	// Editing a label or metadata must not enqueue another scan. Enabling a
 	// previously disabled range does enqueue it, and deleting it removes work.

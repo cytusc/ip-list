@@ -266,6 +266,9 @@ CREATE TABLE IF NOT EXISTS network_auto_scans (
  PRIMARY KEY (network_id, protocol)
 );
 
+-- Full rechecks retain results and use one cutoff across overlapping ranges.
+ALTER TABLE network_auto_scans ADD COLUMN IF NOT EXISTS recheck_after timestamptz;
+
 -- Keep previous agents and samples on ICMP; TCP histories are isolated by port.
 ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'icmp' CHECK (mode IN ('icmp','tcp'));
 ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS tcp_port integer NOT NULL DEFAULT 443 CHECK (tcp_port BETWEEN 1 AND 65535);
