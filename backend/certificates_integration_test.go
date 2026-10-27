@@ -92,6 +92,14 @@ func TestCertificateQuarantineLifecycle(t *testing.T) {
 	save(&second)
 	count(0)
 	issues(1)
+	// Both the invalid result and the cross-protocol quarantined success
+	// remain checked, so incremental queue processing can advance.
+	for _, protocol := range []string{first.Protocol, second.Protocol} {
+		checked, err := a.checkedScanIPs(ctx, []string{ip + "/32"}, protocol)
+		if err != nil || len(checked) != 1 || checked[0] != ip {
+			t.Fatalf("quarantined result not counted as checked: protocol=%s checked=%v err=%v", protocol, checked, err)
+		}
+	}
 	// A different SNI has independent certificate evidence.
 	other.Results[0].Certificate = &certificateCheck{Status: "passed", ServerName: "other.example", Attempts: 3}
 	save(&other)

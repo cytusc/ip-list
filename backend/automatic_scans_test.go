@@ -155,8 +155,15 @@ func TestAutomaticNetworkScans(t *testing.T) {
 	if !available || delay != 42 || !checked.Equal(old) {
 		t.Fatalf("old result changed: %v %d %v", available, delay, checked)
 	}
-	if _, err = a.processAutomaticScan(ctx, protocol, "patrol-owner"); err != nil {
+	// Certificate failures are completed probes, even while quarantined.
+	// The next tick must drain this range instead of probing it forever.
+	if _, err = db.Exec(ctx, `UPDATE node_ip_pool
+ SET certificate='{"status":"invalid","server_name":"sample.invalid","error":"hostname mismatch"}'::jsonb
+ WHERE protocol=$1 AND ip='127.0.0.0'`, protocol); err != nil {
 		t.Fatal(err)
+	}
+	if worked, err := a.processAutomaticScan(ctx, protocol, "patrol-owner"); err != nil || worked {
+		t.Fatalf("completed certificate failure was scanned again: worked=%v err=%v", worked, err)
 	}
 	if n := count(); n != 1 {
 		t.Fatalf("completed node queue not drained: %d", n)

@@ -8,7 +8,14 @@ func (a *app) checkedScanIPs(ctx context.Context, cidrs []string, protocol strin
 	query := `SELECT host(ip) FROM cf_ip_pool WHERE ip <<= ANY($1::cidr[])`
 	args := []any{cidrs}
 	if protocol != "" {
-		query = `SELECT host(ip) FROM current_node_ip_pool WHERE ip <<= ANY($1::cidr[]) AND protocol=$2`
+		// Quarantine controls admission, not whether an address was tested.
+		// Count current-config failures too, or the automatic queue repeatedly
+		// scans isolated addresses and never advances to the next network.
+		// Historical unchecked successes still need certificate revalidation.
+		query = `SELECT host(p.ip) FROM node_ip_pool p
+ WHERE p.ip <<= ANY($1::cidr[]) AND p.protocol=$2
+ AND (NOT p.available OR p.certificate->>'status' IN ('passed','not_required'))
+ AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash)`
 		args = append(args, protocol)
 	}
 	rows, err := a.db.Query(ctx, query, args...)
