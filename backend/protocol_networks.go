@@ -48,7 +48,7 @@ func (a *app) disableEmptyNetworks(ctx context.Context, tx pgx.Tx, job scanJob) 
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
    SELECT $1::varchar(32),id,cidr,$3::timestamptz FROM networks WHERE id=ANY($2::uuid[]) AND cidr=$4::cidr
-   AND NOT EXISTS(SELECT 1 FROM node_ip_pool s WHERE s.protocol=$1::varchar(32) AND s.available AND s.ip <<= $4::cidr)
+   AND NOT EXISTS(SELECT 1 FROM current_node_ip_pool s WHERE s.protocol=$1::varchar(32) AND s.available AND s.ip <<= $4::cidr)
    ON CONFLICT(protocol,network_id) DO UPDATE SET cidr=excluded.cidr,checked_at=excluded.checked_at
    WHERE protocol_networks.checked_at<=excluded.checked_at`, job.Protocol, job.Input.NetworkIDs, job.FinishedAt, cidr)
 		if err != nil {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"net/netip"
@@ -32,20 +34,20 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "请输入有效的 IP 地址", nil)
 		return
 	}
-	poolRows, err := a.db.Query(r.Context(), "SELECT protocol FROM node_ip_pool WHERE ip=$1::inet AND available", ip.String())
+	poolRows, err := a.db.Query(r.Context(), "SELECT protocol,config_hash FROM current_node_ip_pool WHERE ip=$1::inet AND available", ip.String())
 	if err != nil {
 		dbError(w, err)
 		return
 	}
-	protocols := map[string]bool{}
+	protocols := map[string]string{}
 	for poolRows.Next() {
-		var protocol string
-		if err = poolRows.Scan(&protocol); err != nil {
+		var protocol, configHash string
+		if err = poolRows.Scan(&protocol, &configHash); err != nil {
 			poolRows.Close()
 			dbError(w, err)
 			return
 		}
-		protocols[protocol] = true
+		protocols[protocol] = configHash
 	}
 	err = poolRows.Err()
 	poolRows.Close()
@@ -68,7 +70,8 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		link.Protocol = nodePoolProtocol(raw)
-		if !protocols[link.Protocol] {
+		fingerprint := md5.Sum([]byte(raw))
+		if protocols[link.Protocol] != hex.EncodeToString(fingerprint[:]) {
 			continue
 		}
 		link.URI, err = nodeLink(raw, link.NodeName, ip)

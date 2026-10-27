@@ -54,6 +54,7 @@ func TestProbeTargetsDeduplicatesAndExcludesBlacklist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachPoolConfig(t, db, "latency/test-a", "latency/test-b")
 	app := &app{db: db}
 	req := httptest.NewRequest(http.MethodGet, "/probe-agent/targets", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -122,6 +123,7 @@ func TestProbeMonitoringStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachPoolConfig(t, db, "latency/monitoring-test")
 	a := &app{db: db}
 	getStatus := func() latencyProbe {
 		t.Helper()
@@ -274,6 +276,7 @@ func TestTCPProbeModeAndHistoryIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Exec(ctx, "DELETE FROM node_ip_pool WHERE protocol='latency/tcp-test'")
+	attachPoolConfig(t, db, "latency/tcp-test")
 	app := &app{db: db}
 	request := func(method, path, body string, handler http.HandlerFunc, capability bool) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))

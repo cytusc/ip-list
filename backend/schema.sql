@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS ip_results (
 
 ALTER TABLE ip_results ALTER COLUMN protocol TYPE varchar(32);
 
--- Shared protocol pools survive sample-node edits and deletion.
+-- A pool may be shared only while an enabled node still has its tested configuration.
 CREATE TABLE IF NOT EXISTS node_ip_pool (
  protocol varchar(32) NOT NULL,
  ip inet NOT NULL,
@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS node_ip_pool (
  checked_at timestamptz NOT NULL,
  PRIMARY KEY(protocol,ip)
 );
+
+ALTER TABLE node_ip_pool ADD COLUMN IF NOT EXISTS config_hash varchar(32) NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri))) WHERE enabled;
+CREATE OR REPLACE VIEW current_node_ip_pool AS
+ SELECT p.* FROM node_ip_pool p WHERE EXISTS (
+  SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash
+ );
 
 -- Named client probes report direct ICMP latency for currently available IPs.
 CREATE TABLE IF NOT EXISTS latency_probes (
@@ -92,14 +99,15 @@ CREATE INDEX IF NOT EXISTS latency_probe_results_probe_ip_time_idx
  ON latency_probe_results(probe_id,ip,checked_at DESC);
 CREATE INDEX IF NOT EXISTS latency_probe_results_time_idx
  ON latency_probe_results(checked_at);
-INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at)
- SELECT DISTINCT ON (protocol,ip) protocol,ip,available,delay_ms,checked_at FROM (
+INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash)
+ SELECT DISTINCT ON (protocol,ip) protocol,ip,available,delay_ms,checked_at,config_hash FROM (
  SELECT CASE WHEN protocol LIKE '%/%' THEN protocol ELSE 'vless/'||protocol END AS protocol,
- ip,available,delay_ms,checked_at,node_id FROM ip_results
+ ip,available,delay_ms,checked_at,node_id,config_hash FROM ip_results
  ) legacy ORDER BY protocol,ip,checked_at DESC,node_id
  ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,
- delay_ms=excluded.delay_ms,checked_at=excluded.checked_at
- WHERE node_ip_pool.checked_at<excluded.checked_at;
+ delay_ms=excluded.delay_ms,checked_at=excluded.checked_at,config_hash=excluded.config_hash
+ WHERE node_ip_pool.checked_at<excluded.checked_at
+ OR (node_ip_pool.checked_at=excluded.checked_at AND node_ip_pool.config_hash='');
 
 CREATE TABLE IF NOT EXISTS cf_targets (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

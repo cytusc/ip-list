@@ -53,6 +53,16 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// An in-flight round for a replaced configuration may remain in history,
+	// but must not overwrite the current pool or disable its ranges.
+	var current bool
+	if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM nodes WHERE enabled AND share_uri<>'' AND md5(share_uri)=$1)", job.ConfigHash).Scan(&current); err != nil {
+		return err
+	}
+	if !current {
+		_ = tx.Rollback(ctx)
+		return a.saveScanRecord(ctx, &job, data)
+	}
 	_, err = tx.Exec(ctx, `
  INSERT INTO ip_results(node_id,ip,config_hash,protocol,available,delay_ms,checked_at)
  SELECT n.id,r.ip::inet,$2,$3,r.status='success',r.delay_ms,$5
@@ -66,12 +76,12 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at)
- SELECT $1,r.ip::inet,r.status='success',r.delay_ms,$3
+	_, err = tx.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash)
+ SELECT $1,r.ip::inet,r.status='success',r.delay_ms,$3,$4
  FROM jsonb_to_recordset($2::jsonb) AS r(ip text,status text,delay_ms integer)
  ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,
- delay_ms=excluded.delay_ms,checked_at=excluded.checked_at
- WHERE node_ip_pool.checked_at<=excluded.checked_at`, job.Protocol, string(data), job.FinishedAt)
+ delay_ms=excluded.delay_ms,checked_at=excluded.checked_at,config_hash=excluded.config_hash
+ WHERE node_ip_pool.checked_at<=excluded.checked_at`, job.Protocol, string(data), job.FinishedAt, job.ConfigHash)
 	if err != nil {
 		return err
 	}
@@ -88,7 +98,7 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `
  SELECT host(s.ip),s.protocol,s.delay_ms, '', '协议共用 IP 池',s.checked_at,COALESCE(info.asn,''),COALESCE(info.provider,'')
- FROM node_ip_pool s `+networkInfoJoin+`
+ FROM current_node_ip_pool s `+networkInfoJoin+`
  WHERE s.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
  ORDER BY s.ip,s.protocol`)
 	if err != nil {
@@ -115,8 +125,8 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	probeRows, err := a.db.Query(r.Context(), `WITH targets AS (
- SELECT DISTINCT ip FROM node_ip_pool WHERE available
- AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=node_ip_pool.ip)
+ SELECT DISTINCT ip FROM current_node_ip_pool WHERE available
+ AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=current_node_ip_pool.ip)
 ), latest AS (
  SELECT DISTINCT ON (probe_id,ip,mode,tcp_port) probe_id,ip,mode,tcp_port,delay_ms,success,checked_at
  FROM latency_probe_results WHERE checked_at>now()-interval '30 days'

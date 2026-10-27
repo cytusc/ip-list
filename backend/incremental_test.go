@@ -75,6 +75,7 @@ func TestIncrementalPoolIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachPoolConfig(t, db, protocol)
 	a := &app{db: db}
 	checked, err := a.checkedScanIPs(ctx, []string{"192.0.2.0/30"}, protocol)
 	if err != nil {

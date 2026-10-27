@@ -8,7 +8,7 @@ func (a *app) checkedScanIPs(ctx context.Context, cidrs []string, protocol strin
 	query := `SELECT host(ip) FROM cf_ip_pool WHERE ip <<= ANY($1::cidr[])`
 	args := []any{cidrs}
 	if protocol != "" {
-		query = `SELECT host(ip) FROM node_ip_pool WHERE ip <<= ANY($1::cidr[]) AND protocol=$2`
+		query = `SELECT host(ip) FROM current_node_ip_pool WHERE ip <<= ANY($1::cidr[]) AND protocol=$2`
 		args = append(args, protocol)
 	}
 	rows, err := a.db.Query(ctx, query, args...)

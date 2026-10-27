@@ -146,16 +146,16 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if len(list()) != 1 {
 		t.Fatal("empty canceled round removed existing results")
 	}
-	// Editing a sample keeps its shared protocol pool available.
+	// Editing the last matching configuration invalidates its old shared results.
 	if _, err = db.Exec(ctx, "UPDATE nodes SET share_uri=share_uri || '&sni=changed.example' WHERE id=$1", second.Input.NodeID); err != nil {
 		t.Fatal(err)
 	}
 	second.Results = []scanResult{{IP: "192.0.2.91", Status: "success", Delay: 20}}
 	save(second)
-	if len(list()) != 1 {
-		t.Fatal("editing a node removed its protocol pool")
+	if len(list()) != 0 {
+		t.Fatal("edited configuration reused stale results")
 	}
-	links(1)
+	links(0)
 	// A later success can restore the first node, and disabled/deleted nodes disappear.
 	restored := later.Add(time.Second)
 	first.FinishedAt = &restored
@@ -166,10 +166,10 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if _, err = db.Exec(ctx, "UPDATE nodes SET enabled=false WHERE id=$1", first.Input.NodeID); err != nil {
 		t.Fatal(err)
 	}
-	if len(list()) != 1 {
-		t.Fatal("disabling a sample removed shared results")
+	if len(list()) != 0 {
+		t.Fatal("disabled configuration still advertised as available")
 	}
-	links(1)
+	links(0)
 	if _, err = db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", first.Input.NodeID); err != nil {
 		t.Fatal(err)
 	}
@@ -177,4 +177,110 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if err = db.QueryRow(ctx, "SELECT count(*) FROM ip_results WHERE node_id=$1", first.Input.NodeID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("node deletion did not cascade: %d %v", count, err)
 	}
+}
+
+// Synthetic pool fixtures still need evidence tied to an enabled configuration.
+func attachPoolConfig(t *testing.T, db *pgxpool.Pool, protocols ...string) {
+	t.Helper()
+	ctx := context.Background()
+	raw := fmt.Sprintf("vless://%s@fixture.invalid:443?security=tls&type=ws#fixture-%d", testUUID, time.Now().UnixNano())
+	var id string
+	if err := db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES($1,'fixture.invalid',443,$2) RETURNING id::text", "pool-fixture-"+fmt.Sprint(time.Now().UnixNano()), raw).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanup, err := pgxpool.New(ctx, db.Config().ConnString())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer cleanup.Close()
+		if _, err = cleanup.Exec(ctx, "DELETE FROM nodes WHERE id=$1", id); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := db.Exec(ctx, "UPDATE node_ip_pool SET config_hash=md5($1) WHERE protocol=ANY($2::text[])", raw, protocols); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPoolRejectsReplacedConfiguration(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires TEST_DATABASE_URL")
+	}
+	ctx := context.Background()
+	db, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !strings.HasSuffix(db.Config().ConnConfig.Database, "_test") {
+		t.Fatal("requires test database")
+	}
+	if _, err = db.Exec(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	const ip = "198.18.97.11"
+	var id string
+	oldRaw := "vless://" + testUUID + "@old.example:443?security=tls&type=ws#replacement-test"
+	if err = db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES('replacement-test','old.example',443,$1) RETURNING id::text", oldRaw).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", id)
+	defer db.Exec(ctx, "DELETE FROM node_ip_pool WHERE ip=$1::inet", ip)
+	hash := md5.Sum([]byte(oldRaw))
+	now := time.Now().UTC()
+	a := &app{db: db}
+	old := scanJob{Protocol: "vless/ws", ConfigHash: hex.EncodeToString(hash[:]), Input: scanInput{NodeID: id}, FinishedAt: &now, Results: []scanResult{{IP: ip, Status: "success", Delay: 10}}}
+	save := func(job scanJob) {
+		t.Helper()
+		if err := a.saveIPResults(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	visible := func(want bool) {
+		t.Helper()
+		var got bool
+		if err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM current_node_ip_pool WHERE ip=$1::inet AND available)", ip).Scan(&got); err != nil || got != want {
+			t.Fatalf("visible=%v want=%v err=%v", got, want, err)
+		}
+	}
+	save(old)
+	visible(true)
+	// Upgrade retains results with provenance but excludes orphaned legacy rows.
+	if _, err = db.Exec(ctx, "UPDATE node_ip_pool SET config_hash='' WHERE ip=$1::inet", ip); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	visible(true)
+	newRaw := strings.Replace(oldRaw, "old.example", "new.example", 1)
+	if _, err = db.Exec(ctx, "UPDATE nodes SET share_uri=$1 WHERE id=$2", newRaw, id); err != nil {
+		t.Fatal(err)
+	}
+	visible(false)
+	checked, err := a.checkedScanIPs(ctx, []string{ip + "/32"}, old.Protocol)
+	if err != nil || len(checked) != 0 {
+		t.Fatal("replacement skipped stale addresses", checked, err)
+	}
+	w := httptest.NewRecorder()
+	a.generateIPLinks(w, httptest.NewRequest("GET", "/available-ips/links?ip="+ip, nil))
+	if w.Code != 409 {
+		t.Fatalf("stale link advertised: %d", w.Code)
+	}
+	fresh := old
+	hash = md5.Sum([]byte(newRaw))
+	fresh.ConfigHash = hex.EncodeToString(hash[:])
+	later := now.Add(time.Second)
+	fresh.FinishedAt = &later
+	save(fresh)
+	visible(true)
+	// A late old worker cannot replace fresh results even with a newer timestamp.
+	latest := later.Add(time.Second)
+	old.FinishedAt = &latest
+	old.Results = []scanResult{{IP: ip, Status: "failed"}}
+	save(old)
+	visible(true)
 }
