@@ -103,6 +103,7 @@ func main() {
 		log.Fatal(err)
 	}
 	a.scanContext = ctx
+	go a.revalidateLegacyCertificates(ctx)
 	go a.resumeNodeSchedules(ctx)
 	go a.maintainAutomaticScans(ctx)
 	go a.maintainNetworkMetadata(ctx)
@@ -208,6 +209,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /available-ips/links", a.protected(http.HandlerFunc(a.generateIPLinks)))
 	mux.Handle("GET /available-ips/location", a.protected(http.HandlerFunc(a.availableIPLocation)))
 	mux.Handle("DELETE /protocol-networks/{id}", a.protected(http.HandlerFunc(a.restoreProtocolNetwork)))
+	mux.Handle("GET /certificate-issues", a.protected(http.HandlerFunc(a.certificateIssues)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
 	mux.Handle("GET /latency-probes", a.protected(http.HandlerFunc(a.listLatencyProbes)))
 	mux.Handle("POST /latency-probes", a.protected(http.HandlerFunc(a.createLatencyProbe)))

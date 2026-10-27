@@ -59,7 +59,7 @@ func TestAutomaticNetworkScans(t *testing.T) {
 	if _, err = db.Exec(ctx, "INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at) VALUES($1,'127.0.0.2',true,42,$2) ON CONFLICT(protocol,ip) DO UPDATE SET available=true,delay_ms=42,checked_at=$2", protocol, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(ctx, "UPDATE node_ip_pool SET config_hash=md5($1) WHERE protocol=$2 AND ip='127.0.0.2'", raw, protocol); err != nil {
+	if _, err = db.Exec(ctx, "UPDATE node_ip_pool SET config_hash=md5($1),certificate='{\"status\":\"passed\",\"server_name\":\"sample.invalid\"}'::jsonb WHERE protocol=$2 AND ip='127.0.0.2'", raw, protocol); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {

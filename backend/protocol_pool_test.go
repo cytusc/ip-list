@@ -102,6 +102,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	}
 	job.Scope = "full"
 	job.Results[5].Status = "success"
+	job.Results[5].Certificate = &certificateCheck{Status: "passed", ServerName: "sample.invalid", Attempts: 3}
 	save()
 	if disabled(job.Protocol) {
 		t.Fatal("range with success disabled")
@@ -145,6 +146,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	recovered := later.Add(time.Second)
 	job.FinishedAt = &recovered
 	job.Results[5].Status = "success"
+	job.Results[5].Certificate = &certificateCheck{Status: "passed", ServerName: "sample.invalid", Attempts: 3}
 	save()
 	if disabled(job.Protocol) {
 		t.Fatal("successful full recheck did not restore range")
@@ -156,6 +158,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	save()
 	job.FinishedAt = &recovered
 	job.Results[5].Status = "success"
+	job.Results[5].Certificate = &certificateCheck{Status: "passed", ServerName: "sample.invalid", Attempts: 3}
 	save()
 	if !disabled(job.Protocol) {
 		t.Fatal("stale success restored a newer disabled range")
@@ -171,6 +174,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	newer := failedAgain.Add(time.Second)
 	job.FinishedAt = &newer
 	job.Results[5].Status = "success"
+	job.Results[5].Certificate = &certificateCheck{Status: "passed", ServerName: "sample.invalid", Attempts: 3}
 	save()
 	job.FinishedAt = &later
 	job.Results[5].Status = "failed"

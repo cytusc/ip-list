@@ -208,14 +208,13 @@ export function AvailableIPList({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">可用 IP</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            按协议与传输方式共用 IP
-            池。同池所有节点可复用检测结果，新增节点无需重测。每轮结束后更新，页面每
-            10 秒自动刷新。
+            仅显示通过代理请求检测的 IP；TLS 节点还必须通过 3 次入口证书校验。证书异常地址已隔离，历史数据会自动补检。每轮结束后更新，页面每 10 秒自动刷新。
           </p>
         </div>
-        <Button asChild variant="outline">
-          <Link href="/probes">前往连通性测试</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline"><Link href="/certificate-issues">证书异常 IP</Link></Button>
+          <Button asChild variant="outline"><Link href="/probes">前往连通性测试</Link></Button>
+        </div>
       </div>
       {error && (
         <div
@@ -415,7 +414,7 @@ export function AvailableIPList({
                   <p className="mt-2 text-sm text-muted-foreground">
                     {items.length
                       ? "调整搜索词、地区、服务商或协议筛选后重试。"
-                      : "先完成一次连通性测试，测通的 IP 会自动出现在这里。"}
+                      : "先完成连通性测试，检测通过的 IP 会显示在这里；TLS 节点还需通过 3 次入口证书校验。"}
                   </p>
                   {filtersActive && <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>清除筛选</Button>}
                 </TableCell>

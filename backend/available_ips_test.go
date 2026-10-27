@@ -58,6 +58,11 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	}
 	save := func(j scanJob) {
 		t.Helper()
+		for i := range j.Results {
+			if j.Results[i].Status == "success" {
+				j.Results[i].Certificate = &certificateCheck{Status: "passed", ServerName: "original.invalid", Attempts: 3}
+			}
+		}
 		if err := a.saveIPResults(ctx, j); err != nil {
 			t.Fatal(err)
 		}
@@ -199,7 +204,7 @@ func attachPoolConfig(t *testing.T, db *pgxpool.Pool, protocols ...string) {
 			t.Error(err)
 		}
 	})
-	if _, err := db.Exec(ctx, "UPDATE node_ip_pool SET config_hash=md5($1) WHERE protocol=ANY($2::text[])", raw, protocols); err != nil {
+	if _, err := db.Exec(ctx, `UPDATE node_ip_pool SET config_hash=md5($1),certificate='{"status":"passed","server_name":"fixture.invalid","attempts":3}'::jsonb WHERE protocol=ANY($2::text[])`, raw, protocols); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -232,7 +237,7 @@ func TestPoolRejectsReplacedConfiguration(t *testing.T) {
 	hash := md5.Sum([]byte(oldRaw))
 	now := time.Now().UTC()
 	a := &app{db: db}
-	old := scanJob{Protocol: "vless/ws", ConfigHash: hex.EncodeToString(hash[:]), Input: scanInput{NodeID: id}, FinishedAt: &now, Results: []scanResult{{IP: ip, Status: "success", Delay: 10}}}
+	old := scanJob{Protocol: "vless/ws", ConfigHash: hex.EncodeToString(hash[:]), Input: scanInput{NodeID: id}, FinishedAt: &now, Results: []scanResult{{IP: ip, Status: "success", Delay: 10, Certificate: &certificateCheck{Status: "passed", ServerName: "old.example", Attempts: 3}}}}
 	save := func(job scanJob) {
 		t.Helper()
 		if err := a.saveIPResults(ctx, job); err != nil {

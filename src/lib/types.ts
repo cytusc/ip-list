@@ -27,6 +27,7 @@ export type ActionResult =
   | { ok: false; error: string; fields?: Record<string, string> };
 
 export type ScanResult = {
+  certificate?: CertificateCheck;
   ip: string;
   status: "success" | "failed";
   delay_ms: number;
@@ -202,4 +203,24 @@ export type CFDetail = {
   target: CFTarget;
   items: CFIP[];
   history: CFRound[];
+};
+
+export type CertificateCheck = {
+  status: "passed" | "invalid" | "error" | "not_required";
+  server_name: string;
+  subject?: string;
+  issuer?: string;
+  dns_names?: string[];
+  not_after?: string;
+  checked_at: string;
+  attempts: number;
+  error?: string;
+};
+export type CertificateIssue = {
+  ip: string;
+  protocol: string;
+  node_id: string;
+  node_name: string;
+  certificate: CertificateCheck;
+  checked_at: string;
 };

@@ -76,11 +76,15 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash)
- SELECT $1,r.ip::inet,r.status='success',r.delay_ms,$3,$4
- FROM jsonb_to_recordset($2::jsonb) AS r(ip text,status text,delay_ms integer)
+	_, err = tx.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+ SELECT $1,r.ip::inet,r.status='success',r.delay_ms,$3,$4,COALESCE(r.certificate,'{}'::jsonb)
+ FROM jsonb_to_recordset($2::jsonb) AS r(ip text,status text,delay_ms integer,certificate jsonb)
  ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,
- delay_ms=excluded.delay_ms,checked_at=excluded.checked_at,config_hash=excluded.config_hash
+ delay_ms=excluded.delay_ms,checked_at=excluded.checked_at,config_hash=excluded.config_hash,
+ certificate=CASE WHEN node_ip_pool.config_hash=excluded.config_hash
+ AND node_ip_pool.certificate->>'status'='invalid'
+ AND COALESCE(excluded.certificate->>'status','') NOT IN ('passed','not_required','invalid')
+ THEN node_ip_pool.certificate ELSE excluded.certificate END
  WHERE node_ip_pool.checked_at<=excluded.checked_at`, job.Protocol, string(data), job.FinishedAt, job.ConfigHash)
 	if err != nil {
 		return err

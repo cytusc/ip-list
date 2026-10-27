@@ -65,9 +65,15 @@ CREATE TABLE IF NOT EXISTS node_ip_pool (
 );
 
 ALTER TABLE node_ip_pool ADD COLUMN IF NOT EXISTS config_hash varchar(32) NOT NULL DEFAULT '';
+ALTER TABLE node_ip_pool ADD COLUMN IF NOT EXISTS certificate jsonb NOT NULL DEFAULT '{}'::jsonb;
+CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_invalid_idx ON node_ip_pool(ip,(certificate->>'server_name')) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri))) WHERE enabled;
 CREATE OR REPLACE VIEW current_node_ip_pool AS
- SELECT p.* FROM node_ip_pool p WHERE EXISTS (
+ SELECT p.* FROM node_ip_pool p WHERE (NOT p.available OR p.certificate->>'status' IN ('passed','not_required')) AND NOT EXISTS (
+  SELECT 1 FROM node_ip_pool bad WHERE bad.ip=p.ip AND bad.certificate->>'status'='invalid'
+  AND bad.certificate->>'server_name'=p.certificate->>'server_name'
+  AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=bad.config_hash)
+ ) AND EXISTS (
   SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash
  );
 

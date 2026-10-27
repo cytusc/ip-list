@@ -43,13 +43,14 @@ type scanInput struct {
 	FullEvery       int      `json:"full_every"`
 }
 type scanResult struct {
-	HTTPStatus    int    `json:"http_status,omitempty"`
-	IP            string `json:"ip"`
-	Status        string `json:"status"`
-	Delay         int    `json:"delay_ms"`
-	Error         string `json:"error,omitempty"`
-	Change        string `json:"change,omitempty"`
-	PreviousDelay *int   `json:"previous_delay_ms,omitempty"`
+	Certificate   *certificateCheck `json:"certificate,omitempty"`
+	HTTPStatus    int               `json:"http_status,omitempty"`
+	IP            string            `json:"ip"`
+	Status        string            `json:"status"`
+	Delay         int               `json:"delay_ms"`
+	Error         string            `json:"error,omitempty"`
+	Change        string            `json:"change,omitempty"`
+	PreviousDelay *int              `json:"previous_delay_ms,omitempty"`
 }
 type scanJob struct {
 	LeaseID    string       `json:"-"`
@@ -317,16 +318,20 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 				probeCtx, stop := context.WithTimeout(ctx, time.Duration(input.Timeout)*time.Millisecond)
 				var delay, code int
 				var err error
+				var certificate *certificateCheck
 				if job.TargetID != "" {
 					code, err = probeCF(probeCtx, ip, input.URL, nil)
 				} else {
-					delay, err = probeIP(probeCtx, template, ip, input.URL)
+					certificate, err = checkCertificate(probeCtx, template, ip)
+					if err == nil {
+						delay, err = probeIP(probeCtx, template, ip, input.URL)
+					}
 				}
 				stop()
 				if ctx.Err() != nil {
 					return
 				}
-				result := scanResult{IP: ip.String(), Status: "success", Delay: delay, HTTPStatus: code}
+				result := scanResult{IP: ip.String(), Status: "success", Delay: delay, HTTPStatus: code, Certificate: certificate}
 				if err != nil {
 					if env("PROBE_DEBUG", "") == "1" {
 						// Keep test URL query parameters out of diagnostic logs.
@@ -335,6 +340,9 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 					}
 					result.Status = "failed"
 					result.Error = probeError(err)
+					if certificate != nil && certificate.Status == "invalid" {
+						result.Error = certificate.Error
+					}
 					if job.TargetID != "" {
 						result.Error = "HTTPS 请求失败或超时"
 						if code >= 400 {
