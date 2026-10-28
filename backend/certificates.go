@@ -129,11 +129,18 @@ func (a *app) certificateIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	lastPage := max(1, (total+pageSize-1)/pageSize)
 	page = min(page, lastPage)
-	rows, err := a.db.Query(r.Context(), `SELECT host(p.ip),p.protocol,n.id::text,n.name,p.certificate,p.checked_at
- FROM node_ip_pool p
- JOIN LATERAL (SELECT id,name FROM nodes WHERE enabled AND share_uri<>'' AND md5(share_uri)=p.config_hash ORDER BY id LIMIT 1) n ON true
- WHERE p.certificate->>'status'='invalid'
- ORDER BY p.checked_at DESC,p.ip,p.protocol LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
+	// Locate the page using only indexed columns before fetching certificate
+	// JSON. Deep pages must not read every preceding certificate from the heap.
+	rows, err := a.db.Query(r.Context(), `WITH active AS MATERIALIZED (
+ SELECT DISTINCT ON (md5(share_uri)) md5(share_uri) AS config_hash,id,name FROM nodes
+ WHERE enabled AND share_uri<>'' ORDER BY md5(share_uri),id
+ ), selected AS MATERIALIZED (
+ SELECT p.checked_at,p.ip,p.protocol,p.config_hash FROM node_ip_pool p
+ WHERE p.certificate->>'status'='invalid' AND p.config_hash=ANY(ARRAY(SELECT config_hash FROM active))
+ ORDER BY p.checked_at DESC,p.ip,p.protocol LIMIT $1 OFFSET $2
+ ) SELECT host(p.ip),p.protocol,n.id::text,n.name,p.certificate,p.checked_at
+ FROM selected s JOIN node_ip_pool p ON p.protocol=s.protocol AND p.ip=s.ip
+ JOIN active n ON n.config_hash=s.config_hash ORDER BY s.checked_at DESC,s.ip,s.protocol`, pageSize, (page-1)*pageSize)
 	if err != nil {
 		dbError(w, err)
 		return
