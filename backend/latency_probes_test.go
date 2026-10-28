@@ -339,6 +339,39 @@ func TestTCPProbeModeAndHistoryIsolation(t *testing.T) {
 	if !found {
 		t.Fatal("missing TCP probe")
 	}
+	// Tied timestamps must prefer the last inserted sample, including failures.
+	// An expired row with a greater ID must not displace the latest measurement.
+	_, err = db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,mode,tcp_port,delay_ms,success,checked_at) VALUES
+ ($1,'198.18.98.1','tcp',443,70,true,now()+interval '1 second'),
+ ($1,'198.18.98.1','tcp',443,0,false,now()+interval '1 second'),
+ ($1,'198.18.98.1','tcp',443,99,true,now()-interval '31 days')`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = request("GET", "/available-ips", "", app.availableIPs, false)
+	if w.Code != 200 {
+		t.Fatalf("latest tie: %d %s", w.Code, w.Body.String())
+	}
+	if err = json.Unmarshal(w.Body.Bytes(), &ips); err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, ip := range ips {
+		if ip.IP != "198.18.98.1" {
+			continue
+		}
+		for _, p := range ip.ProbeDelays {
+			if p.ProbeID == id {
+				found = true
+				if p.Success == nil || *p.Success || p.DelayMS == nil || *p.DelayMS != 0 {
+					t.Fatalf("latest failure lost to older success: %+v", p)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing latest failure")
+	}
 }
 
 func TestProbeMeasurementValidation(t *testing.T) {

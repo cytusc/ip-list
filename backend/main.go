@@ -69,7 +69,16 @@ func main() {
 	if databaseURL == "" {
 		log.Fatal("请配置 DATABASE_URL")
 	}
-	db, err := pgxpool.New(ctx, databaseURL)
+	dbConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	slowThreshold, err := time.ParseDuration(env("DB_SLOW_QUERY_THRESHOLD", "500ms"))
+	if err != nil || slowThreshold <= 0 {
+		log.Fatal("DB_SLOW_QUERY_THRESHOLD 必须是正数时长，例如 500ms")
+	}
+	dbConfig.ConnConfig.Tracer = &databaseTracer{threshold: slowThreshold, logf: log.Printf}
+	db, err := pgxpool.NewWithConfig(ctx, dbConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -247,6 +256,8 @@ func (a *app) routes() http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
+		_, pattern := mux.Handler(r)
+		ctx = context.WithValue(ctx, databaseRequestKey{}, pattern)
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

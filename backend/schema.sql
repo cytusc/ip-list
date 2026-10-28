@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS node_ip_pool (
 ALTER TABLE node_ip_pool ADD COLUMN IF NOT EXISTS config_hash varchar(32) NOT NULL DEFAULT '';
 ALTER TABLE node_ip_pool ADD COLUMN IF NOT EXISTS certificate jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS node_ip_pool_available_idx ON node_ip_pool(ip) WHERE available;
+-- B-tree equality indexes cannot accelerate subnet membership via <<= ANY.
+CREATE INDEX IF NOT EXISTS node_ip_pool_ip_range_idx ON node_ip_pool USING gist(ip inet_ops);
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_invalid_idx ON node_ip_pool(ip,(certificate->>'server_name')) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri))) WHERE enabled;
 CREATE OR REPLACE VIEW current_node_ip_pool AS
@@ -169,6 +171,7 @@ CREATE TABLE IF NOT EXISTS cf_ip_pool (
  http_status integer NOT NULL,
  checked_at timestamptz NOT NULL
 );
+CREATE INDEX IF NOT EXISTS cf_ip_pool_ip_range_idx ON cf_ip_pool USING gist(ip inet_ops);
 
 -- Per-domain view of one unified CF scan: which IPs answered this domain, and
 -- how each round went, so the domain page can report its own availability.
