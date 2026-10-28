@@ -67,6 +67,17 @@ func TestNormalizeASNs(t *testing.T) {
 	}
 }
 
+func TestMetadataRetryBackoff(t *testing.T) {
+	now := time.Now()
+	var retry metadataRetry
+	for _, want := range []time.Duration{30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 6 * time.Hour, 6 * time.Hour} {
+		retry = nextMetadataRetry(retry, now)
+		if retry.delay != want || !retry.next.Equal(now.Add(want)) {
+			t.Fatalf("got %+v, want %v", retry, want)
+		}
+	}
+}
+
 func TestNetworkMetadataFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(429) }))
 	defer server.Close()

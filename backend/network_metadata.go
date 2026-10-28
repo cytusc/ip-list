@@ -179,8 +179,9 @@ func normalizeASNs(raw string) (string, error) {
 func (a *app) maintainNetworkMetadata(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
+	retries := map[string]metadataRetry{}
 	for {
-		a.fillMissingNetworkMetadata(ctx)
+		a.fillMissingNetworkMetadata(ctx, retries)
 		select {
 		case <-ctx.Done():
 			return
@@ -189,7 +190,23 @@ func (a *app) maintainNetworkMetadata(ctx context.Context) {
 	}
 }
 
-func (a *app) fillMissingNetworkMetadata(ctx context.Context) {
+type metadataRetry struct {
+	next  time.Time
+	delay time.Duration
+}
+
+func nextMetadataRetry(previous metadataRetry, now time.Time) metadataRetry {
+	delay := previous.delay * 2
+	if delay < 30*time.Minute {
+		delay = 30 * time.Minute
+	}
+	if delay > 6*time.Hour {
+		delay = 6 * time.Hour
+	}
+	return metadataRetry{next: now.Add(delay), delay: delay}
+}
+
+func (a *app) fillMissingNetworkMetadata(ctx context.Context, retries map[string]metadataRetry) {
 	rows, err := a.db.Query(ctx, "SELECT id::text,cidr::text,asn,provider FROM networks WHERE asn='' OR provider='' ORDER BY updated_at,id")
 	if err != nil {
 		log.Printf("网段归属补全读取失败: %v", err)
@@ -212,9 +229,22 @@ func (a *app) fillMissingNetworkMetadata(ctx context.Context) {
 		log.Printf("网段归属补全读取失败: %v", err)
 		return
 	}
+	active := make(map[string]bool, len(items))
+	for _, item := range items {
+		active[item.id+"/"+item.cidr] = true
+	}
+	for key := range retries {
+		if !active[key] {
+			delete(retries, key)
+		}
+	}
 	for _, item := range items {
 		if ctx.Err() != nil {
 			return
+		}
+		key := item.id + "/" + item.cidr
+		if time.Now().Before(retries[key].next) {
+			continue
 		}
 		prefix, err := netip.ParsePrefix(item.cidr)
 		if err != nil || !publicMetadataPrefix(prefix) {
@@ -222,9 +252,14 @@ func (a *app) fillMissingNetworkMetadata(ctx context.Context) {
 		}
 		metadata, err := a.networkMetadata(ctx, prefix)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			retries[key] = nextMetadataRetry(retries[key], time.Now())
 			log.Printf("网段归属补全暂未成功 cidr=%s error=%v", item.cidr, err)
 			continue
 		}
+		delete(retries, key)
 		if item.asn != "" && item.asn != metadata.ASN {
 			continue
 		}

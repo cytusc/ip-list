@@ -128,18 +128,22 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	probeRows, err := a.db.Query(r.Context(), `WITH targets AS (
+	probeRows, err := a.db.Query(r.Context(), `WITH all_targets AS MATERIALIZED (
  SELECT DISTINCT ip FROM current_node_ip_pool WHERE available
- AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=current_node_ip_pool.ip)
+), targets AS (
+ SELECT ip FROM all_targets WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=all_targets.ip)
+), probes AS MATERIALIZED (
+ SELECT p.*, (interval_seconds + CEIL((SELECT count(*) FROM all_targets)::numeric / concurrency)::integer * (CEIL(timeout_ms::numeric/1000)::integer+2) + 30) AS sample_window
+ FROM latency_probes p WHERE p.enabled
 ), latest AS (
  SELECT DISTINCT ON (probe_id,ip,mode,tcp_port) probe_id,ip,mode,tcp_port,delay_ms,success,checked_at
  FROM latency_probe_results WHERE checked_at>now()-interval '30 days'
  ORDER BY probe_id,ip,mode,tcp_port,checked_at DESC,id DESC
 )
 SELECT host(t.ip),p.id::text,p.name,p.mode,p.tcp_port,l.delay_ms,l.success,l.checked_at,`+probeOnlineSQL+`,
-COALESCE(l.checked_at>now()-make_interval(secs=>`+probeSampleWindowSQL+`*2),false),
-COALESCE(recent.samples,'[]'::jsonb),`+probeSampleWindowSQL+`,now()
-FROM latency_probes p CROSS JOIN targets t
+COALESCE(l.checked_at>now()-make_interval(secs=>p.sample_window*2),false),
+COALESCE(recent.samples,'[]'::jsonb),p.sample_window,now()
+FROM probes p CROSS JOIN targets t
 LEFT JOIN latest l ON l.probe_id=p.id AND l.ip=t.ip AND l.mode=p.mode AND l.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
 LEFT JOIN LATERAL (
  SELECT jsonb_agg(sample ORDER BY sample.checked_at,sample.id) AS samples FROM (
@@ -148,7 +152,7 @@ LEFT JOIN LATERAL (
   ORDER BY checked_at DESC,id DESC LIMIT 256
  ) sample
 ) recent ON true
-WHERE p.enabled ORDER BY t.ip,p.created_at`)
+ORDER BY t.ip,p.created_at`)
 	if err != nil {
 		dbError(w, err)
 		return
