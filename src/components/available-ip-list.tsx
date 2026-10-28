@@ -185,6 +185,15 @@ export function AvailableIPList({
     }
   }
 
+  async function copyIP(ip: string) {
+    try {
+      await navigator.clipboard.writeText(ip);
+      toast.success(`已复制 ${ip}`);
+    } catch {
+      toast.error("复制失败，请手动选择 IP 复制");
+    }
+  }
+
   async function blacklist(ip: string) {
     const result = await addBlacklist([ip]);
     if (!result.ok) {
@@ -344,7 +353,15 @@ export function AvailableIPList({
               return (
                 <TableRow key={item.ip}>
                   <TableCell className="max-w-44 break-all whitespace-normal pl-5 align-top font-mono text-sm">
-                    {item.ip}
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-sm text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={() => copyIP(item.ip)}
+                      aria-label={`复制 ${item.ip}`}
+                      title="点击复制 IP"
+                    >
+                      {item.ip}
+                    </button>
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
                     <IPLocationCell location={locations[item.ip]} />
