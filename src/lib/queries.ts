@@ -48,7 +48,15 @@ export async function getScanRecords(): Promise<ScanRecordList> {
   return (await api<ScanRecordList>("/scan-records")).data;
 }
 
-export async function getCertificateIssues(): Promise<CertificateIssue[]> {
+export async function getCertificateIssues(page = 1): Promise<{
+  items: CertificateIssue[]; total: number; page: number; pageSize: number;
+}> {
   await requireUser();
-  return (await api<CertificateIssue[]>("/certificate-issues")).data;
+  const { data, response } = await api<CertificateIssue[]>(`/certificate-issues?page=${page}`);
+  return {
+    items: data,
+    total: Number(response.headers.get("X-Total-Count")),
+    page: Number(response.headers.get("X-Page")),
+    pageSize: Number(response.headers.get("X-Page-Size")),
+  };
 }

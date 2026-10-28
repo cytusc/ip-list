@@ -107,11 +107,33 @@ func checkCertificateWithRoots(ctx context.Context, template map[string]any, ip 
 }
 
 func (a *app) certificateIssues(w http.ResponseWriter, r *http.Request) {
+	const pageSize = 50
+	page := 1
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		var err error
+		page, err = strconv.Atoi(raw)
+		if err != nil || page < 1 {
+			apiError(w, 422, "页码必须是正整数", nil)
+			return
+		}
+	}
+	var total int
+	err := a.db.QueryRow(r.Context(), `WITH active AS MATERIALIZED (
+ SELECT DISTINCT md5(share_uri) AS config_hash FROM nodes WHERE enabled AND share_uri<>''
+ ) SELECT count(*) FROM node_ip_pool p JOIN active n ON n.config_hash=p.config_hash
+ WHERE p.certificate->>'status'='invalid'
+ `).Scan(&total)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	lastPage := max(1, (total+pageSize-1)/pageSize)
+	page = min(page, lastPage)
 	rows, err := a.db.Query(r.Context(), `SELECT host(p.ip),p.protocol,n.id::text,n.name,p.certificate,p.checked_at
  FROM node_ip_pool p
  JOIN LATERAL (SELECT id,name FROM nodes WHERE enabled AND share_uri<>'' AND md5(share_uri)=p.config_hash ORDER BY id LIMIT 1) n ON true
  WHERE p.certificate->>'status'='invalid'
- ORDER BY p.checked_at DESC,p.ip,p.protocol`)
+ ORDER BY p.checked_at DESC,p.ip,p.protocol LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -138,5 +160,8 @@ func (a *app) certificateIssues(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
+	w.Header().Set("X-Page", strconv.Itoa(page))
+	w.Header().Set("X-Page-Size", strconv.Itoa(pageSize))
 	respond(w, 200, items)
 }

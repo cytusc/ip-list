@@ -130,6 +130,79 @@ func TestCertificateQuarantineLifecycle(t *testing.T) {
 	count(3)
 }
 
+func TestCertificateIssuesPagination(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires TEST_DATABASE_URL")
+	}
+	ctx := context.Background()
+	db, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !strings.HasSuffix(db.Config().ConnConfig.Database, "_test") {
+		t.Fatal("requires test database")
+	}
+	if _, err = db.Exec(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	const protocol = "cert-pagination-test"
+	raw := fmt.Sprintf("vless://%s@pagination.invalid:443#%d", testUUID, time.Now().UnixNano())
+	var id string
+	if err = db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES($1,'pagination.invalid',443,$2) RETURNING id::text", fmt.Sprintf("cert-page-%d", time.Now().UnixNano()), raw).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", id)
+	defer db.Exec(ctx, "DELETE FROM node_ip_pool WHERE protocol=$1", protocol)
+	_, err = db.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+	 SELECT $1,('198.19.96.'||i)::inet,false,0,now(),CASE WHEN i=107 THEN 'obsolete' ELSE md5($2) END,
+	 CASE WHEN i=106 THEN '{"status":"passed"}'::jsonb ELSE '{"status":"invalid","server_name":"pagination.invalid"}'::jsonb END
+	 FROM generate_series(1,107) i`, protocol, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &app{db: db}
+	seen := map[string]bool{}
+	for _, tc := range []struct{ page, length, actual string }{{"1", "50", "1"}, {"2", "50", "2"}, {"3", "5", "3"}, {"999999", "5", "3"}} {
+		w := httptest.NewRecorder()
+		a.certificateIssues(w, httptest.NewRequest("GET", "/certificate-issues?page="+tc.page, nil))
+		var items []struct {
+			IP string `json:"ip"`
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &items) != nil || fmt.Sprint(len(items)) != tc.length || w.Header().Get("X-Page") != tc.actual || w.Header().Get("X-Total-Count") != "105" || w.Header().Get("X-Page-Size") != "50" {
+			t.Fatalf("page %s: status=%d headers=%v body=%s", tc.page, w.Code, w.Header(), w.Body.String())
+		}
+		if tc.page == "999999" {
+			continue
+		}
+		for _, item := range items {
+			if seen[item.IP] {
+				t.Fatalf("duplicate across tied-timestamp pages: %s", item.IP)
+			}
+			seen[item.IP] = true
+		}
+	}
+	if len(seen) != 105 {
+		t.Fatalf("pagination omitted records: %d", len(seen))
+	}
+	for _, page := range []string{"0", "-1", "abc", "9999999999999999999999999"} {
+		w := httptest.NewRecorder()
+		a.certificateIssues(w, httptest.NewRequest("GET", "/certificate-issues?page="+page, nil))
+		if w.Code != 422 {
+			t.Fatalf("invalid page %s accepted: %d", page, w.Code)
+		}
+	}
+	if _, err = db.Exec(ctx, "UPDATE nodes SET enabled=false WHERE id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	a.certificateIssues(w, httptest.NewRequest("GET", "/certificate-issues?page=999", nil))
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" || w.Header().Get("X-Total-Count") != "0" || w.Header().Get("X-Page") != "1" {
+		t.Fatalf("empty/disabled nodes: %d %s %v", w.Code, w.Body.String(), w.Header())
+	}
+}
+
 func TestCertificateLegacyRevalidation(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

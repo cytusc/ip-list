@@ -70,6 +70,7 @@ CREATE INDEX IF NOT EXISTS node_ip_pool_available_idx ON node_ip_pool(ip) WHERE 
 -- B-tree equality indexes cannot accelerate subnet membership via <<= ANY.
 CREATE INDEX IF NOT EXISTS node_ip_pool_ip_range_idx ON node_ip_pool USING gist(ip inet_ops);
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_invalid_idx ON node_ip_pool(ip,(certificate->>'server_name')) WHERE certificate->>'status'='invalid';
+CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_page_idx ON node_ip_pool(checked_at DESC,ip,protocol) INCLUDE(config_hash) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri))) WHERE enabled;
 CREATE OR REPLACE VIEW current_node_ip_pool AS
  SELECT p.* FROM node_ip_pool p WHERE (NOT p.available OR p.certificate->>'status' IN ('passed','not_required')) AND NOT EXISTS (
