@@ -203,6 +203,7 @@ func (a *app) runDNSOnce(ctx context.Context) {
 	}
 	finished := time.Now().UTC()
 	report.FinishedAt = &finished
+	notifyDNSReport(&report)
 	raw, _ := json.Marshal(report)
 	// Persist the outcome even when graceful shutdown canceled the run.
 	finishCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
