@@ -19,6 +19,7 @@ func dnsNotifyTestReport() dnsReport {
 		Mode: "sync", Domain: "reiiv.com", StartedAt: at, FinishedAt: &at,
 		Records: []dnsPlanRecord{{Name: "hk.reiiv.com", Type: "A", Action: "update", Applied: true,
 			Current: []string{"1.1.1.1", "8.8.8.8"}, Desired: []string{"1.1.1.1", "9.9.9.9"}}},
+		Candidates: []dnsCandidate{{IP: "9.9.9.9", State: "healthy", Delay: 42.56}},
 	}
 }
 
@@ -37,13 +38,34 @@ func TestDNSFeishuChangeCard(t *testing.T) {
 		t.Fatal(messages, err)
 	}
 	raw, _ := json.Marshal(messages[0])
-	for _, want := range []string{"interactive", "DNS IP 变动通知", "hk.reiiv.com", "HK", "A · 更新解析", "2026-10-28 10:30:00", "北京时间", "新增 IP（1）", "移除 IP（1）", "`9.9.9.9`", "`8.8.8.8`", "部分同步失败"} {
+	for _, want := range []string{"interactive", "DNS IP 变动通知", "🇭🇰 HK · hk.reiiv.com", "A · 更新解析", "2026-10-28 10:30:00", "北京时间", "新增 IP（1）", "移除 IP（1）", "`9.9.9.9` · 探针平均延迟 42.6 ms", "`8.8.8.8`", "部分同步失败"} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("card missing %q: %s", want, raw)
 		}
 	}
 	if strings.Contains(string(raw), "1.1.1.1") {
 		t.Fatal("unchanged IP appeared in the diff", string(raw))
+	}
+}
+
+func TestDNSFeishuAddedIPDelay(t *testing.T) {
+	report := dnsNotifyTestReport()
+	report.Records = []dnsPlanRecord{{Name: "jp.reiiv.com", Type: "AAAA", Action: "create", Applied: true,
+		Desired: []string{"2606:4700:4700::1111", "2606:4700:4700::1001", "2606:4700:4700::1002"}}}
+	report.Candidates = []dnsCandidate{
+		{IP: "2606:4700:4700:0:0:0:0:1111", State: "healthy", Delay: 12.34},
+		{IP: "2606:4700:4700::1001", State: "healthy", Delay: 0},
+		{IP: "2606:4700:4700::1002", State: "unknown", Delay: 10},
+	}
+	messages, err := dnsFeishuMessages(report)
+	if err != nil || len(messages) != 1 {
+		t.Fatal(messages, err)
+	}
+	raw, _ := json.Marshal(messages[0])
+	for _, want := range []string{"`2606:4700:4700::1111` · 探针平均延迟 12.3 ms", "`2606:4700:4700::1001` · 探针平均延迟 0.0 ms", "`2606:4700:4700::1002` · 探针平均延迟暂无"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("card missing %q: %s", want, raw)
+		}
 	}
 }
 
@@ -89,7 +111,7 @@ func TestDNSFeishuCreateAndDelete(t *testing.T) {
 		t.Fatal(messages, err)
 	}
 	raw, _ := json.Marshal(messages)
-	for _, want := range []string{"AAAA · 新增解析", "A · 删除解析", "新增 IP（0）", "移除 IP（0）", "`2606:4700:4700::1111`", "`8.8.8.8`"} {
+	for _, want := range []string{"🇯🇵 JP · jp.reiiv.com", "🇺🇸 US · us.reiiv.com", "AAAA · 新增解析", "A · 删除解析", "新增 IP（0）", "移除 IP（0）", "`2606:4700:4700::1111`", "`8.8.8.8`"} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("card missing %q: %s", want, raw)
 		}

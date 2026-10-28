@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/netip"
 	"os"
@@ -64,10 +65,22 @@ func dnsFeishuMarkdown(content string) map[string]any {
 	return map[string]any{"tag": "div", "text": map[string]string{"tag": "lark_md", "content": content}}
 }
 
-func dnsFeishuIPList(label string, ips []string) map[string]any {
+func dnsFeishuIPList(label string, ips []string, delays map[string]float64) map[string]any {
 	content := "无"
 	if len(ips) > 0 {
-		content = "`" + strings.Join(ips, "`\n`") + "`"
+		lines := make([]string, 0, len(ips))
+		for _, ip := range ips {
+			line := "`" + ip + "`"
+			if delays != nil {
+				if delay, ok := delays[ip]; ok {
+					line += fmt.Sprintf(" · 探针平均延迟 %.1f ms", delay)
+				} else {
+					line += " · 探针平均延迟暂无"
+				}
+			}
+			lines = append(lines, line)
+		}
+		content = strings.Join(lines, "\n")
 	}
 	return dnsFeishuMarkdown(fmt.Sprintf("**%s（%d）**\n%s", label, len(ips), content))
 }
@@ -98,13 +111,25 @@ func dnsFeishuMessages(report dnsReport) ([]dnsFeishuMessage, error) {
 	var messages []dnsFeishuMessage
 	m := newMessage()
 	count := 0
+	delays := make(map[string]float64, len(report.Candidates))
+	for _, candidate := range report.Candidates {
+		ip, err := netip.ParseAddr(candidate.IP)
+		if err != nil || candidate.State != "healthy" || candidate.Delay < 0 || math.IsNaN(candidate.Delay) || math.IsInf(candidate.Delay, 0) {
+			continue
+		}
+		key := ip.Unmap().String()
+		if old, ok := delays[key]; !ok || candidate.Delay < old {
+			delays[key] = candidate.Delay
+		}
+	}
 	records := append([]dnsPlanRecord(nil), report.Records...)
 	sort.Slice(records, func(i, j int) bool {
 		return dnsRecordKey(records[i].Name, records[i].Type) < dnsRecordKey(records[j].Name, records[j].Type)
 	})
 	for _, r := range records {
 		prefix, ok := strings.CutSuffix(r.Name, "."+report.Domain)
-		if !r.Applied || !ok || dnsCountry(prefix) == "" || (r.Type != "A" && r.Type != "AAAA") || (r.Action != "create" && r.Action != "update" && r.Action != "delete") {
+		country := dnsCountry(prefix)
+		if !r.Applied || !ok || country == "" || (r.Type != "A" && r.Type != "AAAA") || (r.Action != "create" && r.Action != "update" && r.Action != "delete") {
 			continue
 		}
 		added, removed := dnsIPDifference(r.Desired, r.Current), dnsIPDifference(r.Current, r.Desired)
@@ -112,11 +137,12 @@ func dnsFeishuMessages(report dnsReport) ([]dnsFeishuMessage, error) {
 			continue
 		}
 		action := map[string]string{"create": "新增解析", "update": "更新解析", "delete": "删除解析"}[r.Action]
+		flag := string([]rune{0x1F1E6 + rune(country[0]-'a'), 0x1F1E6 + rune(country[1]-'a')})
 		block := []map[string]any{
 			{"tag": "hr"},
-			dnsFeishuMarkdown(fmt.Sprintf("**%s · %s**\n%s · %s · 新增 **%d** / 移除 **%d**", strings.ToUpper(prefix), r.Name, r.Type, action, len(added), len(removed))),
-			dnsFeishuIPList("🟢 新增 IP", added),
-			dnsFeishuIPList("🔴 移除 IP", removed),
+			dnsFeishuMarkdown(fmt.Sprintf("**%s %s · %s**\n%s · %s · 新增 **%d** / 移除 **%d**", flag, strings.ToUpper(country), r.Name, r.Type, action, len(added), len(removed))),
+			dnsFeishuIPList("🟢 新增 IP", added, delays),
+			dnsFeishuIPList("🔴 移除 IP", removed, nil),
 		}
 		candidate := m
 		candidate.Card.Elements = append(append([]map[string]any(nil), m.Card.Elements...), block...)

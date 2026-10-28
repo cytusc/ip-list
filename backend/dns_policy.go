@@ -58,6 +58,15 @@ type dnsSample struct {
 	Delay   float64
 }
 
+// Heartbeats do not prove that the probe's outbound network works. A failed
+// target is actionable only if the same probe can still reach another target.
+func dnsCorroborateFailure(state string, otherTargetOK bool) string {
+	if state == "failed" && !otherTargetOK {
+		return "unknown"
+	}
+	return state
+}
+
 // A probe must be online and have at least two fresh observations spanning
 // a minute. Missing or sparse data is unknown, never evidence of health.
 func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration, c dnsConfig) (string, float64) {

@@ -258,7 +258,13 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 		return nil, false, err
 	}
 	// Only selected, online probes and samples matching the current mode count.
-	rows, err = a.db.Query(ctx, `SELECT host(t.ip),LEAST(300,`+probeSampleWindowSQL+`*2),COALESCE(samples.data,'[]'::jsonb)
+	rows, err = a.db.Query(ctx, `SELECT host(t.ip),LEAST(300,`+probeSampleWindowSQL+`*2),COALESCE(samples.data,'[]'::jsonb),
+ EXISTS(SELECT 1 FROM latency_probe_results ok WHERE ok.probe_id=p.id AND ok.ip<>t.ip
+ AND ok.mode=p.mode AND ok.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
+ AND ok.success AND ok.checked_at>now()-make_interval(secs=>LEAST(300,`+probeSampleWindowSQL+`*2))
+ AND NOT EXISTS(SELECT 1 FROM latency_probe_results newer WHERE newer.probe_id=ok.probe_id
+ AND newer.ip=ok.ip AND newer.mode=ok.mode AND newer.tcp_port=ok.tcp_port
+ AND (newer.checked_at,newer.id)>(ok.checked_at,ok.id)))
  FROM latency_probes p CROSS JOIN (SELECT DISTINCT ip FROM current_node_ip_pool s WHERE available
  AND ($1='' OR protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)) t
  LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('At',checked_at,'Success',success,'Delay',delay_ms) ORDER BY checked_at,id) AS data
@@ -274,7 +280,8 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 		var ip string
 		var fresh int
 		var data []byte
-		if err = rows.Scan(&ip, &fresh, &data); err != nil {
+		var otherTargetOK bool
+		if err = rows.Scan(&ip, &fresh, &data, &otherTargetOK); err != nil {
 			break
 		}
 		var samples []dnsSample
@@ -282,10 +289,15 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 			break
 		}
 		state, delay := dnsProbeHealth(samples, now, time.Duration(fresh)*time.Second, c)
+		uncorroborated := state == "failed" && !otherTargetOK
+		state = dnsCorroborateFailure(state, otherTargetOK)
 		states[ip] = append(states[ip], state)
 		i, ok := index[ip]
 		if !ok {
 			continue
+		}
+		if uncorroborated && items[i].State != "healthy" {
+			items[i].Reason = "探针近期没有其他目标成功，无法区分探针网络异常与 IP 故障"
 		}
 		if state == "healthy" && (items[i].State != "healthy" || delay < items[i].Delay) {
 			items[i].State = "healthy"

@@ -181,6 +181,29 @@ func TestDNSPlans(t *testing.T) {
 	}
 }
 
+func TestDNSProbeFailureEvidencePreservesRecords(t *testing.T) {
+	remote := dnsRemoteRecord{ID: "hk", Name: "hk.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"103.135.251.114"}}
+	for _, tc := range []struct {
+		name     string
+		state    string
+		otherOK  bool
+		preserve bool
+	}{
+		{"probe network outage", "failed", false, true},
+		{"missing reports", "unknown", true, true},
+		{"confirmed target failure", "failed", true, false},
+		{"healthy target", "healthy", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := dnsCandidate{IP: remote.Values[0], Country: "HK", State: dnsCorroborateFailure(tc.state, tc.otherOK)}
+			plan := dnsBuildPlan(dnsTestConfig(), []dnsCandidate{candidate}, []dnsRemoteRecord{remote}, map[string]bool{"hk.reiiv.com/A": true}, false)
+			if len(plan) != 1 || slices.Contains(plan[0].Desired, remote.Values[0]) != tc.preserve {
+				t.Fatalf("unexpected plan: %+v", plan)
+			}
+		})
+	}
+}
+
 type dnsFakeProvider struct {
 	records []dnsRemoteRecord
 	writes  []dnsPlanRecord
@@ -261,6 +284,17 @@ func TestDNSIntegration(t *testing.T) {
 	}
 	if len(fake.writes) != 2 || !report.Records[0].Applied {
 		t.Fatal(report)
+	}
+	// A live heartbeat with a broken probe network must not remove IPs.
+	if _, err = db.Exec(ctx, "UPDATE latency_probe_results SET success=false WHERE probe_id=$1", probe); err != nil {
+		t.Fatal(err)
+	}
+	fake.writes = nil
+	if err = a.executeDNS(ctx, c, &report, fake); err != nil || len(fake.writes) != 0 || !slices.Contains(report.Records[0].Desired, "103.135.251.114") {
+		t.Fatalf("network outage removed record: %+v, %v", report, err)
+	}
+	if _, err = db.Exec(ctx, "UPDATE latency_probe_results SET success=true WHERE probe_id=$1 AND ip='191.222.220.126'", probe); err != nil {
+		t.Fatal(err)
 	}
 	fake.fail = true
 	if err = a.executeDNS(ctx, c, &report, fake); err == nil || report.Records[0].Applied {
