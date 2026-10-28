@@ -14,6 +14,7 @@ import {
   Loader2,
   Ban,
   Radio,
+  Globe,
 } from "lucide-react";
 import { toast } from "sonner";
 import { logout } from "@/app/actions";
@@ -25,6 +26,7 @@ const navigation = [
   { href: "/probes", label: "连通性测试", icon: Activity },
   { href: "/certificate-issues", label: "证书异常 IP", icon: ShieldCheck },
   { href: "/available-ips", label: "可用 IP", icon: ListChecks },
+  { href: "/dns", label: "域名解析", icon: Globe },
   { href: "/latency-probes", label: "延迟探针", icon: Radio },
   { href: "/nodes", label: "节点管理", icon: Server },
   { href: "/networks", label: "网段配置", icon: Network },

@@ -115,6 +115,34 @@ INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash)
  WHERE node_ip_pool.checked_at<excluded.checked_at
  OR (node_ip_pool.checked_at=excluded.checked_at AND node_ip_pool.config_hash='');
 
+-- One DNS policy; ownership and history survive restarts and domain changes.
+CREATE TABLE IF NOT EXISTS dns_settings (
+ id boolean PRIMARY KEY DEFAULT true CHECK(id),
+ config jsonb NOT NULL DEFAULT '{"domain":"reiiv.com","enabled":false,"interval_seconds":300,"ttl":300,"max_ips":10,"window_minutes":5,"min_success_percent":80,"probe_id":"","protocol":""}',
+ requested text NOT NULL DEFAULT '',
+ running boolean NOT NULL DEFAULT false,
+ next_run_at timestamptz NOT NULL DEFAULT now(),
+ report jsonb NOT NULL DEFAULT '{}'
+);
+INSERT INTO dns_settings(id) VALUES(true) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS dns_managed_records (
+  zone_id text NOT NULL,
+ domain text NOT NULL,
+ name text NOT NULL,
+ type text NOT NULL,
+ PRIMARY KEY(domain,zone_id,name,type)
+);
+CREATE TABLE IF NOT EXISTS dns_sync_runs (
+ id bigserial PRIMARY KEY,
+ started_at timestamptz NOT NULL DEFAULT now(),
+ report jsonb NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dns_ip_locations (
+ ip inet PRIMARY KEY,
+ country varchar(2) NOT NULL,
+ checked_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS cf_targets (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  name varchar(100) NOT NULL,

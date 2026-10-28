@@ -107,6 +107,7 @@ func main() {
 	go a.resumeNodeSchedules(ctx)
 	go a.maintainAutomaticScans(ctx)
 	go a.maintainNetworkMetadata(ctx)
+	go a.maintainDNS(ctx)
 	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -211,6 +212,9 @@ func (a *app) routes() http.Handler {
 	mux.Handle("DELETE /protocol-networks/{id}", a.protected(http.HandlerFunc(a.restoreProtocolNetwork)))
 	mux.Handle("GET /certificate-issues", a.protected(http.HandlerFunc(a.certificateIssues)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))
+	mux.Handle("GET /dns", a.protected(http.HandlerFunc(a.getDNS)))
+	mux.Handle("PUT /dns", a.protected(http.HandlerFunc(a.saveDNS)))
+	mux.Handle("POST /dns/{mode}", a.protected(http.HandlerFunc(a.requestDNS)))
 	mux.Handle("GET /latency-probes", a.protected(http.HandlerFunc(a.listLatencyProbes)))
 	mux.Handle("POST /latency-probes", a.protected(http.HandlerFunc(a.createLatencyProbe)))
 	mux.Handle("PUT /latency-probes/{id}", a.protected(http.HandlerFunc(a.updateLatencyProbe)))
