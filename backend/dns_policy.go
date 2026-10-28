@@ -29,7 +29,7 @@ func (c *dnsConfig) validate() error {
 	if len(c.Domain) > 253 || !regexp.MustCompile(`^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`).MatchString(c.Domain) {
 		return fmt.Errorf("请输入有效的托管域名，例如 reiiv.com")
 	}
-	if c.Interval < 60 || c.Interval > 86400 || c.TTL < 60 || c.TTL > 86400 || c.MaxIPs < 1 || c.MaxIPs > 50 || c.Window < 2 || c.Window > 60 || c.MinSuccess < 1 || c.MinSuccess > 100 {
+	if c.Interval < 60 || c.Interval > 86400 || c.TTL < 60 || c.TTL > 86400 || c.MaxIPs < 1 || c.MaxIPs > 50 || c.Window < 2 || c.Window > 60 || c.MinSuccess < 0 || c.MinSuccess > 100 {
 		return fmt.Errorf("更新间隔和 TTL 需为 60–86400 秒，每组 1–50 个 IP，观察窗口 2–60 分钟，成功率 1–100%%")
 	}
 	if c.ProbeID != "" && validate.Var(c.ProbeID, "uuid") != nil {
@@ -84,20 +84,21 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 	}
 	latest := valid[len(valid)-1]
 	if !latest.Success {
-		failureStart := valid[0].At
-		for i := len(valid) - 1; i >= 0; i-- {
-			if valid[i].Success {
-				if i+1 < len(valid) {
-					failureStart = valid[i+1].At
-				}
+		failureStart := latest.At
+		for i := len(valid) - 2; i >= 0; i-- {
+			if valid[i].Success || valid[i+1].At.Sub(valid[i].At) > freshness {
 				break
 			}
+			failureStart = valid[i].At
 		}
 		if latest.At.Sub(failureStart) >= time.Minute {
 			return "failed", 0
 		}
-		// Brief loss is not a confirmed outage, but never introduces an IP.
-		return "unknown", 0
+		// In continuous-failure mode, a recent success tolerates brief loss.
+		// Missing reports are never evidence that an IP is still reachable.
+		if c.MinSuccess > 0 || lastSuccess.IsZero() || now.Sub(lastSuccess) >= time.Minute || now.Sub(lastSuccess) > freshness {
+			return "unknown", 0
+		}
 	}
 	if lastSuccess.IsZero() || count*100 < len(valid)*c.MinSuccess {
 		return "failed", 0

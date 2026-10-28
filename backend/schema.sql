@@ -118,7 +118,7 @@ INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash)
 -- One DNS policy; ownership and history survive restarts and domain changes.
 CREATE TABLE IF NOT EXISTS dns_settings (
  id boolean PRIMARY KEY DEFAULT true CHECK(id),
- config jsonb NOT NULL DEFAULT '{"domain":"reiiv.com","enabled":false,"interval_seconds":300,"ttl":300,"max_ips":10,"window_minutes":5,"min_success_percent":80,"probe_id":"","protocol":""}',
+ config jsonb NOT NULL DEFAULT '{"domain":"reiiv.com","enabled":false,"interval_seconds":300,"ttl":300,"max_ips":10,"window_minutes":5,"min_success_percent":0,"probe_id":"","protocol":""}',
  requested text NOT NULL DEFAULT '',
  running boolean NOT NULL DEFAULT false,
  next_run_at timestamptz NOT NULL DEFAULT now(),

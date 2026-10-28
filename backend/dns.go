@@ -290,6 +290,9 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 			items[i].State = "healthy"
 			items[i].Delay = delay
 			items[i].Reason = "近期采样成功率达标且最新采样成功"
+			if c.MinSuccess == 0 {
+				items[i].Reason = "近期有成功采样，未连续失败满 60 秒"
+			}
 		}
 	}
 	if err == nil {
@@ -314,6 +317,9 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 			if failed {
 				items[i].State = "failed"
 				items[i].Reason = "连续失败至少 60 秒，或观察窗口成功率不足"
+				if c.MinSuccess == 0 {
+					items[i].Reason = "连续失败至少 60 秒，或观察窗口内没有成功采样"
+				}
 			}
 		}
 	}

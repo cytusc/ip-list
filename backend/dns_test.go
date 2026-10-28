@@ -82,6 +82,55 @@ func TestDNSCountryAndDesired(t *testing.T) {
 	}
 }
 
+func TestDNSContinuousFailurePolicy(t *testing.T) {
+	now := time.Now()
+	c := dnsTestConfig()
+	c.MinSuccess = 0
+	if err := c.validate(); err != nil {
+		t.Fatal(err)
+	}
+	sample := func(seconds int, ok bool) dnsSample {
+		return dnsSample{At: now.Add(-time.Duration(seconds) * time.Second), Success: ok, Delay: 70}
+	}
+	for _, tc := range []struct {
+		name    string
+		samples []dnsSample
+		want    string
+	}{
+		{"intermittent loss below 80 percent", []dnsSample{sample(120, true), sample(100, false), sample(80, false), sample(60, true), sample(40, false), sample(20, true), sample(1, true)}, "healthy"},
+		{"brief latest timeout", []dnsSample{sample(100, true), sample(80, false), sample(60, true), sample(40, true), sample(20, false), sample(1, false)}, "healthy"},
+		{"continuous failure 60 seconds", []dnsSample{sample(100, true), sample(61, false), sample(41, false), sample(21, false), sample(1, false)}, "failed"},
+		{"never reached", []dnsSample{sample(81, false), sample(61, false), sample(41, false), sample(21, false), sample(1, false)}, "failed"},
+		{"missing reports interrupt failure streak", []dnsSample{sample(200, false), sample(1, false)}, "unknown"},
+		{"old success cannot justify recent timeout", []dnsSample{sample(100, true), sample(20, false), sample(1, false)}, "unknown"},
+		{"stale samples", []dnsSample{sample(240, true), sample(180, true)}, "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, delay := dnsProbeHealth(tc.samples, now, 90*time.Second, c)
+			if got != tc.want || got == "healthy" && delay != 70 {
+				t.Fatalf("state=%s delay=%v, want %s", got, delay, tc.want)
+			}
+		})
+	}
+}
+
+func TestDNSPublishesEveryHealthyJapaneseIP(t *testing.T) {
+	ips := []string{"45.66.129.24", "45.66.129.48", "45.66.129.225", "45.66.129.247", "45.153.245.217", "152.175.34.232", "152.175.36.150", "191.222.212.167", "191.222.214.71"}
+	candidates := []dnsCandidate{{IP: "103.135.251.114", Country: "JP", State: "failed"}}
+	for _, ip := range ips {
+		candidates = append(candidates, dnsCandidate{IP: ip, Country: "JP", State: "healthy", Delay: 70})
+	}
+	plan := dnsBuildPlan(dnsTestConfig(), candidates, nil, nil, false)
+	if len(plan) != 1 || plan[0].Name != "jp.reiiv.com" || len(plan[0].Desired) != len(ips) {
+		t.Fatalf("expected all nine healthy IPs in Japan record: %+v", plan)
+	}
+	for _, ip := range ips {
+		if !slices.Contains(plan[0].Desired, ip) {
+			t.Fatalf("healthy IP missing: %s", ip)
+		}
+	}
+}
+
 func TestDNSPlans(t *testing.T) {
 	c := dnsTestConfig()
 	hk := dnsRemoteRecord{ID: "hk", Name: "hk.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"103.135.251.114", "191.222.220.126"}}
