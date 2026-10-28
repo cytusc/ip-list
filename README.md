@@ -60,7 +60,7 @@
 
 站点发布时先运行 `npm run probe:build`（服务器需要 Go），生成六个平台的静态二进制到 `bin/latency-probe`，再构建并重启 Web。下载入口 `/probe-downloads/` 只提供固定白名单中的公共安装文件，不包含探针密钥。自签证书站点在 Web 服务环境配置 `PROBE_TLS_PIN` 为 TLS 证书公钥的 SHA-256 base64 指纹，部署命令、下载和探针请求都会校验此公钥；证书公钥变更后需重新部署探针。公有 CA 证书可不设置，使用系统证书校验。
 
-探针使用系统 `ping` 发 ICMP 包，测量电脑到目标 IP 的往返时间，不经过 HTTP/SOCKS 代理。探针会绑定物理网卡（macOS `ping -b`，Linux `ping -I`，Windows `ping -S` 绑定该网卡源地址）。网卡留空时自动选择唯一已连接且有 IP 的非隧道网卡；多个候选、无可用网卡或指定虚拟隧道时停止本轮检测并记录错误，不回退到默认路由。macOS 例如 `en0`，Linux 例如 `eth0`；Windows 的源地址绑定不能保证绕过所有第三方 VPN/TUN，请关闭 TUN 或为检测目标配置直连规则。日志会输出实际选择的网卡。探针需要能访问站点 HTTPS 地址；ICMP 超时可能是目标或网络屏蔽了 ICMP，不代表代理连接一定不可用。服务端使用 SHA-256 哈希验证 Bearer 密钥，并加密保存可恢复的部署密钥；只有已登录管理员可读取部署配置，列表及探针接口不返回密钥；上报只接受当前可用且未列入黑名单的 IP。数据库升级需执行 `npm run db:init`，再重启 Go API。
+探针在 macOS/Linux 使用系统 `ping`，Windows 使用官方 ICMP API（IPv4 `IcmpSendEcho2Ex` / IPv6 `Icmp6SendEcho2`），测量电脑到目标 IP 的往返时间，不经过 HTTP/SOCKS 代理。探针会绑定物理网卡（macOS `ping -b`，Linux `ping -I`，Windows ICMP API 指定该网卡源地址）。网卡留空时自动选择唯一已连接且有 IP 的非隧道网卡；多个候选、无可用网卡或指定虚拟隧道时停止本轮检测并记录错误，不回退到默认路由。macOS 例如 `en0`，Linux 例如 `eth0`；Windows 的源地址绑定不能保证绕过所有第三方 VPN/TUN，请关闭 TUN 或为检测目标配置直连规则。日志会输出实际选择的网卡、源地址和检测方式。Windows 本机 API、网卡或资源错误会记录具体错误并跳过上报，不记为目标 IP 不可达；真实超时或远端不可达仍会上报失败。探针需要能访问站点 HTTPS 地址；ICMP 超时可能是目标或网络屏蔽了 ICMP，不代表代理连接一定不可用。服务端使用 SHA-256 哈希验证 Bearer 密钥，并加密保存可恢复的部署密钥；只有已登录管理员可读取部署配置，列表及探针接口不返回密钥；上报只接受当前可用且未列入黑名单的 IP。数据库升级需执行 `npm run db:init`，再重启 Go API。
 
 ## 自动增量检测
 

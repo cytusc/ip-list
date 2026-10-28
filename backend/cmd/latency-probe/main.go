@@ -97,7 +97,7 @@ func main() {
 		if interfaceErr != nil {
 			log.Fatal(interfaceErr)
 		}
-		log.Printf("%s 检测绑定出口网卡：%s", measurementLabel(cfg), iface.Name)
+		logMeasurementInterface(cfg, iface)
 		log.Printf("连接和鉴权成功：%d 个目标，间隔 %d 秒", len(cfg.IPs), cfg.Interval)
 		return
 	}
@@ -125,7 +125,7 @@ func main() {
 			continue
 		}
 		settings.InterfaceName = iface.Name
-		log.Printf("%s 检测绑定出口网卡：%s", measurementLabel(settings), iface.Name)
+		logMeasurementInterface(settings, iface)
 		results := runPings(settings)
 		if len(results) > 0 {
 			reportErr := error(nil)
@@ -151,7 +151,10 @@ func main() {
 						maxDelay = math.Max(maxDelay, item.DelayMS)
 					}
 				}
-				log.Printf("已检测 %d 个 IP：%d 可达，%d 超时", len(results), ok, len(results)-ok)
+				log.Printf("已检测 %d 个 IP：%d 可达，%d 未响应或不可达", len(results), ok, len(results)-ok)
+				if ok == 0 {
+					log.Printf("本轮目标全部未响应；请用系统 ping 检查同一目标，并检查物理出口、VPN/TUN 和防火墙。ICMP 无响应不等于代理端口不可用")
+				}
 				if ok > 0 {
 					log.Printf("物理出口 %s 延迟范围：%.2f–%.2f ms", settings.InterfaceName, minDelay, maxDelay)
 				}
@@ -252,6 +255,24 @@ func requestJSON(client *http.Client, method, url, token string, body, output an
 }
 
 func runPings(settings settings) []result {
+	return runMeasurements(settings, measureTarget)
+}
+
+func measureTarget(ip netip.Addr, cfg settings, timeout time.Duration) (float64, bool, error) {
+	if cfg.Mode != "tcp" && runtime.GOOS == "windows" {
+		return windowsPing(ip, timeout, cfg.InterfaceName)
+	}
+	var delay float64
+	var success bool
+	if cfg.Mode == "tcp" {
+		delay, success = tcpPing(ip, cfg.TCPPort, timeout, cfg.InterfaceName)
+	} else {
+		delay, success = ping(ip, timeout, cfg.InterfaceName)
+	}
+	return delay, success, nil
+}
+
+func runMeasurements(settings settings, measure func(netip.Addr, settings, time.Duration) (float64, bool, error)) []result {
 	concurrency := settings.Concurrency
 	if concurrency < 1 {
 		concurrency = 64
@@ -265,6 +286,7 @@ func runPings(settings settings) []result {
 	}
 	jobs := make(chan string)
 	results := make(chan result, len(settings.IPs))
+	failures := make(chan error, len(settings.IPs))
 	workers := concurrency
 	if workers > len(settings.IPs) {
 		workers = len(settings.IPs)
@@ -280,12 +302,10 @@ func runPings(settings settings) []result {
 					continue
 				}
 				started := time.Now().UTC()
-				var delay float64
-				var success bool
-				if settings.Mode == "tcp" {
-					delay, success = tcpPing(ip, settings.TCPPort, timeout, settings.InterfaceName)
-				} else {
-					delay, success = ping(ip, timeout, settings.InterfaceName)
+				delay, success, err := measure(ip.Unmap(), settings, timeout)
+				if err != nil {
+					failures <- fmt.Errorf("IP %s：%w", ip, err)
+					continue
 				}
 				results <- result{IP: ip.Unmap().String(), DelayMS: delay, Success: success, CheckedAt: started}
 			}
@@ -298,10 +318,21 @@ func runPings(settings settings) []result {
 		close(jobs)
 		group.Wait()
 		close(results)
+		close(failures)
 	}()
 	items := make([]result, 0, len(settings.IPs))
 	for item := range results {
 		items = append(items, item)
+	}
+	count := 0
+	for err := range failures {
+		if count < 3 {
+			log.Printf("本机检测错误，跳过结果上报：%v", err)
+		}
+		count++
+	}
+	if count > 0 {
+		log.Printf("本轮 %d 个目标因本机检测错误未上报，不计为 IP 不可达", count)
 	}
 	return items
 }
@@ -310,9 +341,6 @@ func ping(ip netip.Addr, timeout time.Duration, iface string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout+2*time.Second)
 	defer cancel()
 	args := pingArgs(ip, timeout, iface)
-	if runtime.GOOS == "windows" {
-		return windowsPing(ip, timeout, iface)
-	}
 	binary := "ping"
 	if runtime.GOOS == "darwin" && ip.Is6() {
 		binary = "ping6"

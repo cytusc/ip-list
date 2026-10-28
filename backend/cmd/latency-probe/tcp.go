@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -54,4 +56,14 @@ func measurementLabel(cfg settings) string {
 		return fmt.Sprintf("TCP Ping :%d", cfg.TCPPort)
 	}
 	return "ICMP Ping"
+}
+
+func logMeasurementInterface(cfg settings, iface net.Interface) {
+	engine := "系统 ping"
+	if cfg.Mode == "tcp" {
+		engine = "TCP socket"
+	} else if runtime.GOOS == "windows" {
+		engine = "Windows ICMP API"
+	}
+	log.Printf("%s 检测绑定出口网卡：%s（IPv4=%s，IPv6=%s，%s）", measurementLabel(cfg), iface.Name, interfaceAddress(iface, false), interfaceAddress(iface, true), engine)
 }
