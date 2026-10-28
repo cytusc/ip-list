@@ -309,6 +309,14 @@ ALTER TABLE latency_probe_results ADD COLUMN IF NOT EXISTS mode text NOT NULL DE
 ALTER TABLE latency_probe_results ADD COLUMN IF NOT EXISTS tcp_port integer NOT NULL DEFAULT 0 CHECK ((mode='icmp' AND tcp_port=0) OR (mode='tcp' AND tcp_port BETWEEN 1 AND 65535));
 CREATE INDEX IF NOT EXISTS latency_probe_results_measurement_idx ON latency_probe_results(probe_id,ip,mode,tcp_port,checked_at DESC);
 
+-- Match the deterministic order used by configuration and probe list pages.
+CREATE INDEX IF NOT EXISTS nodes_page_idx ON nodes(created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS networks_page_idx ON networks(created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS latency_probes_page_idx ON latency_probes(created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS cf_targets_page_idx ON cf_targets(created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS cf_results_available_page_idx ON cf_results(target_id,ip) WHERE available;
+CREATE INDEX IF NOT EXISTS cf_ip_pool_available_page_idx ON cf_ip_pool(ip) WHERE available;
+
 -- Apply the requested 20-second interval once; later manual edits survive restart.
 ALTER TABLE latency_probes ALTER COLUMN interval_seconds SET DEFAULT 20;
 WITH upgrade AS (

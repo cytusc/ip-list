@@ -1,12 +1,14 @@
 "use client";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { Activity, ArrowRight, Clock, History, Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { cancelScan, startScan } from "@/app/actions";
 import { protocolLabels } from "@/lib/protocol";
 import { availabilityTone, formatDuration, formatTime, percent } from "@/lib/cf";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import type { PageResult } from "@/lib/pagination";
 import { NewProbeDialog } from "@/components/probe-form";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -48,63 +50,13 @@ export function ProbeList({
 }: {
   nodes: Node[];
   networks: Network[];
-  initial: ScanRecordList;
+  initial: ScanRecordList & PageResult<ScanRecord>;
 }) {
-  const [data, setData] = useState(initial);
-  const [error, setError] = useState("");
-  const [stopping, setStopping] = useState(false);
-  const [protocol, setProtocol] = useState("");
-  const [page, setPage] = useState(1);
-  const [version, setVersion] = useState(0);
-  const router = useRouter();
-  // 一轮检测结束后刷新服务端数据：协议池禁用的网段等信息只在服务端渲染。
-  const seen = useRef<string | null>(null);
-  const active = data.active;
-  const scanning = data.items.some((item) => item.status === "running");
-  const busy = scanning || !!active;
-  useEffect(() => {
-    let disposed = false;
-    const controller = new AbortController();
-    const load = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await fetch("/api/scan-records", {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "读取检测记录失败");
-        if (disposed) return;
-        setData(payload);
-        setError("");
-        const latest = payload.items?.[0] as ScanRecord | undefined;
-        if (latest) {
-          const key = `${latest.id}:${latest.status}`;
-          if (seen.current === null) seen.current = key;
-          else if (seen.current !== key) {
-            seen.current = key;
-            if (latest.status !== "running") router.refresh();
-          }
-        }
-      } catch (e) {
-        if (!disposed && !(e instanceof DOMException && e.name === "AbortError"))
-          setError(e instanceof Error ? e.message : "读取检测记录失败");
-      }
-    };
-    const timer = window.setInterval(load, busy ? 2000 : 10000);
-    void load();
-    return () => {
-      disposed = true;
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [busy, version, router]);
-  const protocols = [...new Set(data.items.map((item) => item.protocol))];
-  const filtered = protocol
-    ? data.items.filter((item) => item.protocol === protocol)
-    : data.items;
-  const pages = Math.max(1, Math.ceil(filtered.length / 20));
-  const current = Math.min(page, pages);
+  const [protocol,setProtocol]=useState("");
+  const {data,setPage,refresh,loading,error}=usePagedList("scan-records",initial,{protocol},data=>(data as typeof initial).active ? 2000 : 10000);
+  const [stopping,setStopping]=useState(false);
+  const active=(data as typeof initial).active;
+  const protocols=Object.keys(protocolLabels);
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -129,7 +81,7 @@ export function ProbeList({
           networks={networks}
           defaults={data.items[0]?.input}
           active={active}
-          onStarted={() => setVersion((value) => value + 1)}
+          onStarted={() => refresh()}
         />
       </div>
 
@@ -159,7 +111,7 @@ export function ProbeList({
                 setStopping(false);
                 return;
               }
-              setVersion((value) => value + 1);
+              refresh();
             } catch {
               toast.error("停止失败，请重试");
               setStopping(false);
@@ -172,7 +124,7 @@ export function ProbeList({
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              最近 {data.items.length} 条记录 · 保留 7 天
+              共 {data.total} 条记录 · 保留 7 天
             </p>
             <Select
               value={protocol || "all"}
@@ -195,33 +147,11 @@ export function ProbeList({
             </Select>
           </div>
           <RecordTable
-            items={filtered.slice((current - 1) * 20, current * 20)}
+            items={data.items}
             active={active}
-            onRetried={() => setVersion((value) => value + 1)}
+            onRetried={() => refresh()}
           />
-          {pages > 1 && (
-            <div className="flex items-center justify-end gap-3 text-sm">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={current === 1}
-                onClick={() => setPage(current - 1)}
-              >
-                上一页
-              </Button>
-              <span className="text-muted-foreground tabular-nums">
-                {current} / {pages}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={current === pages}
-                onClick={() => setPage(current + 1)}
-              >
-                下一页
-              </Button>
-            </div>
-          )}
+          <ListPagination data={data} onPage={setPage} loading={loading}/>
         </>
       ) : (
         <div className="rounded-xl border border-dashed bg-white/60 px-6 py-14 text-center">

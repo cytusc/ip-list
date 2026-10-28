@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"net/netip"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -23,7 +23,13 @@ func canonicalIP(value string) (string, bool) {
 }
 
 func (a *app) listBlacklist(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), "SELECT host(ip),created_at FROM ip_blacklist ORDER BY ip")
+	search := r.URL.Query().Get("search")
+	where := " FROM ip_blacklist WHERE ($1='' OR position($1 in host(ip))>0)"
+	p, ok := a.listPage(w, r, 50, "SELECT count(*)"+where, search)
+	if !ok {
+		return
+	}
+	rows, err := a.db.Query(r.Context(), "SELECT host(ip),created_at"+where+" ORDER BY ip LIMIT $2 OFFSET $3", search, p.Size, p.Offset())
 	if err != nil {
 		dbError(w, err)
 		return

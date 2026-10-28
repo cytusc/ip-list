@@ -16,6 +16,9 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import type { CFIP, ScanJob } from "@/lib/types";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import type { PageResult } from "@/lib/pagination";
 import { formatDuration, formatTime, scanStatusText } from "@/lib/cf";
 
 const statusTone: Record<ScanJob["status"], string> = {
@@ -31,7 +34,7 @@ export function CFProgressView({
   pool,
 }: {
   initial: ScanJob | null;
-  pool: CFIP[];
+  pool: PageResult<CFIP>;
 }) {
   const [job, setJob] = useState(initial);
   const [error, setError] = useState("");
@@ -228,12 +231,10 @@ export function CFProgressView({
   );
 }
 
-function PoolTable({ pool }: { pool: CFIP[] }) {
+function PoolTable({ pool }: { pool: PageResult<CFIP> }) {
   const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
-  const items = pool.filter((item) => item.ip.includes(search.trim()));
-  const pages = Math.max(1, Math.ceil(items.length / 20));
-  const current = Math.min(page, pages);
+  const {data,setPage,loading,error}=usePagedList("cf-pool",pool,{search},10000);
+  const items=data.items;
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -248,8 +249,9 @@ function PoolTable({ pool }: { pool: CFIP[] }) {
         <div>
           <h2 className="flex items-center gap-2 font-semibold">
             共用 IP 池
-            <Badge variant="secondary">{pool.length}</Badge>
+            <Badge variant="secondary">{data.total}</Badge>
           </h2>
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             所有域名通用，每轮检测结束后更新；复测失败的 IP 会移除，未检测到的
             IP 保留上次结果。
@@ -261,7 +263,7 @@ function PoolTable({ pool }: { pool: CFIP[] }) {
           onClick={() => copy(items.map((item) => item.ip).join("\n"))}
         >
           <Copy />
-          复制可用 IP
+          复制当前页 IP
         </Button>
       </div>
       <div className="relative max-w-sm">
@@ -294,7 +296,7 @@ function PoolTable({ pool }: { pool: CFIP[] }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.slice((current - 1) * 20, current * 20).map((item) => (
+              {items.map((item) => (
                 <TableRow key={item.ip}>
                   <TableCell className="max-w-52 whitespace-normal">
                     <p className="font-mono break-all">{item.ip}</p>
@@ -331,29 +333,7 @@ function PoolTable({ pool }: { pool: CFIP[] }) {
               ))}
             </TableBody>
           </Table>
-          {pages > 1 && (
-            <div className="flex items-center justify-end gap-3 text-sm">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={current === 1}
-                onClick={() => setPage(current - 1)}
-              >
-                上一页
-              </Button>
-              <span className="tabular-nums text-muted-foreground">
-                {current} / {pages}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={current === pages}
-                onClick={() => setPage(current + 1)}
-              >
-                下一页
-              </Button>
-            </div>
-          )}
+          <ListPagination data={data} onPage={setPage} loading={loading}/>
         </>
       ) : (
         <p className="py-10 text-center text-sm text-muted-foreground">

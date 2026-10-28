@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Activity, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { cancelScan } from "@/app/actions";
@@ -29,58 +29,20 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import type { ScanRecord } from "@/lib/types";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import type { PageResult } from "@/lib/pagination";
+import type { ScanRecord, ScanResult } from "@/lib/types";
 
-export function ProbeDetail({ initial }: { initial: ScanRecord }) {
-  const [record, setRecord] = useState(initial);
-  const [error, setError] = useState("");
-  const [stopping, setStopping] = useState(false);
+export function ProbeDetail({ initial }: { initial: ScanRecord & PageResult<ScanResult> }) {
   const [filter, setFilter] = useState("all");
-  const [page, setPage] = useState(1);
-  const running = record.status === "running";
-  const id = record.id;
-  useEffect(() => {
-    if (!running) return;
-    let disposed = false;
-    const controller = new AbortController();
-    const load = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await fetch(`/api/scan-records/${id}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "读取检测记录失败");
-        if (disposed) return;
-        setRecord(data);
-        setError("");
-        if (data.status !== "running") setStopping(false);
-      } catch (e) {
-        if (!disposed && !(e instanceof DOMException && e.name === "AbortError"))
-          setError(e instanceof Error ? e.message : "读取检测记录失败");
-      }
-    };
-    const timer = window.setInterval(load, 1500);
-    return () => {
-      disposed = true;
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [id, running]);
-  const rate = percent(record.success, record.completed);
-  const results = (record.results || [])
-    .filter((row) => filter === "all" || row.status === filter)
-    .sort((a, b) => {
-      if (a.status !== b.status) return a.status === "success" ? -1 : 1;
-      return a.delay_ms - b.delay_ms || a.ip.localeCompare(b.ip);
-    });
-  const pages = Math.max(1, Math.ceil(results.length / 50));
-  const current = Math.min(page, pages);
-  const successIPs = record.results
-    .filter((row) => row.status === "success")
-    .sort((a, b) => a.delay_ms - b.delay_ms)
-    .map((row) => row.ip);
+  const {data,setPage,error,loading}=usePagedList("scan-detail",initial,{id:String(initial.id),filter},data=>(data as typeof initial).status==="running" ? 2000 : 10000);
+  const record=data as typeof initial;
+  const [stopping,setStopping]=useState(false);
+  const running=record.status==="running";
+  const rate=percent(record.success,record.completed);
+  const results=data.items;
+  const successIPs=results.filter(row=>row.status==="success").map(row=>row.ip);
   return (
     <div className="space-y-6">
       <Link
@@ -256,7 +218,7 @@ export function ProbeDetail({ initial }: { initial: ScanRecord }) {
               }}
             >
               <Copy />
-              复制可用 IP
+              复制本页可用 IP
             </Button>
           </div>
         </div>
@@ -272,9 +234,7 @@ export function ProbeDetail({ initial }: { initial: ScanRecord }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {results
-                  .slice((current - 1) * 50, current * 50)
-                  .map((row) => (
+                {results.map((row) => (
                     <TableRow key={row.ip}>
                       <TableCell className="pl-6 font-mono">{row.ip}</TableCell>
                       <TableCell>
@@ -310,29 +270,7 @@ export function ProbeDetail({ initial }: { initial: ScanRecord }) {
                   ))}
               </TableBody>
             </Table>
-            <div className="flex items-center justify-between border-t p-4 text-xs text-muted-foreground">
-              <span>
-                {results.length} 条结果 · {current} / {pages}
-              </span>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={current === 1}
-                  onClick={() => setPage(current - 1)}
-                >
-                  上一页
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={current === pages}
-                  onClick={() => setPage(current + 1)}
-                >
-                  下一页
-                </Button>
-              </div>
-            </div>
+            <ListPagination data={data} onPage={setPage} loading={loading}/>
           </>
         ) : (
           <p className="border-t p-10 text-center text-sm text-muted-foreground">

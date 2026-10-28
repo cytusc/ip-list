@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useEffect, useRef, useState, useTransition, cloneElement, type ReactNode, type ReactElement } from "react";
+import { useId, useState, useTransition, cloneElement, type ReactNode, type ReactElement } from "react";
 import { Activity, Copy, Download, KeyRound, Loader2, Plus, Radio, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -17,6 +17,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import type { PageResult } from "@/lib/pagination";
 import type { LatencyProbe } from "@/lib/types";
 
 type Config = {
@@ -41,44 +44,16 @@ const blank: Config = {
   enabled: true,
 };
 
-export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe[]; tlsPin: string }) {
-  const [items, setItems] = useState(initial);
+export function LatencyProbeManager({ initial, tlsPin }: { initial: PageResult<LatencyProbe>; tlsPin: string }) {
+  const {data,setData,setPage,refresh,loading,error:statusError}=usePagedList("latency-probes",initial,{},10000);
+  const items=data.items;
+  function setItems(update:(items:LatencyProbe[])=>LatencyProbe[]) {setData(current=>({...current,items:update(current.items)}));refresh();}
   const [draft, setDraft] = useState(blank);
   const [deploy, setDeploy] = useState<LatencyProbe | null>(null);
   const [platforms, setPlatforms] = useState<Record<string, string>>({});
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
 
-  const [statusError, setStatusError] = useState("");
-  const pendingRef = useRef(pending);
-  useEffect(() => { pendingRef.current = pending; }, [pending]);
-  useEffect(() => {
-    const controller = new AbortController();
-    let inFlight = false;
-    async function refresh() {
-      if (document.hidden || inFlight || pendingRef.current) return;
-      inFlight = true;
-      try {
-        const response = await fetch("/api/latency-probes", { cache: "no-store", signal: controller.signal });
-        if (!response.ok) throw new Error("状态刷新失败");
-        const updated: LatencyProbe[] = await response.json();
-        if (!controller.signal.aborted && !pendingRef.current) {
-          // Only telemetry changes; preserve editor drafts and local mutations.
-          setItems(current => current.map(item => {
-            const remote = updated.find(value => value.id === item.id);
-            return remote ? { ...item, online: remote.online, last_seen: remote.last_seen } : item;
-          }));
-          setStatusError("");
-        }
-      } catch {
-        if (!controller.signal.aborted) setStatusError("状态刷新失败，当前显示上次获取的状态，请检查连接");
-      } finally { inFlight = false; }
-    }
-    void refresh();
-    const timer = window.setInterval(refresh, 10000);
-    document.addEventListener("visibilitychange", refresh);
-    return () => { controller.abort(); clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
-  }, []);
 
   function updateDraft<K extends keyof Config>(key: K, value: Config[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -92,7 +67,8 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
         toast.error(result.error);
         return;
       }
-      setItems((current) => [result.probe, ...current]);
+      setPage(1);
+      refresh();
       setDraft(blank);
       setCredentials((current) => ({ ...current, [result.probe.id]: result.token }));
       setDeploy(result.probe);
@@ -293,7 +269,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">已配置的探针</h2>
-          <span className="text-xs text-muted-foreground">{items.length} 个</span>
+          <span className="text-xs text-muted-foreground">{data.total} 个</span>
         </div>
         <p className="text-xs text-muted-foreground">在线状态每 10 秒刷新；IP 检测超时不代表探针离线。</p>
         {statusError && <p role="alert" className="text-sm text-amber-700">{statusError}</p>}
@@ -313,6 +289,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: LatencyProbe
             </div></td>
           </tr>)}</tbody>
         </table></div> : <div className="rounded-xl border border-dashed bg-white p-8 text-center text-sm text-muted-foreground">还没有探针。创建后可获取一键部署命令。</div>}
+        <ListPagination data={data} onPage={setPage} loading={loading}/>
       </section>
 
       <div className="rounded-lg border bg-slate-50 p-4 text-xs leading-5 text-muted-foreground">

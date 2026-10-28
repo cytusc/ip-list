@@ -8,6 +8,8 @@ import { startScan, restoreProtocolNetwork } from "@/app/actions";
 import { nodeProtocol, protocolLabels } from "@/lib/protocol";
 import { networkAddressCount as size } from "@/lib/network";
 import { NetworkSelector } from "@/components/network-selector";
+import { useListOptions } from "@/components/use-list-options";
+import { ListPagination } from "@/components/list-pagination";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -81,8 +83,6 @@ export function NewProbeDialog({
 }
 
 function ProbeForm({
-  nodes,
-  networks,
   defaults,
   activeProtocol,
   onStarted,
@@ -96,18 +96,18 @@ function ProbeForm({
   onDone: () => void;
 }) {
   const router = useRouter();
-  const availableNodes = nodes.filter((node) => node.enabled && node.share_uri);
+  const nodeOptions=useListOptions<Node>("nodes",defaults?.node_id ? [defaults.node_id] : []);
+  const networkOptions=useListOptions<Network>("networks",defaults?.network_ids);
+  const nodes=nodeOptions.items,networks=networkOptions.items;
   const [nodeID, setNodeID] = useState(
     () =>
-      availableNodes.find((node) => node.id === defaults?.node_id)?.id ??
-      availableNodes[0]?.id ??
+      defaults?.node_id ??
       "",
   );
   const [networkIDs, setNetworkIDs] = useState<string[]>(() =>
-    (defaults?.network_ids ?? []).filter((id) =>
-      networks.some((network) => network.id === id && network.enabled),
-    ),
+    defaults?.network_ids ?? [],
   );
+  const availableNodes=[...new Map([...nodeOptions.data.items,...nodes.filter(node=>node.id===nodeID)].map(node=>[node.id,node])).values()].filter(node=>node.enabled && node.share_uri);
   const [url, setURL] = useState(
     () => defaults?.url || "https://www.gstatic.com/generate_204",
   );
@@ -160,7 +160,7 @@ function ProbeForm({
             const result = await startScan({
               node_id: nodeID,
               network_ids: networkIDs.filter((id) =>
-                availableNetworks.some((network) => network.id === id),
+                !poolNetworks.some((network) => network.id === id && !network.enabled),
               ),
               url,
               timeout_ms: timeout,
@@ -197,6 +197,7 @@ function ProbeForm({
               <SelectValue placeholder="请选择已导入的节点" />
             </SelectTrigger>
             <SelectContent>
+              <Input aria-label="搜索检测节点" value={nodeOptions.search} onChange={event=>nodeOptions.setSearch(event.target.value)} placeholder="搜索节点" onKeyDown={event=>event.stopPropagation()}/>
               {availableNodes.map((node) => (
                 <SelectItem value={node.id} key={node.id}>
                   {node.name} ·{" "}
@@ -204,6 +205,7 @@ function ProbeForm({
                     nodeProtocol(node.share_uri)}
                 </SelectItem>
               ))}
+              <ListPagination data={nodeOptions.data} onPage={nodeOptions.setPage} loading={nodeOptions.loading}/>
             </SelectContent>
           </Select>
           <p className="text-xs leading-5 text-muted-foreground">
@@ -236,6 +238,7 @@ function ProbeForm({
         <legend className="mb-2 text-sm font-medium">选择已配置网段</legend>
         <NetworkSelector
           networks={poolNetworks}
+          options={networkOptions}
           value={networkIDs}
           onChange={setNetworkIDs}
           disabled={busy}

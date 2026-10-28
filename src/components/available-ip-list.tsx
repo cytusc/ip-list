@@ -29,6 +29,9 @@ import { addBlacklist } from "@/app/actions";
 
 import { ProbeLatencyStrip } from "@/components/probe-latency-strip";
 import { protocolLabels } from "@/lib/protocol";
+import type { PageResult } from "@/lib/pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import { ListPagination } from "@/components/list-pagination";
 const protocolBadgeColors: Record<string, string> = {
   "vless/httpupgrade": "border-blue-200 bg-blue-50 text-blue-800",
   "vless/xhttp": "border-violet-200 bg-violet-50 text-violet-800",
@@ -36,27 +39,23 @@ const protocolBadgeColors: Record<string, string> = {
   "vless/ws": "border-cyan-200 bg-cyan-50 text-cyan-800",
   "vless/tcp": "border-rose-200 bg-rose-50 text-rose-800",
 };
-const pageSize = 20;
 const formatTime = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
 
 export function AvailableIPList({
   initialItems,
 }: {
-  initialItems: AvailableIP[];
+  initialItems: PageResult<AvailableIP>;
 }) {
   const [linkIP, setLinkIP] = useState<string | null>(null);
-  const [items, setItems] = useState(initialItems);
   const [search, setSearch] = useState("");
   const [protocol, setProtocol] = useState("all");
   const [region, setRegion] = useState("all");
   const [provider, setProvider] = useState("all");
-  const [page, setPage] = useState(1);
-  const [refreshing, setRefreshing] = useState(false);
+  const {data,setPage,refresh:reload,loading:refreshing,error}=usePagedList("available-ips",initialItems,{search:search.trim(),protocol,region,provider},10000);
+  const items=data.items;
   const [locationVersion, setLocationVersion] = useState(0);
-  const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const inFlight = useRef(false);
   const [locations, setLocations] = useState<Record<string, IPLocation | null>>({});
   const locationCache = useRef<Record<string, IPLocation | null>>({});
   const locationIPs = items.map(item => item.ip).join(",");
@@ -87,11 +86,12 @@ export function AvailableIPList({
   }, [locationIPs, locationVersion]);
 
   const countries = [...new Set([
+    ...(data.countries || []),
     ...items.flatMap(item => locations[item.ip]?.country ? [locations[item.ip]!.country] : []),
     ...(region !== "all" && region !== "unknown" ? [region] : []),
   ])].sort((a, b) => countryName(a).localeCompare(countryName(b), "zh-CN"));
   const providers = [...new Set([
-    ...items.map(item => item.provider?.trim() || "").filter(Boolean),
+    ...(data.providers || []),
     ...(provider.startsWith("provider:") ? [provider.slice(9)] : []),
   ])].sort((a, b) => a.localeCompare(b, "zh-CN"));
   const locationsResolved = items.filter(item => locations[item.ip] !== undefined).length;
@@ -99,86 +99,21 @@ export function AvailableIPList({
   function clearFilters() {
     setSearch(""); setProtocol("all"); setRegion("all"); setProvider("all"); setPage(1);
   }
-  const filtered = items.filter(
-    (item) =>
-      (item.ip.includes(search.trim()) ||
-        `${item.asn || ""} ${item.provider || ""}`
-          .toLowerCase()
-          .includes(search.trim().toLowerCase()) ||
-        item.checks.some((c) =>
-          c.node_name.toLowerCase().includes(search.trim().toLowerCase()),
-        )) &&
-      (protocol === "all" || item.checks.some((c) => c.protocol === protocol)) &&
-      (region === "all" || (region === "unknown" ? locations[item.ip] === null : locations[item.ip]?.country === region)) &&
-      (provider === "all" || (provider === "missing" ? !item.provider?.trim() : item.provider?.trim() === provider.slice(9))),
-  );
-  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const currentPage = Math.min(page, pageCount);
-  const visible = filtered.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize,
-  );
-
-  // Refresh without replacing the list with a loading screen or resetting filters.
-  useEffect(() => {
-    const controller = new AbortController();
-    const timer = setInterval(() => {
-      if (document.hidden || inFlight.current) return;
-      inFlight.current = true;
-      fetch("/api/available-ips", {
-        cache: "no-store",
-        signal: controller.signal,
-      })
-        .then(async (response) => {
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.error);
-          setItems(data);
-          setError("");
-        })
-        .catch(() => {
-          if (!controller.signal.aborted)
-            setError("自动更新失败，当前显示上次结果，请刷新重试。");
-        })
-        .finally(() => {
-          inFlight.current = false;
-        });
-    }, 10000);
-    return () => {
-      clearInterval(timer);
-      controller.abort();
-    };
-  }, []);
-
-  async function refresh() {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setRefreshing(true);
-    try {
-      const response = await fetch("/api/available-ips", { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      setItems(data);
+  const visible=items;
+  function refresh() {
+      reload();
       locationCache.current = {};
       setLocations({});
       setLocationVersion((version) => version + 1);
-      setError("");
-    } catch (error) {
-      setError(
-        error instanceof Error ? error.message : "获取可用 IP 失败，请重试",
-      );
-    } finally {
-      setRefreshing(false);
-      inFlight.current = false;
-    }
   }
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(
-        filtered.map((item) => item.ip).join("\n"),
+        items.map((item) => item.ip).join("\n"),
       );
       setCopied(true);
-      toast.success(`已复制 ${filtered.length} 个 IP`);
+      toast.success(`已复制当前页 ${items.length} 个 IP`);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       toast.error("复制失败，请手动选择 IP 复制");
@@ -200,7 +135,7 @@ export function AvailableIPList({
       toast.error(result.error);
       return;
     }
-    setItems((current) => current.filter((item) => item.ip !== ip));
+    reload();
     toast.success(`${ip} 已加入黑名单`);
   }
 
@@ -239,7 +174,7 @@ export function AvailableIPList({
             <h2 className="font-semibold">
               可用地址{" "}
               <span className="ml-2 text-sm font-normal text-muted-foreground">
-                {items.length} 个 IP
+                {data.allTotal ?? data.total} 个 IP
               </span>
             </h2>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
@@ -259,10 +194,10 @@ export function AvailableIPList({
             <Button
               size="sm"
               variant="outline"
-              disabled={!filtered.length}
+              disabled={!items.length}
               onClick={copy}
             >
-              {copied ? <Check /> : <Copy />}复制筛选 IP
+              {copied ? <Check /> : <Copy />}复制当前页 IP
             </Button>
           </div>
         </div>
@@ -318,7 +253,7 @@ export function AvailableIPList({
           {filtersActive && <Button variant="ghost" onClick={clearFilters}>清除筛选</Button>}
         </div>
         <p className="px-5 pb-3 text-xs text-muted-foreground" role="status">
-          匹配 {filtered.length} / {items.length} 个 IP
+          匹配 {data.total} / {data.allTotal ?? data.total} 个 IP
           {locationsResolved < items.length ? ` · 地区查询中 ${locationsResolved}/${items.length}，筛选结果会随查询更新` : " · 地区信息已加载"}
         </p>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 pb-4 text-xs text-muted-foreground" aria-label="探针色条图例">
@@ -426,10 +361,10 @@ export function AvailableIPList({
               <TableRow>
                 <TableCell colSpan={7} className="h-44 text-center">
                   <p className="font-medium">
-                    {items.length ? "没有匹配的 IP" : "暂无可用 IP"}
+                    {data.allTotal ? "没有匹配的 IP" : "暂无可用 IP"}
                   </p>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    {items.length
+                    {data.allTotal
                       ? "调整搜索词、地区、服务商或协议筛选后重试。"
                       : "先完成连通性测试，检测通过的 IP 会显示在这里；TLS 节点还需通过 3 次入口证书校验。"}
                   </p>
@@ -441,26 +376,9 @@ export function AvailableIPList({
         </Table>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t p-4 text-xs text-muted-foreground">
           <span aria-live="polite">
-            共 {filtered.length} 个 IP · 第 {currentPage} / {pageCount} 页
+            共 {data.total} 个 IP
           </span>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={currentPage === 1}
-              onClick={() => setPage(currentPage - 1)}
-            >
-              上一页
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={currentPage === pageCount}
-              onClick={() => setPage(currentPage + 1)}
-            >
-              下一页
-            </Button>
-          </div>
+          <ListPagination data={data} onPage={setPage} loading={refreshing}/>
         </div>
       </div>
     </div>

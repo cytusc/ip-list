@@ -14,6 +14,7 @@ export type DNSRecord = {
   action: string; reason: string; applied: boolean;
 };
 export type DNSReport = {
+  candidate_count?: number;
   mode?: string; domain?: string; config?: DNSConfig; started_at?: string; finished_at?: string;
   error?: string; warning?: string; records?: DNSRecord[];
   candidates?: { ip: string; country: string; state: string; reason: string; delay_ms: number }[];

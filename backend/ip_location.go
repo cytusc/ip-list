@@ -109,6 +109,7 @@ func (a *app) availableIPLocation(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		var cached ipLocation
 		if err == nil && json.Unmarshal(raw, &cached) == nil {
+			a.cacheListCountry(r.Context(), ip.String(), cached)
 			respond(w, http.StatusOK, cached)
 			return
 		}
@@ -116,6 +117,9 @@ func (a *app) availableIPLocation(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 	defer cancel()
 	location, lookupErr := lookupIPLocation(ctx, http.DefaultClient, "https://api.123169.xyz", ip.String())
+	if lookupErr == nil {
+		a.cacheListCountry(r.Context(), ip.String(), location)
+	}
 	if a.redis != nil && r.Context().Err() == nil {
 		ttl := 24 * time.Hour
 		if lookupErr != nil {
@@ -128,4 +132,13 @@ func (a *app) availableIPLocation(w http.ResponseWriter, r *http.Request) {
 	}
 	// Unknown location must never prevent the available IP list from being used.
 	respond(w, http.StatusOK, location)
+}
+
+func (a *app) cacheListCountry(ctx context.Context, ip string, location ipLocation) {
+	if a.db == nil || len(location.Country) != 2 {
+		return
+	}
+	cacheCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer cancel()
+	_, _ = a.db.Exec(cacheCtx, `INSERT INTO dns_ip_locations(ip,country) VALUES($1::inet,$2) ON CONFLICT(ip) DO UPDATE SET country=excluded.country,checked_at=now() WHERE dns_ip_locations.country<>excluded.country OR dns_ip_locations.checked_at<now()-interval '1 hour'`, ip, location.Country)
 }

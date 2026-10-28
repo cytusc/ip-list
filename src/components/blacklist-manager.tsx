@@ -7,9 +7,15 @@ import { addBlacklist, removeBlacklist } from "@/app/actions";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { BlacklistedIP } from "@/lib/types";
+import type { PageResult } from "@/lib/pagination";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import { Input } from "@/components/ui/input";
 
-export function BlacklistManager({ initialItems }: { initialItems: BlacklistedIP[] }) {
-  const [items, setItems] = useState(initialItems);
+export function BlacklistManager({ initialItems }: { initialItems: PageResult<BlacklistedIP> }) {
+  const [search,setSearch]=useState("");
+  const {data,setPage,refresh,loading,error}=usePagedList("blacklist",initialItems,{search});
+  const items=data.items;
   const [value, setValue] = useState("");
   const [pending, startTransition] = useTransition();
 
@@ -27,7 +33,7 @@ export function BlacklistManager({ initialItems }: { initialItems: BlacklistedIP
       }
       toast.success(`已加入 ${result.added} 个，跳过重复 ${result.skipped} 个`);
       setValue("");
-      window.location.reload();
+      setPage(1);refresh();
     });
   }
 
@@ -38,7 +44,7 @@ export function BlacklistManager({ initialItems }: { initialItems: BlacklistedIP
         toast.error(result.error);
         return;
       }
-      setItems((current) => current.filter((item) => item.ip !== ip));
+      refresh();
       toast.success(`已从黑名单移除 ${ip}`);
     });
   }
@@ -71,7 +77,9 @@ export function BlacklistManager({ initialItems }: { initialItems: BlacklistedIP
       </section>
       <section className="overflow-hidden rounded-xl border bg-white">
         <div className="border-b p-5">
-          <h2 className="font-semibold">已屏蔽地址 <span className="ml-2 text-sm font-normal text-muted-foreground">{items.length} 个</span></h2>
+          <h2 className="font-semibold">已屏蔽地址 <span className="ml-2 text-sm font-normal text-muted-foreground">{data.total} 个</span></h2>
+          <Input aria-label="搜索黑名单 IP" placeholder="搜索 IP" className="mt-3 max-w-sm" value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}}/>
+          {error && <p role="alert" className="mt-2 text-sm text-destructive">{error}</p>}
         </div>
         {items.length ? (
           <ul className="divide-y">
@@ -88,8 +96,9 @@ export function BlacklistManager({ initialItems }: { initialItems: BlacklistedIP
             ))}
           </ul>
         ) : (
-          <div className="px-5 py-12 text-center text-sm text-muted-foreground">黑名单为空</div>
+          <div className="px-5 py-12 text-center text-sm text-muted-foreground">{search ? "没有匹配的 IP" : "黑名单为空"}</div>
         )}
+        <ListPagination data={data} onPage={setPage} loading={loading}/>
       </section>
     </div>
   );

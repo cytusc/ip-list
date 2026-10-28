@@ -2,7 +2,9 @@ import Link from "next/link";
 import { Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProbeLatencyChart } from "@/components/probe-latency-chart";
-import { getLatencyProbeHistory, getLatencyProbes } from "@/lib/queries";
+import { getLatencyProbeHistory } from "@/lib/queries";
+import { api } from "@/lib/api";
+import type { LatencyProbe } from "@/lib/types";
 
 export default async function LatencyProbeDetailPage({
   params,
@@ -11,12 +13,11 @@ export default async function LatencyProbeDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ ip?: string }>;
 }) {
-  const [{ id }, { ip }, probes] = await Promise.all([
+  const [{ id }, { ip }] = await Promise.all([
     params,
     searchParams,
-    getLatencyProbes(),
   ]);
-  const probe = probes.find((item) => item.id === id);
+  const probe = (await api<LatencyProbe[]>(`/latency-probes?id=${encodeURIComponent(id)}`)).data[0];
   const history = ip ? await getLatencyProbeHistory(id, ip) : [];
   return (
     <div className="space-y-6">

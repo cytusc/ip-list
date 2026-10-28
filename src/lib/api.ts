@@ -27,7 +27,7 @@ export async function api<T>(
           ...options.headers,
         },
         cache: "no-store",
-        signal: AbortSignal.timeout(12000),
+        signal: options.signal ? AbortSignal.any([options.signal,AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000),
       },
     );
   } catch {

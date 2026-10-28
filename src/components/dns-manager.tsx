@@ -11,9 +11,15 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import type { DNSConfig, DNSStatus } from "@/lib/dns";
+import type { DNSConfig, DNSStatus, DNSReport, DNSRecord } from "@/lib/dns";
 import type { LatencyProbe } from "@/lib/types";
 import { protocolLabels } from "@/lib/protocol";
+import { useListOptions } from "@/components/use-list-options";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import type { PageResult } from "@/lib/pagination";
+
+const emptyList:PageResult<never>={items:[],page:1,pageSize:50,total:0};
 
 const actionNames: Record<string, string> = { create: "新增", update: "更新", delete: "移除", hold: "保留", unchanged: "一致" };
 const stateNames: Record<string, string> = { healthy: "符合条件", failed: "不可用", unknown: "待确认" };
@@ -23,9 +29,16 @@ function countryName(code: string) {
   catch { return code || "未知"; }
 }
 
-export function DNSManager({ initialStatus, probes }: { initialStatus: DNSStatus; probes: LatencyProbe[] }) {
+export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
   const [status, setStatus] = useState(initialStatus);
   const [config, setConfig] = useState(initialStatus.config);
+  const records=usePagedList<DNSRecord>("dns-records",emptyList,{},5000);
+  const history=usePagedList<DNSStatus["history"][number]>("dns-history",emptyList,{},10000);
+  const [showCandidates,setShowCandidates]=useState(false);
+  const probeOptions=useListOptions<LatencyProbe>("latency-probes",config.probe_id ? [config.probe_id] : []);
+  const probes=[...probeOptions.data.items];
+  const selectedProbe=probeOptions.items.find(p=>p.id===config.probe_id);
+  if(selectedProbe && !probes.some(p=>p.id===selectedProbe.id))probes.push(selectedProbe);
   const [pending, startTransition] = useTransition();
   const [pollError, setPollError] = useState("");
   const busy = status.running || !!status.requested;
@@ -89,7 +102,10 @@ export function DNSManager({ initialStatus, probes }: { initialStatus: DNSStatus
         <div className="space-y-2"><Label htmlFor="dns-probe">依据探针</Label>
           <Select value={config.probe_id || "any"} onValueChange={v => update("probe_id", v === "any" ? "" : v)} disabled={pending || busy}>
             <SelectTrigger id="dns-probe"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="any">任一在线探针验证通过</SelectItem>
+              <Input aria-label="搜索探针" placeholder="搜索探针名称" value={probeOptions.search} onChange={e=>probeOptions.setSearch(e.target.value)} onKeyDown={e=>e.stopPropagation()}/>
               {probes.map(p => <SelectItem key={p.id} value={p.id} disabled={!p.enabled}>{p.name}{!p.enabled ? "（停用）" : !p.online ? "（离线）" : ""}</SelectItem>)}
+              {probeOptions.error && <p role="alert" className="text-sm text-destructive">{probeOptions.error}</p>}
+              <ListPagination data={probeOptions.data} onPage={probeOptions.setPage} loading={probeOptions.loading}/>
             </SelectContent>
           </Select>
         </div>
@@ -118,16 +134,28 @@ export function DNSManager({ initialStatus, probes }: { initialStatus: DNSStatus
         {report.error && <p role="alert" className="text-destructive">{report.error}</p>}
         {report.warning && <p className="text-amber-700">{report.warning}</p>}
       </div>
+      {records.error && <p role="alert" className="px-5 text-sm text-destructive">{records.error}</p>}
       <Table><TableHeader><TableRow><TableHead className="pl-5">域名 / 地区</TableHead><TableHead>类型</TableHead><TableHead>云端 IP</TableHead><TableHead>计划 IP</TableHead><TableHead>处理结果</TableHead></TableRow></TableHeader><TableBody>
-        {report.records?.map(r => <TableRow key={`${r.name}/${r.type}`}><TableCell className="pl-5 align-top"><p className="font-mono">{r.name}</p><p className="mt-1 text-xs text-muted-foreground">{countryName(r.country)}</p></TableCell><TableCell className="align-top">{r.type}</TableCell>
+        {records.data.items.map(r => <TableRow key={`${r.name}/${r.type}`}><TableCell className="pl-5 align-top"><p className="font-mono">{r.name}</p><p className="mt-1 text-xs text-muted-foreground">{countryName(r.country)}</p></TableCell><TableCell className="align-top">{r.type}</TableCell>
           <TableCell className="align-top font-mono text-xs">{r.current.length ? r.current.map(ip => <p key={ip}>{ip}</p>) : "—"}</TableCell><TableCell className="align-top font-mono text-xs">{r.desired.length ? r.desired.map(ip => <p key={ip}>{ip}</p>) : "—"}</TableCell>
           <TableCell className="max-w-64 whitespace-normal align-top"><Badge variant="outline">{actionNames[r.action] || r.action}{r.applied && r.action !== "unchanged" ? " · 已提交" : report.mode === "preview" ? " · 预览" : !r.applied && ["create", "update", "delete"].includes(r.action) ? " · 未执行" : ""}</Badge>{r.reason && <p className="mt-2 text-xs text-muted-foreground">{r.reason}</p>}</TableCell>
         </TableRow>)}
-        {!report.records?.length && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground"><Globe className="mx-auto mb-3 size-6" />{report.finished_at ? "本轮没有可发布的地区记录。可在下方查看 IP 筛选结果。" : "尚无同步结果"}</TableCell></TableRow>}
+        {!records.data.items.length && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground"><Globe className="mx-auto mb-3 size-6" />{report.finished_at ? "本轮没有可发布的地区记录。可在下方查看 IP 筛选结果。" : "尚无同步结果"}</TableCell></TableRow>}
       </TableBody></Table>
+      <ListPagination data={records.data} onPage={records.setPage} loading={records.loading}/>
       <p className="p-5 text-xs text-muted-foreground">云端写入后仍需等待 DNS 缓存过期；当前 TTL 为 {status.config.ttl} 秒。预览仅查询，不修改解析。</p>
     </section>
-    {!!report.candidates?.length && <details className="rounded-xl border bg-white p-5"><summary className="cursor-pointer text-sm font-medium">IP 筛选明细（{report.candidates.length} 个）</summary><Table className="mt-4"><TableHeader><TableRow><TableHead>IP</TableHead><TableHead>地区</TableHead><TableHead>状态</TableHead><TableHead>说明</TableHead></TableRow></TableHeader><TableBody>{report.candidates.map(ip => <TableRow key={ip.ip}><TableCell className="font-mono">{ip.ip}</TableCell><TableCell>{ip.country ? countryName(ip.country) : "—"}</TableCell><TableCell>{stateNames[ip.state] || ip.state}</TableCell><TableCell className="whitespace-normal text-xs">{ip.reason}{ip.state === "healthy" && ` · 平均 ${ip.delay_ms.toFixed(1)} ms`}</TableCell></TableRow>)}</TableBody></Table></details>}
-    <section className="rounded-xl border bg-white p-5"><h2 className="mb-4 font-semibold">最近任务</h2>{status.history.length ? <ul className="divide-y">{status.history.map(h => <li key={h.id} className="flex flex-wrap justify-between gap-2 py-3 text-xs"><span>{timeText(h.started_at)} · {h.report.domain} · {h.report.mode === "preview" ? "预览" : "同步"}</span><span className={h.report.error ? "text-destructive" : "text-muted-foreground"}>{h.report.error || h.report.warning || "已完成"}</span></li>)}</ul> : <p className="text-sm text-muted-foreground">尚无任务记录</p>}</section>
+    {!!report.candidate_count && <details className="rounded-xl border bg-white p-5" onToggle={event=>setShowCandidates(event.currentTarget.open)}><summary className="cursor-pointer text-sm font-medium">IP 筛选明细（{report.candidate_count} 个）</summary>{showCandidates && <DNSCandidates/>}</details>}
+    <section className="rounded-xl border bg-white p-5"><h2 className="mb-4 font-semibold">最近任务</h2>{history.data.items.length ? <ul className="divide-y">{history.data.items.map(h => <li key={h.id} className="flex flex-wrap justify-between gap-2 py-3 text-xs"><span>{timeText(h.started_at)} · {h.report.domain} · {h.report.mode === "preview" ? "预览" : "同步"}</span><span className={h.report.error ? "text-destructive" : "text-muted-foreground"}>{h.report.error || h.report.warning || "已完成"}</span></li>)}</ul> : <p className="text-sm text-muted-foreground">尚无任务记录</p>}{history.error && <p role="alert" className="text-sm text-destructive">{history.error}</p>}<ListPagination data={history.data} onPage={history.setPage} loading={history.loading}/></section>
+  </div>;
+}
+
+
+function DNSCandidates() {
+  const list=usePagedList<NonNullable<DNSReport["candidates"]>[number]>("dns-candidates",emptyList,{},10000);
+  return <div className="mt-4">
+    {list.error && <p role="alert" className="text-sm text-destructive">{list.error}</p>}
+    <Table><TableHeader><TableRow><TableHead>IP</TableHead><TableHead>地区</TableHead><TableHead>状态</TableHead><TableHead>说明</TableHead></TableRow></TableHeader><TableBody>{list.data.items.map(ip=><TableRow key={ip.ip}><TableCell className="font-mono">{ip.ip}</TableCell><TableCell>{ip.country ? countryName(ip.country) : "—"}</TableCell><TableCell>{stateNames[ip.state] || ip.state}</TableCell><TableCell className="whitespace-normal text-xs">{ip.reason}{ip.state==="healthy" && ` · 平均 ${ip.delay_ms.toFixed(1)} ms`}</TableCell></TableRow>)}</TableBody></Table>
+    <ListPagination data={list.data} onPage={list.setPage} loading={list.loading}/>
   </div>;
 }

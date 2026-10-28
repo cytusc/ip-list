@@ -8,8 +8,6 @@ import {
   Search,
   Pencil,
   Trash2,
-  ChevronLeft,
-  ChevronRight,
   CircleCheck,
   CirclePause,
   Info,
@@ -50,51 +48,36 @@ import {
 import { NetworkRecheck } from "@/components/network-recheck";
 import { NodeImport } from "@/components/node-import";
 import { ConfigForm } from "@/components/config-form";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import type { PageResult } from "@/lib/pagination";
 
 export function ConfigManager({
   kind,
-  nodes,
-  networks,
+  initial,
 }: {
   kind: "nodes" | "networks";
-  nodes: Node[];
-  networks: Network[];
+  initial: PageResult<Node | Network>;
 }) {
   const isNode = kind === "nodes";
   const label = isNode ? "节点" : "网段";
-  const items = isNode ? nodes : networks;
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
-  const [page, setPage] = useState(1);
+  const {data,setPage,loading,error}=usePagedList(kind,initial,{search,status});
+  const items=data.items;
   const [editor, setEditor] = useState<{ item: Node | Network | null } | null>(
     null,
   );
   const [deleting, setDeleting] = useState<Node | Network | null>(null);
   const [deleteError, setDeleteError] = useState("");
   const [pending, startTransition] = useTransition();
-  const filtered = items.filter((item) => {
-    const term = search.trim().toLowerCase();
-    const text =
-      "address" in item
-        ? `${item.name} ${item.address} ${item.description}`
-        : `${item.name} ${item.cidr} ${item.description} ${item.asn} ${item.provider} ${(item.disabled_protocols || []).map((protocol) => protocolLabels[protocol] || protocol).join(" ")}`;
-    return (
-      text.toLowerCase().includes(term) &&
-      (status === "all" ||
-        (status === "pool-disabled"
-          ? "cidr" in item && !!item.disabled_protocols?.length
-          : item.enabled === (status === "enabled")))
-    );
-  });
-  const pageCount = Math.max(1, Math.ceil(filtered.length / 10));
-  const currentPage = Math.min(page, pageCount);
-  const visible = filtered.slice((currentPage - 1) * 10, currentPage * 10);
-  const enabledCount = items.filter((item) => item.enabled).length;
+  const visible=items;
+  const enabledCount=data.enabledCount ?? 0;
   const Icon = isNode ? Server : NetworkIcon;
   const stats = [
     {
       title: `${label}总数`,
-      value: items.length,
+      value: data.allTotal ?? data.total,
       description: `已添加的全部${label}`,
       icon: Icon,
       color: "bg-blue-50 text-blue-600",
@@ -108,7 +91,7 @@ export function ConfigManager({
     },
     {
       title: isNode ? "已停用节点" : "全局停用网段",
-      value: items.length - enabledCount,
+      value: (data.allTotal ?? data.total) - enabledCount,
       description: "保留配置，暂不参与检测",
       icon: CirclePause,
       color: "bg-amber-50 text-amber-600",
@@ -181,7 +164,7 @@ export function ConfigManager({
               variant="secondary"
               className="rounded-md font-normal tabular-nums"
             >
-              {items.length}
+              {data.total}
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -228,6 +211,7 @@ export function ConfigManager({
             </Select>
           </div>
         </div>
+        {error && <p role="alert" className="px-5 pb-3 text-sm text-destructive">{error}</p>}
         <Table>
           <TableHeader>
             <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
@@ -362,22 +346,23 @@ export function ConfigManager({
               <Icon className="size-7 text-slate-400" />
             </span>
             <h3 className="text-sm font-medium">
-              {items.length ? "没有匹配的配置" : `还没有${label}配置`}
+              {data.allTotal ? "没有匹配的配置" : `还没有${label}配置`}
             </h3>
             <p className="max-w-sm text-xs leading-6 text-muted-foreground">
-              {items.length
+              {data.allTotal
                 ? "尝试更换关键词，或清除筛选条件。"
                 : isNode
                   ? "添加第一个节点，用于测试网段内 IP 的代理可用性。"
                   : "添加 IPv4 或 IPv6 网段，供代理节点和 CF 检测复用。"}
             </p>
-            {items.length ? (
+            {data.allTotal ? (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
                   setSearch("");
                   setStatus("all");
+                  setPage(1);
                 }}
               >
                 清除筛选
@@ -394,36 +379,7 @@ export function ConfigManager({
             )}
           </div>
         )}
-        <div className="flex items-center justify-between border-t px-6 py-4">
-          <p className="text-xs text-muted-foreground">
-            共 {filtered.length} 条配置 · 每页 10 条
-          </p>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">
-              {currentPage} / {pageCount}
-            </span>
-            <Button
-              variant="outline"
-              size="icon"
-              className="size-8 bg-white"
-              aria-label="上一页"
-              disabled={currentPage === 1}
-              onClick={() => setPage(currentPage - 1)}
-            >
-              <ChevronLeft />
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              className="size-8 bg-white"
-              aria-label="下一页"
-              disabled={currentPage === pageCount}
-              onClick={() => setPage(currentPage + 1)}
-            >
-              <ChevronRight />
-            </Button>
-          </div>
-        </div>
+        <ListPagination data={data} onPage={setPage} loading={loading}/>
       </section>
       <p className="mt-5 flex items-start gap-2 text-xs leading-5 text-muted-foreground">
         <Info className="mt-0.5 size-3.5 shrink-0" />

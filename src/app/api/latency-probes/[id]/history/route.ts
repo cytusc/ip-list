@@ -13,7 +13,7 @@ export async function GET(
     const { data } = await api<LatencyProbeResult[]>(
       `/latency-probes/${encodeURIComponent(id)}/history?ip=${encodeURIComponent(ip)}&hours=${encodeURIComponent(hours)}`,
     );
-    const { data: probes } = await api<LatencyProbe[]>("/latency-probes");
+    const { data: probes } = await api<LatencyProbe[]>(`/latency-probes?id=${encodeURIComponent(id)}`);
     const probe = probes.find(value => value.id === id);
     if (!probe) return Response.json({ error: "探针不存在" }, { status: 404 });
     return Response.json({ items: data, probe, server_time: new Date().toISOString() }, { headers: { "Cache-Control": "no-store" } });

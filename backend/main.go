@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -236,6 +237,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /probe-agent/results", a.reportProbeResults)
 	mux.HandleFunc("POST /probe-agent/heartbeat", a.probeAgentHeartbeat)
 	mux.Handle("GET /blacklist", a.protected(http.HandlerFunc(a.listBlacklist)))
+	mux.Handle("GET /dns/{kind}", a.protected(http.HandlerFunc(a.listDNSItems)))
 	mux.Handle("POST /blacklist", a.protected(http.HandlerFunc(a.addBlacklist)))
 	mux.Handle("DELETE /blacklist", a.protected(http.HandlerFunc(a.deleteBlacklist)))
 	mux.Handle("POST /networks/{id}/recheck", a.protected(http.HandlerFunc(a.recheckNetwork)))
@@ -368,12 +370,37 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
-	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.* FROM nodes n ORDER BY created_at DESC) t"
+	search, status := r.URL.Query().Get("search"), r.URL.Query().Get("status")
+	text := "n.name||' '||n.address||' '||n.description"
+	extra := ""
 	if kind == "networks" {
-		query = "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT w.*,COALESCE((SELECT json_agg(p.protocol) FROM protocol_networks p WHERE p.network_id=w.id AND p.cidr=w.cidr),'[]'::json) AS disabled_protocols FROM networks w ORDER BY w.created_at DESC) t"
+		text = "n.name||' '||n.cidr::text||' '||n.description||' '||n.asn||' '||n.provider||' '||COALESCE((SELECT string_agg(p.protocol,' ') FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'')"
+		extra = ",COALESCE((SELECT json_agg(p.protocol ORDER BY p.protocol) FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'[]'::json) AS disabled_protocols"
 	}
+	where := " FROM " + kind + " n WHERE ($1='' OR position(lower($1) in lower(" + text + "))>0) AND ($2='' OR $2='all' OR ($2='enabled' AND n.enabled) OR ($2='disabled' AND NOT n.enabled)"
+	if kind == "networks" {
+		where += " OR ($2='pool-disabled' AND EXISTS(SELECT 1 FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr))"
+	}
+	where += ") AND ($3='' OR n.id::text=ANY(string_to_array($3,',')))"
+	ids := r.URL.Query().Get("ids")
+	if len(ids) > 20000 {
+		apiError(w, 422, "选择的配置过多", nil)
+		return
+	}
+	p, ok := a.listPage(w, r, 50, "SELECT count(*)"+where, search, status, ids)
+	if !ok {
+		return
+	}
+	var total, enabled int
+	if err := a.db.QueryRow(r.Context(), "SELECT count(*),count(*) FILTER(WHERE enabled) FROM "+kind).Scan(&total, &enabled); err != nil {
+		dbError(w, err)
+		return
+	}
+	w.Header().Set("X-All-Total", strconv.Itoa(total))
+	w.Header().Set("X-Enabled-Count", strconv.Itoa(enabled))
+	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.*" + extra + where + " ORDER BY n.created_at DESC,n.id DESC LIMIT $4 OFFSET $5) t"
 	var data json.RawMessage
-	if err := a.db.QueryRow(r.Context(), query).Scan(&data); err != nil {
+	if err := a.db.QueryRow(r.Context(), query, search, status, ids, p.Size, p.Offset()).Scan(&data); err != nil {
 		dbError(w, err)
 		return
 	}

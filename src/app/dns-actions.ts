@@ -6,7 +6,7 @@ import type { DNSConfig, DNSStatus } from "@/lib/dns";
 
 export async function getDNSStatus(): Promise<DNSStatus> {
   await requireUser();
-  return (await api<DNSStatus>("/dns")).data;
+  return (await api<DNSStatus>("/dns?summary=1")).data;
 }
 
 export async function saveDNSConfig(config: DNSConfig) {

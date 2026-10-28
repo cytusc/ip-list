@@ -1,7 +1,7 @@
 import { api, ApiError } from "@/lib/api";
 export async function GET() {
   try {
-    return Response.json((await api("/cf-scan")).data, {
+    return Response.json((await api("/cf-scan?summary=1")).data, {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {

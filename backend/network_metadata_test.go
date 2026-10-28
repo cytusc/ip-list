@@ -26,6 +26,11 @@ func TestNetworkMetadataLookup(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/data/network-info/data.json" {
+					// Partial routes require querying the uncovered half as well.
+					if tc.name == "partial" && r.URL.Query().Get("resource") == "103.26.8.128" {
+						fmt.Fprint(w, `{"status":"ok","data":{"asns":[],"prefix":""}}`)
+						return
+					}
 					if r.URL.Query().Get("resource") != "103.26.8.0" {
 						t.Error("wrong resource")
 					}

@@ -75,18 +75,53 @@ func (a *app) getDNS(w http.ResponseWriter, r *http.Request) {
 	var requested string
 	var next time.Time
 	var report []byte
-	err = a.db.QueryRow(r.Context(), "SELECT running,requested,next_run_at,report FROM dns_settings WHERE id").Scan(&running, &requested, &next, &report)
+	reportColumn := "report"
+	if r.URL.Query().Get("summary") == "1" {
+		reportColumn = `(report-'records'-'candidates') || jsonb_build_object('candidate_count',jsonb_array_length(COALESCE(report->'candidates','[]'::jsonb)))`
+	}
+	err = a.db.QueryRow(r.Context(), "SELECT running,requested,next_run_at,"+reportColumn+" FROM dns_settings WHERE id").Scan(&running, &requested, &next, &report)
 	if err != nil {
 		dbError(w, err)
 		return
 	}
-	var history []byte
-	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(h),'[]') FROM (SELECT id,started_at,report FROM dns_sync_runs ORDER BY id DESC LIMIT 10) h`).Scan(&history)
+	history := []byte("[]")
+	if r.URL.Query().Get("summary") != "1" {
+		err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(h),'[]') FROM (SELECT id,started_at,report FROM dns_sync_runs ORDER BY id DESC LIMIT 10) h`).Scan(&history)
+	}
 	if err != nil {
 		dbError(w, err)
 		return
 	}
 	respond(w, 200, map[string]any{"config": c, "credentials_ready": dnsCredentialsReady(), "running": running, "requested": requested, "next_run_at": next, "report": json.RawMessage(report), "history": json.RawMessage(history)})
+}
+
+// Return only the visible rows of a report, never the full reports of every
+// historical run. History needs just the small summary fields.
+func (a *app) listDNSItems(w http.ResponseWriter, r *http.Request) {
+	kind := r.PathValue("kind")
+	var countSQL, dataSQL string
+	switch kind {
+	case "history":
+		countSQL = "SELECT count(*) FROM dns_sync_runs"
+		dataSQL = `SELECT COALESCE(json_agg(h),'[]') FROM (SELECT id,started_at,report-'records'-'candidates' AS report FROM dns_sync_runs ORDER BY id DESC LIMIT $1 OFFSET $2) h`
+	case "records", "candidates":
+		source := ` FROM dns_settings CROSS JOIN LATERAL jsonb_array_elements(COALESCE(report->'` + kind + `','[]'::jsonb)) WITH ORDINALITY AS e(value,ord) WHERE id`
+		countSQL = `SELECT count(*)` + source
+		dataSQL = `SELECT COALESCE(jsonb_agg(value ORDER BY ord),'[]'::jsonb) FROM (SELECT value,ord` + source + ` ORDER BY ord LIMIT $1 OFFSET $2) selected`
+	default:
+		apiError(w, 404, "列表不存在", nil)
+		return
+	}
+	p, ok := a.listPage(w, r, 50, countSQL)
+	if !ok {
+		return
+	}
+	var data json.RawMessage
+	if err := a.db.QueryRow(r.Context(), dataSQL, p.Size, p.Offset()).Scan(&data); err != nil {
+		dbError(w, err)
+		return
+	}
+	respond(w, 200, data)
 }
 func (a *app) saveDNS(w http.ResponseWriter, r *http.Request) {
 	var c dnsConfig

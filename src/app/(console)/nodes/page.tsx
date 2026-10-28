@@ -1,7 +1,7 @@
-import { getNodes } from "@/lib/queries";
+import { pagedQuery } from "@/lib/paged-query";
+import type { Node } from "@/lib/types";
 import { ConfigManager } from "@/components/config-manager";
 export const metadata = { title: "节点管理" };
 export default async function NodesPage() {
-  const nodes = await getNodes();
-  return <ConfigManager kind="nodes" nodes={nodes} networks={[]} />;
+  return <ConfigManager kind="nodes" initial={await pagedQuery<Node>("/nodes")} />;
 }

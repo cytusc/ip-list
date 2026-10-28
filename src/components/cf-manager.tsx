@@ -13,7 +13,11 @@ import {
   Settings2,
 } from "lucide-react";
 import { createCFTarget, deleteCFTarget, startCFScan } from "@/app/actions";
+import { ListPagination } from "@/components/list-pagination";
+import { usePagedList } from "@/components/use-paged-list";
+import type { PageResult } from "@/lib/pagination";
 import { NetworkSelector } from "@/components/network-selector";
+import { useListOptions } from "@/components/use-list-options";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,7 +45,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import type { CFDetail, CFTarget, Network, ScanJob } from "@/lib/types";
+import type { CFDetail, CFIP, CFTarget, Network, ScanJob } from "@/lib/types";
 import { networkAddressCount } from "@/lib/network";
 import { availabilityTone, formatTime, percent, scanStatusText } from "@/lib/cf";
 
@@ -88,12 +92,14 @@ function useCFScan() {
 }
 
 export function CFTargetList({
-  items,
+  initial,
   networks,
 }: {
-  items: CFTarget[];
+  initial: PageResult<CFTarget>;
   networks: Network[];
 }) {
+  const {data,setPage,loading,error}=usePagedList("cf-targets",initial);
+  const items=data.items;
   const { job } = useCFScan();
   const running = job?.status === "running";
   return (
@@ -124,6 +130,7 @@ export function CFTargetList({
       </div>
 
       {job && <ScanBanner job={job} />}
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
       {items.length ? (
         <CFTargetTable items={items} />
@@ -136,6 +143,7 @@ export function CFTargetList({
           </p>
         </div>
       )}
+      <ListPagination data={data} onPage={setPage} loading={loading}/>
     </div>
   );
 }
@@ -439,8 +447,7 @@ function CFScanConfig({
 
 /** 弹窗关闭即卸载，因此每次打开都会用上一轮检测的配置初始化表单。 */
 function ScanConfigForm({
-  items,
-  networks,
+  items: initialItems,
   job,
 }: {
   items: CFTarget[];
@@ -448,13 +455,17 @@ function ScanConfigForm({
   job: ScanJob | null;
 }) {
   const router = useRouter();
+  const targetOptions=useListOptions<CFTarget>("cf-targets");
+  const networkOptions=useListOptions<Network>("networks",job?.input?.network_ids);
+  const networks=networkOptions.items;
   const [targetID, setTargetID] = useState(
-    () => items.find((item) => item.url === job?.url)?.id ?? items[0]?.id ?? "",
+    () => initialItems.find((item) => item.url === job?.url)?.id ?? initialItems[0]?.id ?? "",
   );
+  const items=[...targetOptions.data.items];
+  const selectedTarget=[...targetOptions.items,...initialItems].find(item=>item.id===targetID);
+  if(selectedTarget && !items.some(item=>item.id===targetID))items.push(selectedTarget);
   const [selected, setSelected] = useState<string[]>(() =>
-    (job?.input?.network_ids ?? []).filter((id) =>
-      networks.some((network) => network.id === id && network.enabled),
-    ),
+    job?.input?.network_ids ?? [],
   );
   const [incremental, setIncremental] = useState(true);
   const [timeout, setTimeoutValue] = useState(() => job?.input?.timeout_ms ?? 5000);
@@ -512,11 +523,13 @@ function ScanConfigForm({
               <SelectValue placeholder="请先添加域名" />
             </SelectTrigger>
             <SelectContent>
+              <Input aria-label="搜索检测域名" value={targetOptions.search} onChange={event=>targetOptions.setSearch(event.target.value)} placeholder="搜索域名" onKeyDown={event=>event.stopPropagation()}/>
               {items.map((item) => (
                 <SelectItem key={item.id} value={item.id}>
                   {item.name} · {item.url}
                 </SelectItem>
               ))}
+              <ListPagination data={targetOptions.data} onPage={targetOptions.setPage} loading={targetOptions.loading}/>
             </SelectContent>
           </Select>
           <p className="text-xs leading-5 text-muted-foreground">
@@ -539,6 +552,7 @@ function ScanConfigForm({
         <p className="text-sm font-medium">检测网段</p>
         <NetworkSelector
           networks={networks}
+          options={networkOptions}
           value={selected}
           onChange={setSelected}
           disabled={active || pending}
@@ -601,47 +615,16 @@ function ScanConfigForm({
   );
 }
 
-export function CFDetailView({ initial }: { initial: CFDetail }) {
+export function CFDetailView({ initial }: { initial: CFDetail & PageResult<CFIP> }) {
   const router = useRouter();
-  const [detail, setDetail] = useState(initial);
-  const [error, setError] = useState("");
+  const [search,setSearch]=useState("");
+  const {data:detail,setPage,loading,error:loadError}=usePagedList("cf-detail",initial,{id:initial.target.id,search},15000);
+  const [error,setError]=useState("");
+  const id=initial.target.id;
   const [pending, start] = useTransition();
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const id = detail.target.id;
-  useEffect(() => {
-    let disposed = false;
-    const controller = new AbortController();
-    const refresh = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await fetch(`/api/cf/${id}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error);
-        if (!disposed) {
-          setDetail(data);
-          setError("");
-        }
-      } catch (e) {
-        if (!disposed && !(e instanceof DOMException && e.name === "AbortError"))
-          setError(e instanceof Error ? e.message : "刷新失败，请重试");
-      }
-    };
-    const timer = window.setInterval(refresh, 15000);
-    return () => {
-      disposed = true;
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [id]);
-  const { target, items, history } = detail;
-  const filtered = items.filter((item) => item.ip.includes(search.trim()));
-  const pages = Math.max(1, Math.ceil(filtered.length / 20));
-  const current = Math.min(page, pages);
+  const {target,items,history}=detail as typeof initial;
+  const filtered=items;
   const latest = history[0];
   async function copy(text: string) {
     try {
@@ -678,12 +661,12 @@ export function CFDetailView({ initial }: { initial: CFDetail }) {
           </Link>
         </Button>
       </div>
-      {error && (
+      {(error || loadError) && (
         <p
           role="alert"
           className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
         >
-          {error}
+          {error || loadError}
         </p>
       )}
 
@@ -735,7 +718,7 @@ export function CFDetailView({ initial }: { initial: CFDetail }) {
             onClick={() => copy(filtered.map((item) => item.ip).join("\n"))}
           >
             <Copy />
-            复制筛选结果
+            复制当前页
           </Button>
         </div>
         <div className="relative max-w-sm">
@@ -768,9 +751,7 @@ export function CFDetailView({ initial }: { initial: CFDetail }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered
-                  .slice((current - 1) * 20, current * 20)
-                  .map((item) => (
+                {filtered.map((item) => (
                     <TableRow key={item.ip}>
                       <TableCell className="max-w-52 whitespace-normal">
                         <p className="font-mono break-all">{item.ip}</p>
@@ -807,29 +788,7 @@ export function CFDetailView({ initial }: { initial: CFDetail }) {
                   ))}
               </TableBody>
             </Table>
-            {pages > 1 && (
-              <div className="flex items-center justify-end gap-3 text-sm">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={current === 1}
-                  onClick={() => setPage(current - 1)}
-                >
-                  上一页
-                </Button>
-                <span className="text-muted-foreground tabular-nums">
-                  {current} / {pages}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={current === pages}
-                  onClick={() => setPage(current + 1)}
-                >
-                  下一页
-                </Button>
-              </div>
-            )}
+            <ListPagination data={detail} onPage={setPage} loading={loading}/>
           </>
         ) : (
           <div className="rounded-lg border border-dashed px-6 py-10 text-center text-sm text-muted-foreground">

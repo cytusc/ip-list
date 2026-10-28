@@ -6,6 +6,8 @@ import { Check, ChevronsUpDown, Network as NetworkIcon, X } from "lucide-react";
 import type { Network } from "@/lib/types";
 import { networkAddressCount } from "@/lib/network";
 import { cn } from "@/lib/utils";
+import { ListPagination } from "@/components/list-pagination";
+import type { useListOptions } from "@/components/use-list-options";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -22,26 +24,22 @@ import {
 
 export function NetworkSelector({
   networks,
+  options,
   value,
   onChange,
   disabled = false,
 }: {
   networks: Network[];
+  options: ReturnType<typeof useListOptions<Network>>;
   value: string[];
   onChange: (ids: string[]) => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  const query=options.search,setQuery=options.setSearch;
   const available = networks.filter((network) => network.enabled);
   const selected = available.filter((network) => value.includes(network.id));
-  const words = query.trim().toLowerCase().split(/\s+/);
-  const filtered = available.filter((network) => {
-    const text = [network.name, network.cidr, network.asn, network.provider]
-      .join(" ")
-      .toLowerCase();
-    return words.every((word) => text.includes(word));
-  });
+  const filtered=options.data.items.filter(item=>available.some(network=>network.id===item.id));
   function toggle(id: string) {
     if (disabled) return;
     onChange(
@@ -62,7 +60,7 @@ export function NetworkSelector({
           <Button
             type="button"
             variant="outline"
-            disabled={disabled || !available.length}
+            disabled={disabled}
             aria-label="选择检测网段"
             className="w-full justify-between"
           >
@@ -89,7 +87,7 @@ export function NetworkSelector({
             />
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
               <span className="text-xs text-muted-foreground">
-                {filtered.length} 个结果
+                {options.data.total} 个结果
               </span>
               <div className="flex gap-1">
                 <Button
@@ -109,7 +107,7 @@ export function NetworkSelector({
                     ])
                   }
                 >
-                  全选搜索结果
+                  全选当前页
                 </Button>
                 <Button
                   type="button"
@@ -123,9 +121,10 @@ export function NetworkSelector({
               </div>
             </div>
             <CommandList aria-label="网段列表">
+              {options.error && <p role="alert" className="p-3 text-sm text-destructive">{options.error}</p>}
               {!filtered.length && (
                 <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-                  未找到匹配网段，请尝试其他关键词。
+                  {options.loading ? "正在加载网段…" : "未找到匹配网段，请尝试其他关键词。"}
                 </p>
               )}
               {filtered.map((network) => {
@@ -167,6 +166,7 @@ export function NetworkSelector({
                 );
               })}
             </CommandList>
+            <ListPagination data={options.data} onPage={options.setPage} loading={options.loading}/>
           </Command>
           <div className="flex shrink-0 items-center justify-between border-t px-3 py-2">
             <span role="status" className="text-xs text-muted-foreground">

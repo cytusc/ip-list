@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -100,11 +101,26 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 }
 
 func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	args := []any{q.Get("search"), q.Get("protocol"), q.Get("region"), q.Get("provider")}
+	p, ok := a.listPage(w, r, 20, availableIPCandidatesSQL+" SELECT count(*) FROM filtered", args...)
+	if !ok {
+		return
+	}
+	var facets []byte
+	if err := a.db.QueryRow(r.Context(), availableIPCandidatesSQL+` SELECT json_build_object(
+ 'allTotal',(SELECT count(*) FROM candidates),
+ 'countries',(SELECT COALESCE(json_agg(country ORDER BY country),'[]') FROM (SELECT DISTINCT country FROM candidates WHERE country<>'') c),
+ 'providers',(SELECT COALESCE(json_agg(provider ORDER BY provider),'[]') FROM (SELECT DISTINCT provider FROM candidates WHERE provider<>'') c))`, args...).Scan(&facets); err != nil {
+		dbError(w, err)
+		return
+	}
+	w.Header().Set("X-List-Meta", base64.StdEncoding.EncodeToString(facets))
 	rows, err := a.db.Query(r.Context(), `
+ `+availableIPCandidatesSQL+`, selected AS MATERIALIZED (SELECT * FROM filtered ORDER BY ip LIMIT $5 OFFSET $6)
  SELECT host(s.ip),s.protocol,s.delay_ms, '', '协议共用 IP 池',s.checked_at,COALESCE(info.asn,''),COALESCE(info.provider,'')
- FROM current_node_ip_pool s `+networkInfoJoin+`
- WHERE s.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
- ORDER BY s.ip,s.protocol`)
+ FROM selected info JOIN current_node_ip_pool s ON s.ip=info.ip AND s.available
+ ORDER BY s.ip,s.protocol`, append(args, p.Size, p.Offset())...)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -128,7 +144,15 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	probeRows, err := a.db.Query(r.Context(), availableIPProbesSQL)
+	ips := make([]string, 0, len(items))
+	for _, item := range items {
+		ips = append(ips, item.IP)
+	}
+	if len(ips) == 0 {
+		respond(w, 200, items)
+		return
+	}
+	probeRows, err := a.db.Query(r.Context(), availableIPProbesSQL, ips)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -167,7 +191,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 const availableIPProbesSQL = `WITH all_targets AS MATERIALIZED (
  SELECT DISTINCT ip FROM current_node_ip_pool WHERE available
 ), targets AS (
- SELECT ip FROM all_targets WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=all_targets.ip)
+ SELECT ip FROM unnest($1::inet[]) AS selected(ip)
 ), probes AS MATERIALIZED (
  SELECT p.*, (interval_seconds + CEIL((SELECT count(*) FROM all_targets)::numeric / concurrency)::integer * (CEIL(timeout_ms::numeric/1000)::integer+2) + 30) AS sample_window
  FROM latency_probes p WHERE p.enabled
@@ -190,6 +214,21 @@ LEFT JOIN LATERAL (
  ) sample
 ) recent ON true
 ORDER BY t.ip,p.created_at`
+
+// Filter unique addresses before applying LIMIT, then fetch protocol checks and
+// probe samples only for those addresses. Region filters use the shared cache.
+const availableIPCandidatesSQL = `WITH candidates AS MATERIALIZED (
+ SELECT s.ip,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider,COALESCE(l.country,'') AS country
+ FROM (SELECT DISTINCT ip FROM current_node_ip_pool WHERE available) s ` + networkInfoJoin + `
+ LEFT JOIN dns_ip_locations l ON l.ip=s.ip
+ WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
+), filtered AS (
+ SELECT c.* FROM candidates c WHERE
+ ($1='' OR position(lower($1) in lower(host(c.ip)||' '||c.asn||' '||c.provider||' 协议共用 IP 池'))>0)
+ AND ($2='' OR $2='all' OR EXISTS(SELECT 1 FROM current_node_ip_pool p WHERE p.ip=c.ip AND p.available AND p.protocol=$2))
+ AND ($3='' OR $3='all' OR ($3='unknown' AND c.country='') OR c.country=$3)
+ AND ($4='' OR $4='all' OR ($4='missing' AND c.provider='') OR c.provider=substring($4 from 10))
+)`
 
 // IP ownership metadata is shared across node templates. Prefer the most
 // specific enabled range with metadata; leave unknown information empty.

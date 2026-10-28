@@ -210,8 +210,14 @@ const cfTargetStats = `(SELECT count(*) FROM cf_results r WHERE r.target_id=t.id
  ) AS checked_success`
 
 func (a *app) listCFTargets(w http.ResponseWriter, r *http.Request) {
+	search := r.URL.Query().Get("search")
+	where := ` FROM cf_targets t WHERE ($1='' OR position(lower($1) in lower(t.name||' '||t.url))>0)`
+	p, ok := a.listPage(w, r, 50, "SELECT count(*)"+where, search)
+	if !ok {
+		return
+	}
 	var data json.RawMessage
-	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(t),'[]') FROM (SELECT t.*,`+cfTargetStats+` FROM cf_targets t ORDER BY created_at DESC) t`).Scan(&data)
+	err := a.db.QueryRow(r.Context(), `WITH selected AS MATERIALIZED (SELECT t.*`+where+` ORDER BY t.created_at DESC,t.id DESC LIMIT $2 OFFSET $3) SELECT COALESCE(json_agg(t),'[]') FROM (SELECT t.*,`+cfTargetStats+` FROM selected t ORDER BY t.created_at DESC,t.id DESC) t`, search, p.Size, p.Offset()).Scan(&data)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -268,7 +274,12 @@ func (a *app) getCFTarget(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	err = a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_results s `+networkInfoJoin+` WHERE s.target_id=$1 AND s.available ORDER BY s.ip) r`, id).Scan(&items)
+	search := r.URL.Query().Get("search")
+	p, ok := a.listPage(w, r, 20, `SELECT count(*) FROM cf_results WHERE target_id=$1 AND available AND ($2='' OR position($2 in host(ip))>0)`, id, search)
+	if !ok {
+		return
+	}
+	err = a.db.QueryRow(r.Context(), `WITH selected AS MATERIALIZED (SELECT ip,http_status,checked_at FROM cf_results WHERE target_id=$1 AND available AND ($2='' OR position($2 in host(ip))>0) ORDER BY ip LIMIT $3 OFFSET $4) SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM selected s `+networkInfoJoin+` ORDER BY s.ip) r`, id, search, p.Size, p.Offset()).Scan(&items)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -318,6 +329,9 @@ func (a *app) latestCFScan(w http.ResponseWriter, r *http.Request) {
 			job.Status = "interrupted"
 			job.Error = "任务已中断，请重新测试"
 		}
+		if r.URL.Query().Get("summary") == "1" {
+			job.Results = []scanResult{}
+		}
 		respond(w, 200, job)
 		return
 	}
@@ -326,8 +340,14 @@ func (a *app) latestCFScan(w http.ResponseWriter, r *http.Request) {
 
 // The shared pool outlives a single job, so it keeps its own listing.
 func (a *app) cfIPPool(w http.ResponseWriter, r *http.Request) {
+	search := r.URL.Query().Get("search")
+	where := ` FROM cf_ip_pool s WHERE s.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) AND ($1='' OR position($1 in host(s.ip))>0)`
+	p, ok := a.listPage(w, r, 20, "SELECT count(*)"+where, search)
+	if !ok {
+		return
+	}
 	var data json.RawMessage
-	err := a.db.QueryRow(r.Context(), `SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM cf_ip_pool s `+networkInfoJoin+` WHERE s.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) ORDER BY s.ip) r`).Scan(&data)
+	err := a.db.QueryRow(r.Context(), `WITH selected AS MATERIALIZED (SELECT s.ip,s.http_status,s.checked_at`+where+` ORDER BY s.ip LIMIT $2 OFFSET $3) SELECT COALESCE(json_agg(r),'[]') FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM selected s `+networkInfoJoin+` ORDER BY s.ip) r`, search, p.Size, p.Offset()).Scan(&data)
 	if err != nil {
 		dbError(w, err)
 		return

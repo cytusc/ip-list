@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -128,10 +129,14 @@ func (a *app) listScanRecords(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	protocol := r.URL.Query().Get("protocol")
+	p, ok := a.listPage(w, r, min(limit, 50), "SELECT count(*) FROM node_scan_rounds WHERE ($1='' OR protocol=$1)", protocol)
+	if !ok {
+		return
+	}
 	rows, err := a.db.Query(r.Context(), `SELECT r.id,r.job_id,r.round,r.protocol,r.node_name,r.scope,r.url,r.cidrs,r.input,
  r.started_at,r.finished_at,r.total,r.completed,r.success,`+scanRecordStatus+`,r.error
  FROM node_scan_rounds r WHERE ($1='' OR r.protocol=$1)
- ORDER BY r.started_at DESC,r.id DESC LIMIT $2`, protocol, limit)
+ ORDER BY r.started_at DESC,r.id DESC LIMIT $2 OFFSET $3`, protocol, p.Size, p.Offset())
 	if err != nil {
 		dbError(w, err)
 		return
@@ -163,8 +168,13 @@ func (a *app) getScanRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var item scanRecord
+	paged := r.URL.Query().Get("paged") == "1"
+	resultColumn := "r.results"
+	if paged {
+		resultColumn = "'[]'::jsonb"
+	}
 	err = a.db.QueryRow(r.Context(), `SELECT r.id,r.job_id,r.round,r.protocol,r.node_name,r.scope,r.url,r.cidrs,r.input,
- r.started_at,r.finished_at,r.total,r.completed,r.success,`+scanRecordStatus+`,r.error,r.results
+ r.started_at,r.finished_at,r.total,r.completed,r.success,`+scanRecordStatus+`,r.error,`+resultColumn+`
  FROM node_scan_rounds r WHERE r.id=$1`, id).Scan(&item.ID, &item.JobID, &item.Round, &item.Protocol,
 		&item.NodeName, &item.Scope, &item.URL, &item.CIDRs, &item.Input, &item.StartedAt, &item.FinishedAt,
 		&item.Total, &item.Completed, &item.Success, &item.Status, &item.Error, &item.Results)
@@ -177,6 +187,62 @@ func (a *app) getScanRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.attachLiveResults(r.Context(), &item)
+	if paged {
+		filter := r.URL.Query().Get("filter")
+		if filter != "" && filter != "all" && filter != "success" && filter != "failed" {
+			apiError(w, 422, "结果筛选无效", nil)
+			return
+		}
+		if item.Live {
+			results := make([]scanResult, 0, len(item.Results))
+			for _, row := range item.Results {
+				if filter == "" || filter == "all" || row.Status == filter {
+					results = append(results, row)
+				}
+			}
+			sort.Slice(results, func(i, j int) bool {
+				a, b := results[i], results[j]
+				if a.Status != b.Status {
+					return a.Status == "success"
+				}
+				if a.Delay != b.Delay {
+					return a.Delay < b.Delay
+				}
+				return a.IP < b.IP
+			})
+			page := 1
+			if raw := r.URL.Query().Get("page"); raw != "" {
+				var err error
+				page, err = strconv.Atoi(raw)
+				if err != nil || page < 1 {
+					apiError(w, 422, "页码必须是正整数", nil)
+					return
+				}
+			}
+			page = min(page, max(1, (len(results)+49)/50))
+			start := (page - 1) * 50
+			item.Results = results[start:min(start+50, len(results))]
+			w.Header().Set("X-Total-Count", strconv.Itoa(len(results)))
+			w.Header().Set("X-Page", strconv.Itoa(page))
+			w.Header().Set("X-Page-Size", "50")
+		} else {
+			const source = ` FROM node_scan_rounds r CROSS JOIN LATERAL jsonb_array_elements(r.results) e WHERE r.id=$1 AND ($2='' OR $2='all' OR e->>'status'=$2)`
+			p, ok := a.listPage(w, r, 50, "SELECT count(*)"+source, id, filter)
+			if !ok {
+				return
+			}
+			var payload []byte
+			err = a.db.QueryRow(r.Context(), `SELECT COALESCE(jsonb_agg(e),'[]'::jsonb) FROM (SELECT e`+source+` ORDER BY (e->>'status'='success') DESC,(e->>'delay_ms')::integer,e->>'ip' LIMIT $3 OFFSET $4) selected`, id, filter, p.Size, p.Offset()).Scan(&payload)
+			if err != nil {
+				dbError(w, err)
+				return
+			}
+			if err = json.Unmarshal(payload, &item.Results); err != nil {
+				dbError(w, err)
+				return
+			}
+		}
+	}
 	respond(w, 200, item)
 }
 

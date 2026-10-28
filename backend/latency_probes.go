@@ -117,10 +117,16 @@ func validProbeInput(input *latencyProbeInput, create bool) map[string]string {
 }
 
 func (a *app) listLatencyProbes(w http.ResponseWriter, r *http.Request) {
+	args := []any{r.URL.Query().Get("id"), r.URL.Query().Get("ids"), strings.TrimSpace(r.URL.Query().Get("search"))}
+	const filter = ` WHERE ($1='' OR id::text=$1) AND ($2='' OR id::text=ANY(string_to_array($2,','))) AND ($3='' OR name ILIKE '%'||$3||'%')`
+	p, ok := a.listPage(w, r, 50, "SELECT count(*) FROM latency_probes"+filter, args...)
+	if !ok {
+		return
+	}
 	rows, err := a.db.Query(r.Context(), `SELECT id::text,name,mode,tcp_port,interval_seconds,timeout_ms,concurrency,
 interface_name,enabled,last_seen,created_at,
 `+probeOnlineSQL+` AS online,`+probeSampleWindowSQL+`
-FROM latency_probes ORDER BY created_at DESC`)
+FROM latency_probes`+filter+` ORDER BY created_at DESC,id DESC LIMIT $4 OFFSET $5`, append(args, p.Size, p.Offset())...)
 	if err != nil {
 		dbError(w, err)
 		return
