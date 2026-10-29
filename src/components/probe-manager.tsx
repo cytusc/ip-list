@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { Activity, ArrowRight, Clock, History, Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { cancelScan, startScan } from "@/app/actions";
-import { protocolLabels } from "@/lib/protocol";
+import { protocolLabels, connectivityLabel } from "@/lib/protocol";
 import { availabilityTone, formatDuration, formatTime, percent } from "@/lib/cf";
 import { ListPagination } from "@/components/list-pagination";
 import { usePagedList } from "@/components/use-paged-list";
@@ -56,7 +56,7 @@ export function ProbeList({
   const {data,setPage,refresh,loading,error}=usePagedList("scan-records",initial,{protocol},data=>(data as typeof initial).active ? 2000 : 10000);
   const [stopping,setStopping]=useState(false);
   const active=(data as typeof initial).active;
-  const protocols=Object.keys(protocolLabels);
+  const protocols=["grpc",...Object.keys(protocolLabels)];
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -67,7 +67,7 @@ export function ProbeList({
           </div>
           <h1 className="text-2xl font-semibold">连通性检测记录</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            每轮检测保存为一条记录，可回看该轮的可用 IP、延迟与变化。同一协议池的所有节点共用结果。
+            每轮检测保存为一条记录，可回看该轮的可用 IP、延迟与变化。仅使用 gRPC 检测，所有协议共用结果。
           </p>
           <Link
             href="/available-ips"
@@ -140,7 +140,7 @@ export function ProbeList({
                 <SelectItem value="all">全部协议</SelectItem>
                 {protocols.map((value) => (
                   <SelectItem value={value} key={value}>
-                    {protocolLabels[value] || value}
+                    {value === "grpc" ? connectivityLabel : protocolLabels[value] || value}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -260,7 +260,7 @@ function RecordTable({
                   <div className="min-w-0">
                     <p className="truncate font-medium">{item.node_name}</p>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      {protocolLabels[item.protocol] || item.protocol} · 第{" "}
+                      {item.protocol === "grpc" ? connectivityLabel : protocolLabels[item.protocol] || item.protocol} · 第{" "}
                       {item.round} 轮 ·{" "}
                       {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测" : "全量"}
                     </p>
@@ -340,7 +340,7 @@ function RecordTable({
                       {item.node_name}
                     </Link>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {protocolLabels[item.protocol] || item.protocol}
+                      {item.protocol === "grpc" ? connectivityLabel : protocolLabels[item.protocol] || item.protocol}
                     </p>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">

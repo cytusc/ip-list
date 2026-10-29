@@ -134,7 +134,11 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "请先为该节点添加有效的 VLESS / Trojan 链接", nil)
 		return
 	}
-	protocol := nodePoolProtocol(raw)
+	protocol := nodeConnectivityProtocol(raw)
+	if protocol == "" {
+		apiError(w, 422, "连通性检测仅使用 gRPC 节点，结果供所有协议共用", nil)
+		return
+	}
 	rows, err := a.db.Query(r.Context(), `SELECT w.id::text,w.cidr::text FROM networks w WHERE w.id=ANY($1::uuid[]) AND w.enabled
  AND NOT EXISTS(SELECT 1 FROM protocol_networks p WHERE p.network_id=w.id AND p.cidr=w.cidr AND p.protocol=$2)`, input.NetworkIDs, protocol)
 	if err != nil {
@@ -198,7 +202,10 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 
 // Rechecks share the normal task lease and persistence, but keep existing patrol schedules.
 func (a *app) launchNodeScan(ctx context.Context, userID string, input scanInput, raw, name string, template map[string]any, cidrs []string, ips []netip.Addr, keepSchedule bool) (scanJob, int, string) {
-	protocol := nodePoolProtocol(raw)
+	protocol := nodeConnectivityProtocol(raw)
+	if protocol == "" {
+		return scanJob{}, 422, "连通性检测仅使用 gRPC 节点"
+	}
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
 		return scanJob{}, 500, "无法创建任务"

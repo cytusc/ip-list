@@ -87,28 +87,27 @@ func TestAvailableIPLifecycle(t *testing.T) {
 		}
 		return own
 	}
-	first, second := makeJob("httpupgrade"), makeJob("grpc")
+	first := makeJob("grpc")
+	makeJob("ws")
+	first.Protocol = connectivityProtocol
 	first.Results = []scanResult{{IP: "192.0.2.91", Status: "success", Delay: 30}, {IP: "2001:db8::91", Status: "failed"}}
-	second.Results = []scanResult{{IP: "192.0.2.91", Status: "success", Delay: 50}}
 	save(first)
-	save(second)
 	if items := list(); len(items) != 1 || len(items[0].Checks) != 2 {
-		t.Fatalf("cross-node merge: %+v", items)
+		t.Fatalf("shared protocols: %+v", items)
 	}
-
 	links := func(want int) {
 		t.Helper()
 		w := httptest.NewRecorder()
 		a.generateIPLinks(w, httptest.NewRequest("GET", "/available-ips/links?ip=192.0.2.91", nil))
 		if want == 0 {
 			if w.Code != 409 {
-				t.Fatalf("stale link generated: %d", w.Code)
+				t.Fatalf("stale links: %d", w.Code)
 			}
 			return
 		}
 		var result []generatedLink
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil || len(result) != want {
-			t.Fatalf("links response: %d", w.Code)
+			t.Fatalf("links: %d %s", w.Code, w.Body.String())
 		}
 	}
 	links(2)
@@ -129,38 +128,29 @@ func TestAvailableIPLifecycle(t *testing.T) {
 	if got := list()[0]; got.ASN != "AS64500" || got.Provider != "Specific" {
 		t.Fatalf("specific metadata: %+v", got)
 	}
-	// Database data remains available without Redis or an in-memory scan job.
+	// A gRPC failure removes the IP for all protocols; older success cannot resurrect it.
 	later := first.FinishedAt.Add(time.Second)
 	first.FinishedAt = &later
 	first.Results[0].Status = "failed"
 	save(first)
-	if items := list(); len(items) != 1 || len(items[0].Checks) != 1 || items[0].Checks[0].Protocol != "vless/grpc" {
-		t.Fatalf("failure did not remove only its own protocol: %+v", items)
+	if len(list()) != 0 {
+		t.Fatal("gRPC failure did not remove all protocols")
 	}
-	links(1)
-	// An older result may not resurrect a protocol after a newer failure.
+	links(0)
 	older := later.Add(-2 * time.Second)
 	first.FinishedAt = &older
 	first.Results[0].Status = "success"
 	save(first)
-	if items := list(); len(items) != 1 || len(items[0].Checks) != 1 {
-		t.Fatalf("older scan overwrote latest: %+v", items)
-	}
-	second.Results = nil
-	save(second)
-	if len(list()) != 1 {
-		t.Fatal("empty canceled round removed existing results")
-	}
-	// Editing the last matching configuration invalidates its old shared results.
-	if _, err = db.Exec(ctx, "UPDATE nodes SET share_uri=share_uri || '&sni=changed.example' WHERE id=$1", second.Input.NodeID); err != nil {
-		t.Fatal(err)
-	}
-	second.Results = []scanResult{{IP: "192.0.2.91", Status: "success", Delay: 20}}
-	save(second)
 	if len(list()) != 0 {
-		t.Fatal("edited configuration reused stale results")
+		t.Fatal("old success overwrote failure")
 	}
-	links(0)
+	// Empty rounds preserve results.
+	empty := first
+	empty.Results = nil
+	save(empty)
+	if len(list()) != 0 {
+		t.Fatal("empty round changed results")
+	}
 	// A later success can restore the first node, and disabled/deleted nodes disappear.
 	restored := later.Add(time.Second)
 	first.FinishedAt = &restored
@@ -188,7 +178,7 @@ func TestAvailableIPLifecycle(t *testing.T) {
 func attachPoolConfig(t *testing.T, db *pgxpool.Pool, protocols ...string) {
 	t.Helper()
 	ctx := context.Background()
-	raw := fmt.Sprintf("vless://%s@fixture.invalid:443?security=tls&type=ws#fixture-%d", testUUID, time.Now().UnixNano())
+	raw := fmt.Sprintf("vless://%s@fixture.invalid:443?security=tls&type=grpc#fixture-%d", testUUID, time.Now().UnixNano())
 	var id string
 	if err := db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES($1,'fixture.invalid',443,$2) RETURNING id::text", "pool-fixture-"+fmt.Sprint(time.Now().UnixNano()), raw).Scan(&id); err != nil {
 		t.Fatal(err)
@@ -200,11 +190,19 @@ func attachPoolConfig(t *testing.T, db *pgxpool.Pool, protocols ...string) {
 			return
 		}
 		defer cleanup.Close()
+		if _, err = cleanup.Exec(ctx, "DELETE FROM node_ip_pool WHERE protocol='grpc' AND config_hash=md5($1)", raw); err != nil {
+			t.Error(err)
+		}
 		if _, err = cleanup.Exec(ctx, "DELETE FROM nodes WHERE id=$1", id); err != nil {
 			t.Error(err)
 		}
 	})
 	if _, err := db.Exec(ctx, `UPDATE node_ip_pool SET config_hash=md5($1),certificate='{"status":"passed","server_name":"fixture.invalid","attempts":3}'::jsonb WHERE protocol=ANY($2::text[])`, raw, protocols); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+ SELECT DISTINCT ON(ip) 'grpc',ip,available,delay_ms,checked_at,config_hash,certificate FROM node_ip_pool WHERE protocol=ANY($1::text[]) ORDER BY ip,checked_at DESC
+ ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,delay_ms=excluded.delay_ms,checked_at=excluded.checked_at,config_hash=excluded.config_hash,certificate=excluded.certificate`, protocols); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -228,7 +226,7 @@ func TestPoolRejectsReplacedConfiguration(t *testing.T) {
 	}
 	const ip = "198.18.97.11"
 	var id string
-	oldRaw := "vless://" + testUUID + "@old.example:443?security=tls&type=ws#replacement-test"
+	oldRaw := "vless://" + testUUID + "@old.example:443?security=tls&type=grpc#replacement-test"
 	if err = db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES('replacement-test','old.example',443,$1) RETURNING id::text", oldRaw).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +235,7 @@ func TestPoolRejectsReplacedConfiguration(t *testing.T) {
 	hash := md5.Sum([]byte(oldRaw))
 	now := time.Now().UTC()
 	a := &app{db: db}
-	old := scanJob{Protocol: "vless/ws", ConfigHash: hex.EncodeToString(hash[:]), Input: scanInput{NodeID: id}, FinishedAt: &now, Results: []scanResult{{IP: ip, Status: "success", Delay: 10, Certificate: &certificateCheck{Status: "passed", ServerName: "old.example", Attempts: 3}}}}
+	old := scanJob{Protocol: connectivityProtocol, ConfigHash: hex.EncodeToString(hash[:]), Input: scanInput{NodeID: id}, FinishedAt: &now, Results: []scanResult{{IP: ip, Status: "success", Delay: 10, Certificate: &certificateCheck{Status: "passed", ServerName: "old.example", Attempts: 3}}}}
 	save := func(job scanJob) {
 		t.Helper()
 		if err := a.saveIPResults(ctx, job); err != nil {

@@ -28,6 +28,38 @@ import (
 
 const testUUID = "11111111-1111-4111-8111-111111111111"
 
+func TestGRPCProbeTimeout(t *testing.T) {
+	t.Setenv("PROBE_KERNEL", "mihomo")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			defer conn.Close()
+			<-done // Accept TCP but never complete the gRPC handshake.
+		}
+	}()
+	addr := listener.Addr().(*net.TCPAddr).AddrPort()
+	template, _, err := parseShare(fmt.Sprintf("vless://%s@localhost:%d?security=none&type=grpc", testUUID, addr.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, err = probeIP(ctx, template, addr.Addr(), "http://probe.example/"); err == nil {
+		t.Fatal("stalled gRPC handshake succeeded")
+	}
+	if ctx.Err() == nil || time.Since(started) > 2*time.Second {
+		t.Fatalf("gRPC probe did not respect its timeout: %v (%s)", err, time.Since(started))
+	}
+}
+
 func TestShareLinkParameters(t *testing.T) {
 	for _, transport := range []string{"httpupgrade", "xhttp", "grpc"} {
 		t.Run(transport, func(t *testing.T) {

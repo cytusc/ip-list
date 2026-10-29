@@ -223,13 +223,13 @@ func TestCertificateLegacyRevalidation(t *testing.T) {
 	server := httptest.NewTLSServer(nil)
 	defer server.Close()
 	port := strings.TrimPrefix(server.URL, "https://127.0.0.1:")
-	raw := fmt.Sprintf("vless://%s@legacy.invalid:%s?security=tls&type=ws#upgrade-%d", testUUID, port, time.Now().UnixNano())
+	raw := fmt.Sprintf("vless://%s@legacy.invalid:%s?security=tls&type=grpc#upgrade-%d", testUUID, port, time.Now().UnixNano())
 	var id string
 	if err = db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES($1,'legacy.invalid',1,$2) RETURNING id::text", fmt.Sprint(time.Now().UnixNano()), raw).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	defer db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", id)
-	const protocol = "certificate/upgrade-test"
+	const protocol = connectivityProtocol
 	defer db.Exec(ctx, "DELETE FROM node_ip_pool WHERE protocol=$1", protocol)
 	defer db.Exec(ctx, "DELETE FROM ip_blacklist WHERE ip='127.0.0.3'")
 	_, err = db.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) VALUES

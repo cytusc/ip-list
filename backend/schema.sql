@@ -75,6 +75,7 @@ CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri
 CREATE OR REPLACE VIEW current_node_ip_pool AS
  SELECT p.* FROM node_ip_pool p WHERE (NOT p.available OR p.certificate->>'status' IN ('passed','not_required')) AND NOT EXISTS (
   SELECT 1 FROM node_ip_pool bad WHERE bad.ip=p.ip AND bad.certificate->>'status'='invalid'
+  AND (p.protocol<>'grpc' OR bad.protocol='grpc')
   AND bad.certificate->>'server_name'=p.certificate->>'server_name'
   AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=bad.config_hash)
  ) AND EXISTS (
@@ -111,7 +112,7 @@ CREATE INDEX IF NOT EXISTS latency_probe_results_time_idx
  ON latency_probe_results(checked_at);
 INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash)
  SELECT DISTINCT ON (protocol,ip) protocol,ip,available,delay_ms,checked_at,config_hash FROM (
- SELECT CASE WHEN protocol LIKE '%/%' THEN protocol ELSE 'vless/'||protocol END AS protocol,
+ SELECT CASE WHEN protocol='grpc' OR protocol LIKE '%/%' THEN protocol ELSE 'vless/'||protocol END AS protocol,
  ip,available,delay_ms,checked_at,node_id,config_hash FROM ip_results
  ) legacy ORDER BY protocol,ip,checked_at DESC,node_id
  ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,
@@ -324,3 +325,52 @@ WITH upgrade AS (
  ON CONFLICT DO NOTHING RETURNING name
 )
 UPDATE latency_probes SET interval_seconds=20 WHERE EXISTS(SELECT 1 FROM upgrade);
+
+
+-- gRPC is the sole connectivity sample; old rounds remain as history.
+DO $$
+BEGIN
+ IF NOT EXISTS(SELECT 1 FROM app_migrations WHERE name='shared_grpc_connectivity_v1') THEN
+  INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+  SELECT DISTINCT ON (ip) 'grpc',ip,available,delay_ms,checked_at,config_hash,certificate
+  FROM node_ip_pool p WHERE protocol IN ('vless/grpc','trojan/grpc')
+  AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND md5(n.share_uri)=p.config_hash)
+  ORDER BY ip,checked_at DESC,protocol
+  ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,delay_ms=excluded.delay_ms,
+   checked_at=excluded.checked_at,config_hash=excluded.config_hash,certificate=excluded.certificate
+  WHERE node_ip_pool.checked_at<excluded.checked_at;
+
+  INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
+  SELECT DISTINCT ON (network_id) 'grpc',network_id,cidr,checked_at FROM protocol_networks
+  WHERE protocol IN ('vless/grpc','trojan/grpc') ORDER BY network_id,checked_at DESC
+  ON CONFLICT DO NOTHING;
+  DELETE FROM protocol_networks WHERE protocol<>'grpc';
+  DELETE FROM protocol_networks w WHERE w.protocol='grpc' AND EXISTS(
+   SELECT 1 FROM current_node_ip_pool p WHERE p.protocol='grpc' AND p.available
+   AND p.ip <<= w.cidr AND p.checked_at>=w.checked_at);
+
+  INSERT INTO node_scan_schedules(protocol,job_id,job,enabled,updated_at)
+  SELECT 'grpc',job_id,jsonb_set(job,'{protocol}','"grpc"'::jsonb),enabled,updated_at
+  FROM node_scan_schedules WHERE enabled AND protocol IN ('vless/grpc','trojan/grpc')
+  ORDER BY updated_at DESC,protocol LIMIT 1 ON CONFLICT DO NOTHING;
+  UPDATE node_scan_schedules SET enabled=false WHERE protocol<>'grpc';
+
+  INSERT INTO network_auto_scans(network_id,cidr,protocol,user_id,created_at,recheck_after)
+  SELECT DISTINCT ON (network_id) network_id,cidr,'grpc',user_id,created_at,recheck_after
+  FROM network_auto_scans WHERE protocol<>'cf'
+  ORDER BY network_id,recheck_after ASC NULLS LAST,created_at
+  ON CONFLICT DO NOTHING;
+  DELETE FROM network_auto_scans WHERE protocol NOT IN ('grpc','cf');
+  INSERT INTO app_migrations(name) VALUES('shared_grpc_connectivity_v1');
+ END IF;
+END $$;
+
+-- Project shared evidence onto each configured protocol for lists and DNS.
+-- The original configuration and certificate checks still govern admission.
+CREATE OR REPLACE VIEW shared_node_ip_pool AS
+ SELECT protocols.protocol,p.ip,p.available,p.delay_ms,p.checked_at,p.config_hash,p.certificate
+ FROM current_node_ip_pool p CROSS JOIN (
+  SELECT DISTINCT split_part(share_uri, '://', 1)||'/'||
+   COALESCE(substring(share_uri FROM '[?&]type=([^&#]+)'), 'tcp') AS protocol
+  FROM nodes WHERE enabled AND share_uri ~ '^(vless|trojan)://'
+ ) protocols WHERE p.protocol='grpc';

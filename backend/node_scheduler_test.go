@@ -41,14 +41,14 @@ func TestNodeScheduleResumeAndStop(t *testing.T) {
 	a := &app{db: db, redis: rdb, scanContext: ctx}
 	id := fmt.Sprintf("%032x", time.Now().UnixNano())
 	nodeID, networkID := "", ""
-	raw := "vless://" + testUUID + "@sample.invalid:1?security=none&type=ws"
+	raw := "vless://" + testUUID + "@sample.invalid:1?security=none&type=grpc"
 	if err = db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES($1,'sample.invalid',1,$2) RETURNING id::text", "schedule-"+id, raw).Scan(&nodeID); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.QueryRow(ctx, "INSERT INTO networks(name,cidr) VALUES($1,'127.0.0.2/32') RETURNING id::text", "schedule-"+id).Scan(&networkID); err != nil {
 		t.Fatal(err)
 	}
-	job := scanJob{ID: id, UserID: "schedule-test", Protocol: "vless/ws", Status: "running", Round: 1, Input: scanInput{NodeID: nodeID, NetworkIDs: []string{networkID}, URL: "http://probe.invalid/", Timeout: 1000, Concurrency: 1, IntervalMinutes: 1, FullEvery: 12}}
+	job := scanJob{ID: id, UserID: "schedule-test", Protocol: connectivityProtocol, Status: "running", Round: 1, Input: scanInput{NodeID: nodeID, NetworkIDs: []string{networkID}, URL: "http://probe.invalid/", Timeout: 1000, Concurrency: 1, IntervalMinutes: 1, FullEvery: 12}}
 	defer func() {
 		cancel()
 		deadline := time.Now().Add(4 * time.Second)

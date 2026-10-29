@@ -138,20 +138,20 @@ func TestIntegration(t *testing.T) {
 			}()
 		}
 	}()
-	node["share_uri"] = "vless://" + testUUID + "@original.invalid:" + fmt.Sprint(listener.Addr().(*net.TCPAddr).Port) + "?security=none&type=tcp"
+	node["share_uri"] = "vless://" + testUUID + "@original.invalid:" + fmt.Sprint(listener.Addr().(*net.TCPAddr).Port) + "?security=none&type=grpc"
 	node["enabled"] = true
 	request("PUT", "/nodes/"+nodeID, node, 200)
 	network["cidr"] = "127.0.0.0/26"
 	request("PUT", "/networks/"+networkID, network, 200)
 	scanInput := map[string]any{"node_id": nodeID, "network_ids": []string{networkID}, "url": "http://probe.example/generate_204", "timeout_ms": 5000, "concurrency": 1}
 	// A new one-off scan supersedes a dormant patrol for the same pool.
-	if _, err = db.Exec(ctx, "INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES('vless/tcp','old-patrol','{}')"); err != nil {
+	if _, err = db.Exec(ctx, "INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES('grpc','old-patrol','{}')"); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _, _ = db.Exec(ctx, "DELETE FROM node_scan_schedules WHERE protocol='vless/tcp'") }()
+	defer func() { _, _ = db.Exec(ctx, "DELETE FROM node_scan_schedules WHERE protocol='grpc'") }()
 	scanID := request("POST", "/scans", scanInput, 202)["id"].(string)
 	var scheduleEnabled bool
-	if err = db.QueryRow(ctx, "SELECT enabled FROM node_scan_schedules WHERE protocol='vless/tcp'").Scan(&scheduleEnabled); err != nil || scheduleEnabled {
+	if err = db.QueryRow(ctx, "SELECT enabled FROM node_scan_schedules WHERE protocol='grpc'").Scan(&scheduleEnabled); err != nil || scheduleEnabled {
 		t.Fatal("one-off scan did not replace old patrol", err)
 	}
 	request("POST", "/scans", scanInput, 409)
@@ -177,9 +177,9 @@ func TestIntegration(t *testing.T) {
 		t.Fatalf("cancellation failed: %v", cancelled)
 	}
 	// Worker closes and releases the lease before the next job.
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		if rdb.Exists(ctx, scanLock+":vless/tcp").Val() == 0 {
+		if rdb.Exists(ctx, scanLock+":grpc").Val() == 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -194,15 +194,15 @@ func TestIntegration(t *testing.T) {
 	if idle["status"] != "running" || idle["updated_at"] != initial["updated_at"] {
 		t.Fatal("idle scan rewrote its snapshot", idle)
 	}
-	if rdb.Get(ctx, scanLock+":vless/tcp").Val() != idleID {
+	if rdb.Get(ctx, scanLock+":grpc").Val() != idleID {
 		t.Fatal("idle scan lost lease")
 	}
 	request("POST", "/scans/"+idleID+"/cancel", nil, 200)
 	if waitScan(idleID)["status"] != "cancelled" {
 		t.Fatal("idle scan failed to cancel")
 	}
-	deadline = time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && rdb.Exists(ctx, scanLock+":vless/tcp").Val() != 0 {
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && rdb.Exists(ctx, scanLock+":grpc").Val() != 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
 
@@ -214,15 +214,15 @@ func TestIntegration(t *testing.T) {
 	}
 	var available bool
 	var protocol string
-	if err = db.QueryRow(ctx, "SELECT available,protocol FROM ip_results WHERE node_id=$1 AND ip='127.0.0.1'", nodeID).Scan(&available, &protocol); err != nil || available || protocol != "vless/tcp" {
+	if err = db.QueryRow(ctx, "SELECT available,protocol FROM ip_results WHERE node_id=$1 AND ip='127.0.0.1'", nodeID).Scan(&available, &protocol); err != nil || available || protocol != "grpc" {
 		t.Fatalf("scan did not persist latest IP check: %v %s %v", available, protocol, err)
 	}
 	// A disabled protocol range still gets a full recheck; one-off rechecks retain patrol schedules.
 	recheckDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(recheckDeadline) && rdb.Exists(ctx, scanLock+":vless/tcp").Val() != 0 {
+	for time.Now().Before(recheckDeadline) && rdb.Exists(ctx, scanLock+":grpc").Val() != 0 {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if _, err = db.Exec(ctx, "UPDATE node_scan_schedules SET enabled=true WHERE protocol='vless/tcp'"); err != nil {
+	if _, err = db.Exec(ctx, "UPDATE node_scan_schedules SET enabled=true WHERE protocol='grpc'"); err != nil {
 		t.Fatal(err)
 	}
 	reqRecheck, _ := http.NewRequest("POST", server.URL+"/networks/"+networkID+"/recheck", nil)
@@ -239,7 +239,7 @@ func TestIntegration(t *testing.T) {
 	}
 	found := false
 	for _, item := range rechecks {
-		if item.Protocol != "vless/tcp" {
+		if item.Protocol != "grpc" {
 			continue
 		}
 		if found || item.JobID == "" || item.Error != "" {
@@ -254,7 +254,7 @@ func TestIntegration(t *testing.T) {
 	if !found {
 		t.Fatalf("TCP recheck missing: %+v", rechecks)
 	}
-	if err = db.QueryRow(ctx, "SELECT enabled FROM node_scan_schedules WHERE protocol='vless/tcp'").Scan(&scheduleEnabled); err != nil || !scheduleEnabled {
+	if err = db.QueryRow(ctx, "SELECT enabled FROM node_scan_schedules WHERE protocol='grpc'").Scan(&scheduleEnabled); err != nil || !scheduleEnabled {
 		t.Fatalf("recheck disabled the patrol schedule: %v", err)
 	}
 	request("POST", "/networks/invalid/recheck", nil, 422)

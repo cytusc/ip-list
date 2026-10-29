@@ -54,6 +54,9 @@ func (a *app) resumeDueNodeSchedules(ctx context.Context) error {
 		return err
 	}
 	for _, job := range jobs {
+		if job.Protocol != connectivityProtocol {
+			continue
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -83,7 +86,7 @@ func (a *app) resumeDueNodeSchedules(ctx context.Context) error {
 			if err = nodes.Scan(&id, &n, &u); err != nil {
 				break
 			}
-			if nodePoolProtocol(u) == job.Protocol {
+			if nodeConnectivityProtocol(u) == job.Protocol {
 				nodeID, name, raw = id, n, u
 				break
 			}

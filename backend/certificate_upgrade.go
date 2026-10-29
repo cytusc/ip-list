@@ -15,7 +15,7 @@ func (a *app) revalidateLegacyCertificates(ctx context.Context) {
 	rows, err := a.db.Query(ctx, `SELECT p.protocol,host(p.ip),p.config_hash,n.id::text,n.share_uri
  FROM node_ip_pool p
  JOIN LATERAL (SELECT id,share_uri FROM nodes WHERE enabled AND share_uri<>'' AND md5(share_uri)=p.config_hash ORDER BY id LIMIT 1) n ON true
- WHERE p.available AND p.certificate='{}'::jsonb
+ WHERE p.protocol='grpc' AND p.available AND p.certificate='{}'::jsonb
  AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
  ORDER BY p.ip,p.protocol`)
 	if err != nil {

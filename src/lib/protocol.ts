@@ -16,3 +16,5 @@ export function nodeProtocol(raw: string): string {
     return "";
   }
 }
+
+export const connectivityLabel = "gRPC · 所有协议共用";

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"net"
 	"net/http"
 	"net/netip"
@@ -34,25 +32,13 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "请输入有效的 IP 地址", nil)
 		return
 	}
-	poolRows, err := a.db.Query(r.Context(), "SELECT protocol,config_hash FROM current_node_ip_pool WHERE ip=$1::inet AND available", ip.String())
-	if err != nil {
+	var available bool
+	if err = a.db.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM current_node_ip_pool WHERE protocol=$2 AND ip=$1::inet AND available)", ip.String(), connectivityProtocol).Scan(&available); err != nil {
 		dbError(w, err)
 		return
 	}
-	protocols := map[string]string{}
-	for poolRows.Next() {
-		var protocol, configHash string
-		if err = poolRows.Scan(&protocol, &configHash); err != nil {
-			poolRows.Close()
-			dbError(w, err)
-			return
-		}
-		protocols[protocol] = configHash
-	}
-	err = poolRows.Err()
-	poolRows.Close()
-	if err != nil {
-		dbError(w, err)
+	if !available {
+		apiError(w, 409, "该 IP 已无可用节点，请刷新列表或重新检测", nil)
 		return
 	}
 	rows, err := a.db.Query(r.Context(), `SELECT id::text,name,share_uri FROM nodes WHERE enabled AND share_uri<>'' ORDER BY name,id`)
@@ -70,14 +56,9 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		link.Protocol = nodePoolProtocol(raw)
-		fingerprint := md5.Sum([]byte(raw))
-		if protocols[link.Protocol] != hex.EncodeToString(fingerprint[:]) {
-			continue
-		}
 		link.URI, err = nodeLink(raw, link.NodeName, ip)
 		if err != nil {
-			apiError(w, 422, "节点配置无法生成链接，请检查节点配置后重测", nil)
-			return
+			continue
 		}
 		links = append(links, link)
 	}
@@ -103,4 +84,14 @@ func nodePoolProtocol(raw string) string {
 		protocol = "tcp"
 	}
 	return u.Scheme + "/" + protocol
+}
+
+// All proxy protocols share one connectivity pool, sampled through gRPC only.
+const connectivityProtocol = "grpc"
+
+func nodeConnectivityProtocol(raw string) string {
+	if protocol := nodePoolProtocol(raw); protocol == "vless/grpc" || protocol == "trojan/grpc" {
+		return connectivityProtocol
+	}
+	return ""
 }

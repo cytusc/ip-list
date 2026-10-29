@@ -16,8 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Save the range and its queue entries in the same transaction. Each configured
-// node protocol gets a sample; CF has one shared queue for all domains.
+// Save the range and its queue entries in the same transaction. One gRPC
+// sample covers all node protocols; CF keeps its own queue.
 func enqueueAutomaticScans(ctx context.Context, tx pgx.Tx, id, cidr, userID string) error {
 	rows, err := tx.Query(ctx, "SELECT share_uri FROM nodes WHERE enabled AND share_uri<>''")
 	if err != nil {
@@ -29,8 +29,8 @@ func enqueueAutomaticScans(ctx context.Context, tx pgx.Tx, id, cidr, userID stri
 		if err = rows.Scan(&raw); err != nil {
 			break
 		}
-		if _, _, parseErr := parseShare(raw); parseErr == nil {
-			protocols[nodePoolProtocol(raw)] = true
+		if _, _, parseErr := parseShare(raw); parseErr == nil && nodeConnectivityProtocol(raw) != "" {
+			protocols[nodeConnectivityProtocol(raw)] = true
 		}
 	}
 	if err == nil {
@@ -102,6 +102,9 @@ func (a *app) maintainAutomaticScans(ctx context.Context) {
 // Patrols call this synchronously while waiting, lending their lease to a
 // separate recorded job. The next patrol round waits for it to finish.
 func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string) (bool, error) {
+	if protocol != connectivityProtocol && protocol != "cf" {
+		return false, nil
+	}
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
 		return false, err
@@ -248,7 +251,7 @@ func (a *app) automaticScanSample(ctx context.Context, protocol string) (scanInp
 		if err = rows.Scan(&id, &name, &raw); err != nil {
 			return input, "", "", "", err
 		}
-		if nodePoolProtocol(raw) != protocol {
+		if nodeConnectivityProtocol(raw) != protocol {
 			continue
 		}
 		if _, _, err := parseShare(raw); err != nil {

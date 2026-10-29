@@ -5,7 +5,7 @@ import { useState, useTransition } from "react";
 import { Loader2, Play, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { startScan, restoreProtocolNetwork } from "@/app/actions";
-import { nodeProtocol, protocolLabels } from "@/lib/protocol";
+import { nodeProtocol, protocolLabels, connectivityLabel } from "@/lib/protocol";
 import { networkAddressCount as size } from "@/lib/network";
 import { NetworkSelector } from "@/components/network-selector";
 import { useListOptions } from "@/components/use-list-options";
@@ -57,16 +57,15 @@ export function NewProbeDialog({
         <DialogHeader>
           <DialogTitle>新建连通性检测</DialogTitle>
           <DialogDescription>
-            选择一个样本节点与若干网段，后台逐 IP
-            检测；同一协议池的节点共用结果，检测记录可在列表中回看。
+            选择一个 gRPC 样本节点与若干网段，后台逐 IP 检测；所有协议共用检测结果。
           </DialogDescription>
         </DialogHeader>
         {active && (
           <p className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
             {active.node_name}（
-            {protocolLabels[active.protocol] || active.protocol}）正在
+            {active.protocol === "grpc" ? connectivityLabel : protocolLabels[active.protocol] || active.protocol}）正在
             {active.status === "waiting" ? "等待下一轮" : "检测"}
-            。同一协议池同时只能运行一个任务，选择其他协议的节点仍可开始新检测。
+            。所有协议共用一个检测任务，请等待完成或先停止当前任务。
           </p>
         )}
         <ProbeForm
@@ -96,7 +95,7 @@ function ProbeForm({
   onDone: () => void;
 }) {
   const router = useRouter();
-  const nodeOptions=useListOptions<Node>("nodes",defaults?.node_id ? [defaults.node_id] : []);
+  const nodeOptions=useListOptions<Node>("nodes",defaults?.node_id ? [defaults.node_id] : [],{connectivity:"grpc"});
   const networkOptions=useListOptions<Network>("networks",defaults?.network_ids);
   const nodes=nodeOptions.items,networks=networkOptions.items;
   const [nodeID, setNodeID] = useState(
@@ -107,7 +106,7 @@ function ProbeForm({
   const [networkIDs, setNetworkIDs] = useState<string[]>(() =>
     defaults?.network_ids ?? [],
   );
-  const availableNodes=[...new Map([...nodeOptions.data.items,...nodes.filter(node=>node.id===nodeID)].map(node=>[node.id,node])).values()].filter(node=>node.enabled && node.share_uri);
+  const availableNodes=[...new Map([...nodeOptions.data.items,...nodes.filter(node=>node.id===nodeID)].map(node=>[node.id,node])).values()].filter(node=>node.enabled && ["vless/grpc","trojan/grpc"].includes(nodeProtocol(node.share_uri)));
   const [url, setURL] = useState(
     () => defaults?.url || "https://www.gstatic.com/generate_204",
   );
@@ -124,9 +123,8 @@ function ProbeForm({
   const [fullEvery, setFullEvery] = useState(() => defaults?.full_every ?? 12);
   const [error, setError] = useState("");
   const [pending, startTransition] = useTransition();
-  const protocol = nodeProtocol(
-    nodes.find((node) => node.id === nodeID)?.share_uri || "",
-  );
+  const protocol = "grpc";
+  const validNode = availableNodes.some((node) => node.id === nodeID);
   const disabledNetworks = networks.filter(
     (network) =>
       network.enabled && network.disabled_protocols?.includes(protocol),
@@ -146,8 +144,8 @@ function ProbeForm({
   const tooLarge = !incremental && selected.some(
     (network) => size(network.cidr) > BigInt(4096),
   );
-  // 同一协议池共用任务锁，其他池可以并行检测。
-  const blocked = !!activeProtocol && activeProtocol === protocol;
+  // 所有协议共用 gRPC 检测任务。
+  const blocked = !!activeProtocol;
   const busy = pending || blocked;
   return (
     <form
@@ -194,7 +192,7 @@ function ProbeForm({
               id="probe-node"
               className="w-full min-w-0 [&_[data-slot=select-value]]:block [&_[data-slot=select-value]]:truncate"
             >
-              <SelectValue placeholder="请选择已导入的节点" />
+              <SelectValue placeholder="请选择已导入的 gRPC 节点" />
             </SelectTrigger>
             <SelectContent>
               <Input aria-label="搜索检测节点" value={nodeOptions.search} onChange={event=>nodeOptions.setSearch(event.target.value)} placeholder="搜索节点" onKeyDown={event=>event.stopPropagation()}/>
@@ -209,12 +207,11 @@ function ProbeForm({
             </SelectContent>
           </Select>
           <p className="text-xs leading-5 text-muted-foreground">
-            当前池：{protocolLabels[protocol] || protocol || "请选择节点"}
-            。仅替换样本节点的连接 IP，保留其他参数。
+            仅使用 gRPC 检测，结果供所有协议共用。仅替换样本节点的连接 IP，保留其他参数。
           </p>
           {!availableNodes.length && (
             <Link className="text-sm text-primary underline" href="/nodes">
-              前往节点管理导入 VLESS / Trojan 链接
+              前往节点管理导入 gRPC 链接
             </Link>
           )}
         </div>
@@ -256,10 +253,10 @@ function ProbeForm({
       {!!disabledNetworks.length && (
         <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
           <p className="text-sm font-medium">
-            当前协议池已禁用 {disabledNetworks.length} 个空网段
+            gRPC 检测已禁用 {disabledNetworks.length} 个空网段
           </p>
           <p className="text-xs text-muted-foreground">
-            完整扫描后全部失败，仅影响当前池。恢复后将再次参与扫描。
+            完整扫描后全部失败，所有协议共用此结果。恢复后将再次参与扫描。
           </p>
           {disabledNetworks.map((network) => (
             <div
@@ -319,7 +316,7 @@ function ProbeForm({
         </Select>
         {incremental && (
           <p className="text-xs leading-5 text-muted-foreground">
-            跳过当前协议池中已检测的 IP（含失败结果），仅检测新增或上次未完成的地址，保留已有结果。需要复测时选择全量检测。
+            跳过已检测的 IP（含失败结果），仅检测新增或上次未完成的地址，保留已有结果。需要复测时选择全量检测。
           </p>
         )}
         {interval > 0 && (
@@ -380,7 +377,7 @@ function ProbeForm({
         </Button>
         <Button
           type="submit"
-          disabled={busy || !nodeID || !selected.length || tooLarge}
+          disabled={busy || !validNode || !selected.length || tooLarge}
         >
           {pending ? <Loader2 className="animate-spin" /> : <Play />}
           {pending ? "正在启动…" : interval ? "开始巡检" : incremental ? "开始增量检测" : "开始测试"}
@@ -388,7 +385,7 @@ function ProbeForm({
       </div>
       {blocked && (
         <p className="text-sm text-amber-700">
-          当前协议池已有任务在运行，请先在列表中停止，或改用其他协议的节点。
+          已有连通性检测任务在运行，请等待完成或先在列表中停止。
         </p>
       )}
       {error && (

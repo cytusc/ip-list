@@ -45,7 +45,7 @@ func TestAutomaticNetworkScans(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _, _ = db.Exec(context.Background(), "DELETE FROM users WHERE id=$1", userID) }()
-	raw := "vless://11111111-1111-4111-8111-111111111111@127.0.0.1:1?encryption=none&type=tcp&security=none#auto"
+	raw := "vless://11111111-1111-4111-8111-111111111111@127.0.0.1:1?encryption=none&type=grpc&security=none#auto"
 	if err = db.QueryRow(ctx, "INSERT INTO nodes(name,address,port,share_uri) VALUES($1,'127.0.0.1',1,$2) RETURNING id::text", "auto"+suffix, raw).Scan(&nodeID); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestAutomaticNetworkScans(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _, _ = db.Exec(context.Background(), "DELETE FROM cf_targets WHERE id=$1", targetID) }()
-	protocol := nodePoolProtocol(raw)
+	protocol := nodeConnectivityProtocol(raw)
 	old := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	if _, err = db.Exec(ctx, "INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at) VALUES($1,'127.0.0.2',true,42,$2) ON CONFLICT(protocol,ip) DO UPDATE SET available=true,delay_ms=42,checked_at=$2", protocol, old); err != nil {
 		t.Fatal(err)

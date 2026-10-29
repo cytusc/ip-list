@@ -121,8 +121,8 @@ func TestIPListPagination(t *testing.T) {
 	a := paginationApp(t)
 	ctx := context.Background()
 	statements := []string{
-		`INSERT INTO nodes(name,address,port,share_uri) VALUES('pagination','host',443,'pagination-config')`,
-		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) SELECT p,('198.18.0.'||i)::inet,true,20,now(),md5('pagination-config'),'{"status":"passed"}'::jsonb FROM generate_series(1,45) i CROSS JOIN unnest(ARRAY['vless/ws','vless/grpc']) p`,
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('pagination','host',443,'vless://sample@host:443?type=grpc'),('pagination-ws','host',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) SELECT p,('198.18.0.'||i)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}'::jsonb FROM generate_series(1,45) i CROSS JOIN unnest(ARRAY['grpc']) p`,
 		`INSERT INTO networks(name,cidr,asn,provider) VALUES('pagination','198.18.0.0/24','AS13335','Example')`,
 		`INSERT INTO dns_ip_locations(ip,country,checked_at) SELECT ('198.18.0.'||i)::inet,'JP',now() FROM generate_series(1,45) i`,
 		`INSERT INTO ip_blacklist(ip) VALUES('198.18.0.1')`,

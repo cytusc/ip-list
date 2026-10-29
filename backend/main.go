@@ -382,6 +382,9 @@ func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
 		where += " OR ($2='pool-disabled' AND EXISTS(SELECT 1 FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr))"
 	}
 	where += ") AND ($3='' OR n.id::text=ANY(string_to_array($3,',')))"
+	if kind == "nodes" && r.URL.Query().Get("connectivity") == "grpc" {
+		where += ` AND n.enabled AND n.share_uri ~ '^(vless|trojan)://[^?]+[?]([^#]*&)?type=grpc(&|#|$)'`
+	}
 	ids := r.URL.Query().Get("ids")
 	if len(ids) > 20000 {
 		apiError(w, 422, "选择的配置过多", nil)

@@ -263,7 +263,7 @@ func TestDNSIntegration(t *testing.T) {
 	}
 	a := &app{db: db}
 	c := dnsTestConfig()
-	c.Protocol = protocol
+	c.Protocol = "vless/grpc"
 	c.ProbeID = probe
 	fake := &dnsFakeProvider{records: []dnsRemoteRecord{{ID: "hk", Name: "hk.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"191.222.220.126", "103.135.251.114"}}}}
 	report := dnsReport{Mode: "preview"}

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Activity, Copy } from "lucide-react";
 import { toast } from "sonner";
 import { cancelScan } from "@/app/actions";
-import { protocolLabels } from "@/lib/protocol";
+import { protocolLabels, connectivityLabel } from "@/lib/protocol";
 import {
   availabilityTone,
   formatDuration,
@@ -60,7 +60,7 @@ export function ProbeDetail({ initial }: { initial: ScanRecord & PageResult<Scan
             </Badge>
           </div>
           <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <span>{protocolLabels[record.protocol] || record.protocol}</span>
+            <span>{record.protocol === "grpc" ? connectivityLabel : protocolLabels[record.protocol] || record.protocol}</span>
             <span>第 {record.round} 轮</span>
             <span>
               {record.scope === "incremental" ? "增量检测" : record.scope === "available" ? "复测可用 IP" : "全量扫描"}

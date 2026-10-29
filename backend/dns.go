@@ -271,7 +271,7 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := a.db.Query(ctx, `SELECT DISTINCT host(ip) FROM current_node_ip_pool s WHERE available
+	rows, err := a.db.Query(ctx, `SELECT DISTINCT host(ip) FROM shared_node_ip_pool s WHERE available
  AND ($1='' OR protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) ORDER BY host(ip)`, c.Protocol)
 	if err != nil {
 		return nil, false, err
@@ -300,7 +300,7 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
  AND NOT EXISTS(SELECT 1 FROM latency_probe_results newer WHERE newer.probe_id=ok.probe_id
  AND newer.ip=ok.ip AND newer.mode=ok.mode AND newer.tcp_port=ok.tcp_port
  AND (newer.checked_at,newer.id)>(ok.checked_at,ok.id)))
- FROM latency_probes p CROSS JOIN (SELECT DISTINCT ip FROM current_node_ip_pool s WHERE available
+ FROM latency_probes p CROSS JOIN (SELECT DISTINCT ip FROM shared_node_ip_pool s WHERE available
  AND ($1='' OR protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)) t
  LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('At',checked_at,'Success',success,'Delay',delay_ms) ORDER BY checked_at,id) AS data
  FROM latency_probe_results WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END

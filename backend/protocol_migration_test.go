@@ -54,7 +54,7 @@ func TestBackfillEmptyProtocolNetworks(t *testing.T) {
 		t.Fatalf("only fully checked empty pool should be disabled: %d, %v", count, err)
 	}
 	var protocol, name string
-	if err = tx.QueryRow(ctx, "SELECT p.protocol,w.name FROM protocol_networks p JOIN networks w ON w.id=p.network_id").Scan(&protocol, &name); err != nil || protocol != "vless/grpc" || name != "empty" {
+	if err = tx.QueryRow(ctx, "SELECT p.protocol,w.name FROM protocol_networks p JOIN networks w ON w.id=p.network_id").Scan(&protocol, &name); err != nil || protocol != connectivityProtocol || name != "empty" {
 		t.Fatal(protocol, name, err)
 	}
 	// Reinitializing must respect a user's restore instead of reapplying history.

@@ -119,7 +119,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `
  `+availableIPCandidatesSQL+`, selected AS MATERIALIZED (SELECT * FROM filtered ORDER BY ip LIMIT $5 OFFSET $6)
  SELECT host(s.ip),s.protocol,s.delay_ms, '', '协议共用 IP 池',s.checked_at,COALESCE(info.asn,''),COALESCE(info.provider,'')
- FROM selected info JOIN current_node_ip_pool s ON s.ip=info.ip AND s.available
+ FROM selected info JOIN shared_node_ip_pool s ON s.ip=info.ip AND s.available
  ORDER BY s.ip,s.protocol`, append(args, p.Size, p.Offset())...)
 	if err != nil {
 		dbError(w, err)
@@ -189,7 +189,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 // Each latest lookup is bounded by the measurement index and LIMIT 1. A global
 // DISTINCT ON can be rescanned once per target by a nested-loop plan.
 const availableIPProbesSQL = `WITH all_targets AS MATERIALIZED (
- SELECT DISTINCT ip FROM current_node_ip_pool WHERE available
+ SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available
 ), targets AS (
  SELECT ip FROM unnest($1::inet[]) AS selected(ip)
 ), probes AS MATERIALIZED (
@@ -219,13 +219,13 @@ ORDER BY t.ip,p.created_at`
 // probe samples only for those addresses. Region filters use the shared cache.
 const availableIPCandidatesSQL = `WITH candidates AS MATERIALIZED (
  SELECT s.ip,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider,COALESCE(l.country,'') AS country
- FROM (SELECT DISTINCT ip FROM current_node_ip_pool WHERE available) s ` + networkInfoJoin + `
+ FROM (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available) s ` + networkInfoJoin + `
  LEFT JOIN dns_ip_locations l ON l.ip=s.ip
  WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
 ), filtered AS (
  SELECT c.* FROM candidates c WHERE
  ($1='' OR position(lower($1) in lower(host(c.ip)||' '||c.asn||' '||c.provider||' 协议共用 IP 池'))>0)
- AND ($2='' OR $2='all' OR EXISTS(SELECT 1 FROM current_node_ip_pool p WHERE p.ip=c.ip AND p.available AND p.protocol=$2))
+ AND ($2='' OR $2='all' OR EXISTS(SELECT 1 FROM shared_node_ip_pool p WHERE p.ip=c.ip AND p.available AND p.protocol=$2))
  AND ($3='' OR $3='all' OR ($3='unknown' AND c.country='') OR c.country=$3)
  AND ($4='' OR $4='all' OR ($4='missing' AND c.provider='') OR c.provider=substring($4 from 10))
 )`

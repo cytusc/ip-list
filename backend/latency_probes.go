@@ -20,7 +20,7 @@ const probeOnlineSQL = `COALESCE(enabled AND last_seen>now()-make_interval(secs=
 CASE WHEN heartbeat_at IS NOT NULL THEN 90 ELSE GREATEST(90,interval_seconds*3) END),false)`
 
 // Account for worker batches and the system-ping deadline when aging samples.
-const probeSampleWindowSQL = `(interval_seconds + CEIL((SELECT count(DISTINCT ip) FROM current_node_ip_pool WHERE available)::numeric / concurrency)::integer * (CEIL(timeout_ms::numeric/1000)::integer+2) + 30)`
+const probeSampleWindowSQL = `(interval_seconds + CEIL((SELECT count(DISTINCT ip) FROM shared_node_ip_pool WHERE available)::numeric / concurrency)::integer * (CEIL(timeout_ms::numeric/1000)::integer+2) + 30)`
 
 type latencyProbe struct {
 	Mode                string     `json:"mode"`
@@ -359,7 +359,7 @@ RETURNING interval_seconds,timeout_ms,concurrency,interface_name,mode,tcp_port`,
 		apiError(w, http.StatusConflict, "当前配置为 TCP Ping，请重新执行一键部署命令升级探针", nil)
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT host(p.ip) FROM current_node_ip_pool p
+	rows, err := a.db.Query(r.Context(), `SELECT host(p.ip) FROM shared_node_ip_pool p
 WHERE p.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
 GROUP BY p.ip ORDER BY p.ip`)
 	if err != nil {
@@ -464,7 +464,7 @@ FROM jsonb_to_recordset($2::jsonb) AS r(ip text,delay_ms double precision,succes
 ), inserted AS (
 INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port)
 SELECT $1,p.ip,p.delay_ms,p.success,p.checked_at,$3,$4 FROM received p
-WHERE EXISTS(SELECT 1 FROM current_node_ip_pool pool WHERE pool.ip=p.ip AND pool.available)
+WHERE EXISTS(SELECT 1 FROM shared_node_ip_pool pool WHERE pool.ip=p.ip AND pool.available)
 AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
 RETURNING 1
 ), seen AS (

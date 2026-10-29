@@ -177,6 +177,10 @@ func probeIP(ctx context.Context, template map[string]any, ip netip.Addr, target
 		return 0, errors.New("节点配置加载失败")
 	}
 	defer proxy.Close()
+	// The gRPC transport owns a background context. Closing it on cancellation
+	// interrupts its dial/handshake as well as the outer HTTP request.
+	stopClose := context.AfterFunc(ctx, func() { _ = proxy.Close() })
+	defer stopClose()
 	delay, err := proxy.URLTest(ctx, target, nil)
 	if err != nil {
 		return 0, err

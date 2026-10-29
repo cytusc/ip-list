@@ -5,9 +5,9 @@ import type { PageResult } from "@/lib/pagination";
 
 const empty: PageResult<never>={items:[],page:1,pageSize:50,total:0};
 // Keep selected records across pages; opening a form never fetches every option.
-export function useListOptions<T extends {id:string}>(kind:string,selectedIDs:string[]=[]) {
+export function useListOptions<T extends {id:string}>(kind:string,selectedIDs:string[]=[], filters:Record<string,string>={}) {
   const [search,setSearchValue]=useState("");
-  const list=usePagedList<T>(kind,empty,{search});
+  const list=usePagedList<T>(kind,empty,{...filters,search});
   const [cache,setCache]=useState<Record<string,T>>({});
   const ids=selectedIDs.join(",");
   useEffect(()=>{

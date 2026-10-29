@@ -33,7 +33,7 @@ test("导入节点、单次检测、记录详情与巡检停止", async ({
     await importDialog
       .getByLabel("节点链接")
       .fill(
-        `vless://11111111-1111-4111-8111-111111111111@original.invalid:${address.port}?security=none&type=tcp#${name}`,
+        `vless://11111111-1111-4111-8111-111111111111@original.invalid:${address.port}?security=none&type=grpc#${name}`,
       );
     await importDialog
       .getByRole("button", { name: "导入节点", exact: true })
@@ -94,7 +94,7 @@ test("导入节点、单次检测、记录详情与巡检停止", async ({
       page.getByRole("button", { name: "停止测试", exact: true }),
     ).toBeVisible({ timeout: 15000 });
     await expect(row()).toContainText("检测中");
-    await expect(row()).toContainText("VLESS · TCP");
+    await expect(row()).toContainText("gRPC · 所有协议共用");
 
     // 进入记录详情，刷新后仍在同一轮检测中。
     await row().getByRole("link", { name }).click();

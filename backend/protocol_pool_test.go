@@ -54,7 +54,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	}
 	first := createNode("grpc")
 	second := createNode("grpc")
-	other := createNode("xhttp")
+	createNode("xhttp")
 	if err = db.QueryRow(ctx, "INSERT INTO networks(name,cidr) VALUES('pool-range','198.18.91.0/24') RETURNING id::text").Scan(&networkID); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	db.QueryRow(ctx, "SELECT share_uri FROM nodes WHERE id=$1", first).Scan(&raw)
 	hash := md5.Sum([]byte(raw))
 	now := time.Now().UTC()
-	job := scanJob{Protocol: "vless/grpc", ConfigHash: hex.EncodeToString(hash[:]), Input: scanInput{NodeID: first, NetworkIDs: []string{networkID}}, Scope: "full", Status: "completed", CIDRs: []string{"198.18.91.0/24"}, Total: 256, Completed: 256, FinishedAt: &now}
+	job := scanJob{Protocol: connectivityProtocol, ConfigHash: hex.EncodeToString(hash[:]), Input: scanInput{NodeID: first, NetworkIDs: []string{networkID}}, Scope: "full", Status: "completed", CIDRs: []string{"198.18.91.0/24"}, Total: 256, Completed: 256, FinishedAt: &now}
 	for i := 0; i < 256; i++ {
 		job.Results = append(job.Results, scanResult{IP: fmt.Sprintf("198.18.91.%d", i), Status: "failed"})
 	}
@@ -115,20 +115,15 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &items) != nil || len(items) != want {
 			t.Fatalf("links %d: %s", w.Code, w.Body.String())
 		}
-		for _, link := range items {
-			if link.NodeID == other {
-				t.Fatal("protocol isolation failed")
-			}
-		}
 	}
-	links(2)
+	links(3)
 	// A newly added matching node inherits the pool without a scan.
 	createNode("grpc")
-	links(3)
+	links(4)
 	db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", first)
-	links(2)
+	links(3)
 	db.Exec(ctx, "DELETE FROM nodes WHERE id=$1", second)
-	links(1)
+	links(2)
 	// Finished results remain usable even after the sample was deleted.
 	later := now.Add(time.Second)
 	job.FinishedAt = &later
@@ -163,7 +158,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	if !disabled(job.Protocol) {
 		t.Fatal("stale success restored a newer disabled range")
 	}
-	request := httptest.NewRequest("DELETE", "/protocol-networks/"+networkID+"?protocol=vless%2Fgrpc", nil)
+	request := httptest.NewRequest("DELETE", "/protocol-networks/"+networkID+"?protocol=grpc", nil)
 	request.SetPathValue("id", networkID)
 	w := httptest.NewRecorder()
 	a.restoreProtocolNetwork(w, request)

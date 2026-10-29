@@ -57,8 +57,8 @@ func (a *app) recheckNetwork(w http.ResponseWriter, r *http.Request) {
 			dbError(w, err)
 			return
 		}
-		node.protocol = nodePoolProtocol(node.raw)
-		if seen[node.protocol] {
+		node.protocol = nodeConnectivityProtocol(node.raw)
+		if node.protocol == "" || seen[node.protocol] {
 			continue
 		}
 		template, _, parseErr := parseShare(node.raw)
@@ -76,7 +76,7 @@ func (a *app) recheckNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(samples) == 0 {
-		apiError(w, 422, "没有可用的协议样本，请先添加并启用有效的 VLESS / Trojan 节点", nil)
+		apiError(w, 422, "没有可用的 gRPC 样本，请先添加并启用 gRPC 节点", nil)
 		return
 	}
 	items := []networkRecheckItem{}
