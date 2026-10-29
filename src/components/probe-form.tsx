@@ -357,7 +357,7 @@ function ProbeForm({
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="probe-concurrency">并发数（推荐 64）</Label>
+          <Label htmlFor="probe-concurrency">并发数</Label>
           <Input
             id="probe-concurrency"
             className="w-28"
