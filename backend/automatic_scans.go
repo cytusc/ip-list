@@ -207,7 +207,7 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 }
 
 func (a *app) automaticScanSample(ctx context.Context, protocol string) (scanInput, string, string, string, error) {
-	input := scanInput{URL: "https://www.gstatic.com/generate_204", Timeout: 5000, Concurrency: 5}
+	input := scanInput{URL: "https://www.gstatic.com/generate_204", Timeout: 5000, Concurrency: defaultNodeScanConcurrency}
 	if protocol == "cf" {
 		input.Concurrency = 16
 		preferred := ""
@@ -240,6 +240,10 @@ func (a *app) automaticScanSample(ctx context.Context, protocol string) (scanInp
 			return input, "", "", "", err
 		}
 	}
+	// Upgrade the former default without changing deliberate custom settings.
+	if input.Concurrency == 5 {
+		input.Concurrency = defaultNodeScanConcurrency
+	}
 	normalizeAutomaticInput(&input)
 	rows, err := a.db.Query(ctx, "SELECT id::text,name,share_uri FROM nodes WHERE enabled AND share_uri<>'' ORDER BY (id::text=$1) DESC,created_at,id", input.NodeID)
 	if err != nil {
@@ -267,8 +271,8 @@ func normalizeAutomaticInput(input *scanInput) {
 	if input.Timeout < 1000 || input.Timeout > 15000 {
 		input.Timeout = 5000
 	}
-	if input.Concurrency < 1 || input.Concurrency > 32 {
-		input.Concurrency = 5
+	if input.Concurrency < 1 || input.Concurrency > 64 {
+		input.Concurrency = defaultNodeScanConcurrency
 	}
 	if input.URL == "" {
 		input.URL = "https://www.gstatic.com/generate_204"

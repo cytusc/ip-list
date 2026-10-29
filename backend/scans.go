@@ -22,6 +22,20 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const defaultNodeScanConcurrency = 64
+
+// Shared across protocol jobs so concurrent scans cannot double Xray memory use.
+var xrayScanSlots = make(chan struct{}, defaultNodeScanConcurrency)
+
+func acquireXrayScanSlot(ctx context.Context) bool {
+	select {
+	case xrayScanSlots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 const scanLock = "ipfilter:scan:active"
 const scanTTL = 24 * time.Hour
 const scanHeartbeat = 10 * time.Second
@@ -110,8 +124,8 @@ func (a *app) startScan(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 422, "巡检间隔为 1–1440 分钟，全量扫描频率为 1–288 轮", nil)
 		return
 	}
-	if input.Timeout < 1000 || input.Timeout > 15000 || input.Concurrency < 1 || input.Concurrency > 32 {
-		apiError(w, 422, "超时范围 1000–15000 毫秒，并发范围 1–32", nil)
+	if input.Timeout < 1000 || input.Timeout > 15000 || input.Concurrency < 1 || input.Concurrency > 64 {
+		apiError(w, 422, "超时范围 1000–15000 毫秒，并发范围 1–64", nil)
 		return
 	}
 	target, err := url.Parse(input.URL)
@@ -315,10 +329,9 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 	ctx, cancel := scanRoundContext(parent)
 	defer cancel()
 	workerCount := min(input.Concurrency, total)
-	// External Xray processes need a smaller memory budget than embedded probes.
-	// Limit workers before starting each IP's timeout, so queued IPs still run.
-	if job.TargetID == "" && env("PROBE_KERNEL", "mihomo") == "xray" {
-		workerCount = min(workerCount, 8)
+	usesXray := job.TargetID == "" && env("PROBE_KERNEL", "mihomo") == "xray"
+	if usesXray {
+		workerCount = min(workerCount, cap(xrayScanSlots))
 	}
 	work := make(chan netip.Addr, workerCount)
 	// Bound queue allocation even when a CF job spans a large address range.
@@ -331,6 +344,10 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 			defer workers.Done()
 			for ip := range work {
 				if ctx.Err() != nil {
+					return
+				}
+				// Wait before starting the per-IP deadline; other protocol jobs share slots.
+				if usesXray && !acquireXrayScanSlot(ctx) {
 					return
 				}
 				probeCtx, stop := context.WithTimeout(ctx, time.Duration(input.Timeout)*time.Millisecond)
@@ -346,6 +363,9 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 					}
 				}
 				stop()
+				if usesXray {
+					<-xrayScanSlots
+				}
 				if ctx.Err() != nil {
 					return
 				}

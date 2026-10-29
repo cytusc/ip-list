@@ -112,7 +112,7 @@ function ProbeForm({
   );
   const [timeout, setTimeoutMs] = useState(() => defaults?.timeout_ms ?? 5000);
   const [concurrency, setConcurrency] = useState(
-    () => defaults?.concurrency ?? 5,
+    () => defaults?.concurrency === 5 ? 64 : (defaults?.concurrency ?? 64),
   );
   const [interval, setIntervalMinutes] = useState(
     () => defaults?.interval_minutes ?? 0,
@@ -357,13 +357,13 @@ function ProbeForm({
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="probe-concurrency">并发数</Label>
+          <Label htmlFor="probe-concurrency">并发数（推荐 64）</Label>
           <Input
             id="probe-concurrency"
             className="w-28"
             type="number"
             min={1}
-            max={32}
+            max={64}
             required
             value={concurrency}
             disabled={busy}
@@ -371,6 +371,9 @@ function ProbeForm({
           />
         </div>
       </div>
+      <p className="text-xs text-muted-foreground">
+        默认并发 64；使用 Xray 时所有节点任务合计最多同时检测 64 个 IP，排队不计入单 IP 超时。
+      </p>
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="outline" onClick={onDone}>
           取消

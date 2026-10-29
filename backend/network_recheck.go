@@ -81,7 +81,7 @@ func (a *app) recheckNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	items := []networkRecheckItem{}
 	for _, node := range samples {
-		input := scanInput{NodeID: node.id, NetworkIDs: []string{id}, URL: "https://www.gstatic.com/generate_204", Timeout: 5000, Concurrency: 5}
+		input := scanInput{NodeID: node.id, NetworkIDs: []string{id}, URL: "https://www.gstatic.com/generate_204", Timeout: 5000, Concurrency: defaultNodeScanConcurrency}
 		job, _, message := a.launchNodeScan(r.Context(), r.Context().Value(userContextKey{}).(user).ID, input, node.raw, node.name, node.template, []string{cidr}, ips, true)
 		items = append(items, networkRecheckItem{Protocol: node.protocol, JobID: job.ID, Error: message})
 	}

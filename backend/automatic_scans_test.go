@@ -250,10 +250,10 @@ func TestAutomaticNetworkScans(t *testing.T) {
 func TestAutomaticInputDefaults(t *testing.T) {
 	input := scanInput{Timeout: -1, Concurrency: 99}
 	normalizeAutomaticInput(&input)
-	if input.Timeout != 5000 || input.Concurrency != 5 || input.URL == "" {
+	if input.Timeout != 5000 || input.Concurrency != defaultNodeScanConcurrency || input.URL == "" {
 		t.Fatal(input)
 	}
-	valid := scanInput{Timeout: 1000, Concurrency: 32, URL: "https://example.com/check"}
+	valid := scanInput{Timeout: 1000, Concurrency: 64, URL: "https://example.com/check"}
 	input = valid
 	normalizeAutomaticInput(&input)
 	if input.Timeout != valid.Timeout || input.Concurrency != valid.Concurrency || input.URL != valid.URL {
