@@ -65,23 +65,29 @@ export function AvailableIPList({
   useEffect(() => {
     const controller = new AbortController();
     const pending = locationIPs.split(",").filter(ip => ip && locationCache.current[ip] === undefined);
-    let next = 0;
-    async function worker() {
-      while (!controller.signal.aborted && next < pending.length) {
-        const ip = pending[next++];
-        let location: IPLocation | null = null;
-        try {
-          const response = await fetch(`/api/available-ips/location?ip=${encodeURIComponent(ip)}`, { signal: controller.signal });
-          if (!response.ok) throw new Error("查询失败");
-          const data: IPLocation = await response.json();
-          if (/^[A-Z]{2}$/.test(data.country)) location = data;
-        } catch { /* Failed lookups remain available under unknown region. */ }
+    if (pending.length === 0) return () => controller.abort();
+
+    async function loadLocations() {
+      try {
+        const params = new URLSearchParams();
+        pending.forEach(ip => params.append("ip", ip));
+        const response = await fetch(`/api/available-ips/locations?${params}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("查询失败");
+        const results: { ip: string; location: IPLocation | null }[] = await response.json();
         if (controller.signal.aborted) return;
-        locationCache.current[ip] = location;
-        setLocations(current => ({ ...current, [ip]: location }));
+        const resolved: Record<string, IPLocation | null> = {};
+        for (const { ip, location } of results) {
+          const validLocation = location && /^[A-Z]{2}$/.test(location.country) ? location : null;
+          locationCache.current[ip] = validLocation;
+          resolved[ip] = validLocation;
+        }
+        setLocations(current => ({ ...current, ...resolved }));
+      } catch {
+        // Failed lookups remain available under unknown region.
       }
     }
-    for (let workerIndex = 0; workerIndex < Math.min(4, pending.length); workerIndex++) void worker();
+
+    void loadLocations();
     return () => controller.abort();
   }, [locationIPs, locationVersion]);
 

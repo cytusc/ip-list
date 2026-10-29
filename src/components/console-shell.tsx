@@ -59,7 +59,7 @@ export function ConsoleShell({
           </span>
         </Link>
         <div className="px-5 pt-9">
-          <p className="mb-4 px-3 text-[11px] font-medium tracking-widest text-slate-400">
+          <p className="mb-4 px-3 text-[11px] font-medium tracking-widest text-slate-600">
             工作空间
           </p>
           <nav aria-label="主导航" className="space-y-2">
