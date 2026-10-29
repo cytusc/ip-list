@@ -19,6 +19,9 @@ func (a *app) runPatrol(job scanJob, input scanInput, template map[string]any, a
 	targets := all
 	for {
 		job = a.runScanRound(a.scanContext, job, input, template, targets, previous)
+		if err := a.updateDailyNetworkBackoff(a.scanContext, job); err != nil && a.scanContext.Err() == nil {
+			log.Printf("更新网段全量扫描间隔失败 job=%s error=%q", job.ID, err)
+		}
 		if interval == 0 || job.Status != "completed" {
 			return
 		}
@@ -32,9 +35,11 @@ func (a *app) runPatrol(job scanJob, input scanInput, template map[string]any, a
 			return
 		}
 		job.Round++
+		cidrs := job.CIDRs
 		if a.db != nil && job.Protocol != "" {
 			for {
-				cidrs, err := a.protocolRanges(a.scanContext, input.NetworkIDs, job.Protocol)
+				var err error
+				cidrs, err = a.protocolRanges(a.scanContext, input.NetworkIDs, job.Protocol)
 				if err != nil {
 					job.Status = "interrupted"
 					job.Error = "读取协议网段失败"
@@ -63,6 +68,17 @@ func (a *app) runPatrol(job scanJob, input scanInput, template map[string]any, a
 			}
 		}
 		targets, job.Scope = patrolTargets(all, previous, job.Round, input.FullEvery)
+		if job.Scope == "full" && usesDailyNetworkBackoff(job) {
+			dueCIDRs, err := a.dueDailyFullScanCIDRs(a.scanContext, job, cidrs)
+			if err != nil {
+				job.Status = "interrupted"
+				job.Error = "读取网段全量扫描间隔失败"
+				a.savePatrol(&job)
+				return
+			}
+			targets = keepIPsInCIDRs(all, dueCIDRs)
+			job.CIDRs = dueCIDRs
+		}
 		job.Status = "running"
 		job.Total, job.Completed, job.Success = len(targets), 0, 0
 		job.Results = []scanResult{}

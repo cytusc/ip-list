@@ -67,6 +67,21 @@ func (a *app) resumeDueNodeSchedules(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if usesDailyNetworkBackoff(job) {
+			cidrs, err = a.dueDailyFullScanCIDRs(ctx, job, cidrs)
+			if err != nil {
+				return err
+			}
+			if len(cidrs) == 0 {
+				job.Status = "waiting"
+				next := nextDailyScanAt()
+				job.NextRunAt = &next
+				if err = a.persistScan(ctx, &job); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		if len(cidrs) == 0 {
 			continue
 		}

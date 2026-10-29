@@ -303,6 +303,18 @@ CREATE TABLE IF NOT EXISTS network_auto_scans (
 -- Full rechecks retain results and use one cutoff across overlapping ranges.
 ALTER TABLE network_auto_scans ADD COLUMN IF NOT EXISTS recheck_after timestamptz;
 
+-- Daily full patrols back off ranges that repeatedly produce no usable IPs.
+CREATE TABLE IF NOT EXISTS network_scan_backoff (
+ network_id uuid NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+ cidr cidr NOT NULL,
+ protocol varchar(32) NOT NULL,
+ no_output_streak integer NOT NULL DEFAULT 0 CHECK (no_output_streak >= 0),
+ interval_days integer NOT NULL DEFAULT 1 CHECK (interval_days IN (1,3,5,7,15)),
+ next_scan_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (network_id, protocol)
+);
+
 -- Keep previous agents and samples on ICMP; TCP histories are isolated by port.
 ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS mode text NOT NULL DEFAULT 'icmp' CHECK (mode IN ('icmp','tcp'));
 ALTER TABLE latency_probes ADD COLUMN IF NOT EXISTS tcp_port integer NOT NULL DEFAULT 443 CHECK (tcp_port BETWEEN 1 AND 65535);
