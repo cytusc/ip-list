@@ -254,34 +254,45 @@ func (a *app) launchNodeScan(ctx context.Context, userID string, input scanInput
 }
 func (a *app) persistScan(ctx context.Context, job *scanJob) error {
 	job.UpdatedAt = time.Now().UTC()
-	data, err := json.Marshal(job)
-	if err != nil {
+	if err := a.persistScanDatabase(ctx, job); err != nil {
 		return err
 	}
+	return a.persistScanRedis(ctx, job)
+}
+
+// The database stores durable round history; keep these writes independent of
+// the live Redis snapshot so a slow history write cannot interrupt probing.
+func (a *app) persistScanDatabase(ctx context.Context, job *scanJob) error {
 	if job.TargetID != "" {
-		// Long-running CF tasks must remain discoverable beyond the snapshot TTL.
-		_, err = a.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Set(ctx, scanKey(job.ID), data, scanTTL)
-			pipe.Set(ctx, cfLatestKey, job.ID, scanTTL)
-			return nil
-		})
-		return err
+		return nil
 	}
 	if a.db != nil && job.Input.IntervalMinutes > 0 && job.Protocol != "" {
 		// An explicit stop disables the schedule; shutdown/interruption keeps it resumable.
+		data, err := json.Marshal(job)
+		if err != nil {
+			return err
+		}
 		if _, err = a.db.Exec(ctx, `UPDATE node_scan_schedules SET job=$2,enabled=enabled AND $3,updated_at=now() WHERE protocol=$1 AND job_id=$4`, job.Protocol, data, job.Status != "cancelled", job.ID); err != nil {
 			return err
 		}
 	}
-	// Every heartbeat also refreshes the round record, so the record list shows
-	// live counters without reading the task snapshot.
-	if err = a.saveScanRecord(ctx, job, nil); err != nil {
+	return a.saveScanRecord(ctx, job, nil)
+}
+
+func (a *app) persistScanRedis(ctx context.Context, job *scanJob) error {
+	data, err := json.Marshal(job)
+	if err != nil {
 		return err
 	}
 	_, err = a.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.Set(ctx, scanKey(job.ID), data, scanTTL)
-		pipe.Set(ctx, latestKey(job.UserID), job.ID, scanTTL)
-		if job.Protocol != "" {
+		if job.TargetID != "" {
+			// Long-running CF tasks must remain discoverable beyond the snapshot TTL.
+			pipe.Set(ctx, cfLatestKey, job.ID, scanTTL)
+		} else {
+			pipe.Set(ctx, latestKey(job.UserID), job.ID, scanTTL)
+		}
+		if job.Protocol != "" && job.TargetID == "" {
 			pipe.Set(ctx, latestKey(job.UserID)+":"+job.Protocol, job.ID, scanTTL)
 		}
 		return nil
@@ -378,7 +389,8 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 	go func() { workers.Wait(); close(results) }()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	savedCompleted := job.Completed
+	publishedCompleted := job.Completed
+	lastDatabaseAttempt := job.UpdatedAt
 	done := ctx.Done()
 	for {
 		select {
@@ -422,8 +434,8 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 			}
 			done = nil // Drain workers before releasing the lease.
 		case <-ticker.C:
-			checkCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
-			control, err := a.redis.Eval(checkCtx, scanControlScript, []string{job.lockKey(), scanKey(job.ID) + ":cancel", scanKey(job.leaseID()) + ":cancel"}, job.leaseID()).Int()
+			redisCtx, stopRedis := context.WithTimeout(context.Background(), 3*time.Second)
+			control, err := a.redis.Eval(redisCtx, scanControlScript, []string{job.lockKey(), scanKey(job.ID) + ":cancel", scanKey(job.leaseID()) + ":cancel"}, job.leaseID()).Int()
 			if err != nil || control < 0 {
 				job.Status = "interrupted"
 				job.Error = "任务租约失效或 Redis 连接中断，请重试"
@@ -432,18 +444,27 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 				job.Status = "cancelled"
 				cancel()
 			}
-			// Publish changed progress at most once per second. While waiting for
-			// connections, a heartbeat is sufficient to keep stale-task detection valid.
-			if job.Completed != savedCompleted || job.Status != "running" || time.Since(job.UpdatedAt) >= scanHeartbeat {
-				if err = a.persistScan(checkCtx, &job); err != nil {
+			// Keep Redis progress responsive, but write durable database heartbeats
+			// at a fixed interval instead of once for every completed address.
+			if job.Completed != publishedCompleted || job.Status != "running" || time.Since(job.UpdatedAt) >= time.Second {
+				job.UpdatedAt = time.Now().UTC()
+				if err = a.persistScanRedis(redisCtx, &job); err != nil {
 					job.Status = "interrupted"
 					job.Error = "Redis 连接中断，请重试"
 					cancel()
 				} else {
-					savedCompleted = job.Completed
+					publishedCompleted = job.Completed
 				}
 			}
-			stop()
+			stopRedis()
+			if job.Status != "running" || time.Since(lastDatabaseAttempt) >= scanHeartbeat {
+				lastDatabaseAttempt = time.Now()
+				databaseCtx, stopDatabase := context.WithTimeout(context.Background(), 5*time.Second)
+				if err = a.persistScanDatabase(databaseCtx, &job); err != nil {
+					log.Printf("保存扫描数据库心跳失败 job=%s error=%q", job.ID, err)
+				}
+				stopDatabase()
+			}
 		}
 	}
 }
