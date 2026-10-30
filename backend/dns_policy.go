@@ -13,15 +13,16 @@ import (
 )
 
 type dnsConfig struct {
-	Domain     string `json:"domain"`
-	Enabled    bool   `json:"enabled"`
-	Interval   int    `json:"interval_seconds"`
-	TTL        int32  `json:"ttl"`
-	MaxIPs     int    `json:"max_ips"`
-	Window     int    `json:"window_minutes"`
-	MinSuccess int    `json:"min_success_percent"`
-	ProbeID    string `json:"probe_id"`
-	Protocol   string `json:"protocol"`
+	WebsiteEnabled bool   `json:"website_enabled"`
+	Domain         string `json:"domain"`
+	Enabled        bool   `json:"enabled"`
+	Interval       int    `json:"interval_seconds"`
+	TTL            int32  `json:"ttl"`
+	MaxIPs         int    `json:"max_ips"`
+	Window         int    `json:"window_minutes"`
+	MinSuccess     int    `json:"min_success_percent"`
+	ProbeID        string `json:"probe_id"`
+	Protocol       string `json:"protocol"`
 }
 
 func (c *dnsConfig) validate() error {
@@ -116,6 +117,7 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 }
 
 type dnsCandidate struct {
+	Pool     string  `json:"pool,omitempty"`
 	IP       string  `json:"ip"`
 	Provider string  `json:"provider"`
 	Country  string  `json:"country"`
@@ -152,7 +154,14 @@ func dnsDesired(c dnsConfig, candidates []dnsCandidate) map[string]dnsPlanRecord
 		if ip.Is6() {
 			kind = "AAAA"
 		}
-		key := dnsRecordKey(country+"."+c.Domain, kind)
+		name := country + "." + c.Domain
+		if item.Pool == "cf" {
+			if !c.WebsiteEnabled || (country != "hk" && country != "jp" && country != "sg") || item.Delay < 0 || math.IsNaN(item.Delay) || math.IsInf(item.Delay, 0) || (country != "hk" && item.Delay > 80) {
+				continue
+			}
+			name = "url." + c.Domain
+		}
+		key := dnsRecordKey(name, kind)
 		groups[key] = append(groups[key], item)
 	}
 	result := map[string]dnsPlanRecord{}

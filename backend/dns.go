@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/netip"
 	"sort"
@@ -261,6 +262,16 @@ func (a *app) runDNSOnce(ctx context.Context) {
 }
 
 func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, bool, error) {
+	return a.dnsPoolCandidates(ctx, c, false)
+}
+
+func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) ([]dnsCandidate, bool, error) {
+	poolSQL := "SELECT ip,protocol,available FROM shared_node_ip_pool"
+	if website {
+		poolSQL = "SELECT ip,''::text AS protocol,available FROM cf_ip_pool"
+		c.Protocol = ""
+	}
+
 	// Require an online probe with recent results even when the available pool
 	// is empty; a monitoring outage must not delete every country's record.
 	var monitorReady bool
@@ -271,7 +282,7 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := a.db.Query(ctx, `SELECT DISTINCT host(s.ip),COALESCE(info.provider,'') FROM shared_node_ip_pool s `+networkInfoJoin+` WHERE s.available
+	rows, err := a.db.Query(ctx, `SELECT DISTINCT host(s.ip),COALESCE(info.provider,'') FROM (`+poolSQL+`) s `+networkInfoJoin+` WHERE s.available
  AND ($1='' OR s.protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) ORDER BY host(s.ip)`, c.Protocol)
 	if err != nil {
 		return nil, false, err
@@ -300,7 +311,7 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
  AND NOT EXISTS(SELECT 1 FROM latency_probe_results newer WHERE newer.probe_id=ok.probe_id
  AND newer.ip=ok.ip AND newer.mode=ok.mode AND newer.tcp_port=ok.tcp_port
  AND (newer.checked_at,newer.id)>(ok.checked_at,ok.id)))
- FROM latency_probes p CROSS JOIN (SELECT DISTINCT ip FROM shared_node_ip_pool s WHERE available
+ FROM latency_probes p CROSS JOIN (SELECT DISTINCT ip FROM (`+poolSQL+`) s WHERE available
  AND ($1='' OR protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)) t
  LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('At',checked_at,'Success',success,'Delay',delay_ms) ORDER BY checked_at,id) AS data
  FROM latency_probe_results WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
@@ -311,6 +322,8 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 	}
 	now := time.Now()
 	states := map[string][]string{}
+	totals := map[string]float64{}
+	counts := map[string]int{}
 	for rows.Next() {
 		var ip string
 		var fresh int
@@ -324,6 +337,14 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 			break
 		}
 		state, delay := dnsProbeHealth(samples, now, time.Duration(fresh)*time.Second, c)
+		if website && state == "healthy" {
+			for _, sample := range samples {
+				if sample.Success && sample.Delay >= 0 && !math.IsNaN(sample.Delay) && !math.IsInf(sample.Delay, 0) && !sample.At.Before(now.Add(-time.Duration(c.Window)*time.Minute)) && !sample.At.After(now) {
+					totals[ip] += sample.Delay
+					counts[ip]++
+				}
+			}
+		}
 		uncorroborated := state == "failed" && !otherTargetOK
 		state = dnsCorroborateFailure(state, otherTargetOK)
 		states[ip] = append(states[ip], state)
@@ -351,6 +372,12 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 		return nil, false, err
 	}
 	for i := range items {
+		if website {
+			items[i].Pool = "cf"
+			if counts[items[i].IP] > 0 {
+				items[i].Delay = totals[items[i].IP] / float64(counts[items[i].IP])
+			}
+		}
 		if items[i].State == "healthy" {
 			continue
 		}
@@ -426,6 +453,14 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	candidates, uncertain, err := a.dnsCandidates(ctx, c)
 	if err != nil {
 		return err
+	}
+	if c.WebsiteEnabled {
+		website, websiteUncertain, websiteErr := a.dnsPoolCandidates(ctx, c, true)
+		if websiteErr != nil {
+			return websiteErr
+		}
+		candidates = append(candidates, website...)
+		uncertain = uncertain || websiteUncertain
 	}
 	// Bound external geolocation concurrency. Resolve unknown candidates too,
 	// so their existing country records are held rather than accidentally erased.

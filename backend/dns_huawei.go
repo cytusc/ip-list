@@ -131,14 +131,14 @@ func (h *huaweiDNS) Apply(ctx context.Context, zone string, r dnsPlanRecord, ttl
 	return nil
 }
 
-// Manage only exact alpha-2 country names on the default line. Existing hk.*
-// records are adopted; weighted duplicates or CNAME conflicts are blocked.
+// Manage country names and the optional website name on the default line.
+// Existing records are adopted; weighted duplicates or CNAME conflicts are blocked.
 func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteRecord, managed map[string]bool, uncertain bool) []dnsPlanRecord {
 	desired := dnsDesired(c, candidates)
 	unknown := map[string]bool{}
 	for _, ip := range candidates {
 		if ip.State == "unknown" {
-			unknown[ip.IP] = true
+			unknown[ip.Pool+"/"+ip.IP] = true
 		}
 	}
 	byKey := map[string][]dnsRemoteRecord{}
@@ -151,7 +151,7 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 			continue
 		}
 		prefix, ok := strings.CutSuffix(r.Name, "."+c.Domain)
-		if !ok || dnsCountry(prefix) == "" || (r.Type != "A" && r.Type != "AAAA") {
+		if !ok || (dnsCountry(prefix) == "" && !(c.WebsiteEnabled && prefix == "url")) || (r.Type != "A" && r.Type != "AAAA") {
 			continue
 		}
 		key := dnsRecordKey(r.Name, r.Type)
@@ -173,7 +173,11 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 		// Preserve uncertain addresses already published, without allowing them
 		// to block removal of confirmed failures from the same country's record.
 		for _, ip := range r.Current {
-			if unknown[ip] && !slices.Contains(r.Desired, ip) {
+			pool := ""
+			if r.Name == "url."+c.Domain {
+				pool = "cf"
+			}
+			if unknown[pool+"/"+ip] && !slices.Contains(r.Desired, ip) {
 				r.Desired = append(r.Desired, ip)
 				r.Reason = "保留已发布但采样待确认的 IP，待下一轮验证"
 			}
