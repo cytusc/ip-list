@@ -271,21 +271,21 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := a.db.Query(ctx, `SELECT DISTINCT host(ip) FROM shared_node_ip_pool s WHERE available
- AND ($1='' OR protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) ORDER BY host(ip)`, c.Protocol)
+	rows, err := a.db.Query(ctx, `SELECT DISTINCT host(s.ip),COALESCE(info.provider,'') FROM shared_node_ip_pool s `+networkInfoJoin+` WHERE s.available
+ AND ($1='' OR s.protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) ORDER BY host(s.ip)`, c.Protocol)
 	if err != nil {
 		return nil, false, err
 	}
 	items := []dnsCandidate{}
 	index := map[string]int{}
 	for rows.Next() {
-		var ip string
-		if err = rows.Scan(&ip); err != nil {
+		var ip, provider string
+		if err = rows.Scan(&ip, &provider); err != nil {
 			rows.Close()
 			return nil, false, err
 		}
 		index[ip] = len(items)
-		items = append(items, dnsCandidate{IP: ip, State: "unknown", Reason: "没有在线探针的新鲜完整采样"})
+		items = append(items, dnsCandidate{IP: ip, Provider: provider, State: "unknown", Reason: "没有在线探针的新鲜完整采样"})
 	}
 	err = rows.Err()
 	rows.Close()

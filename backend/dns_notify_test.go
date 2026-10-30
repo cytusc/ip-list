@@ -19,7 +19,7 @@ func dnsNotifyTestReport() dnsReport {
 		Mode: "sync", Domain: "reiiv.com", StartedAt: at, FinishedAt: &at,
 		Records: []dnsPlanRecord{{Name: "hk.reiiv.com", Type: "A", Action: "update", Applied: true,
 			Current: []string{"1.1.1.1", "8.8.8.8"}, Desired: []string{"1.1.1.1", "9.9.9.9"}}},
-		Candidates: []dnsCandidate{{IP: "9.9.9.9", State: "healthy", Delay: 42.56}},
+		Candidates: []dnsCandidate{{IP: "9.9.9.9", Provider: "测试运营商", State: "healthy", Delay: 42.56}},
 	}
 }
 
@@ -46,6 +46,9 @@ func TestDNSFeishuChangeCard(t *testing.T) {
 	if strings.Contains(string(raw), "1.1.1.1") {
 		t.Fatal("unchanged IP appeared in the diff", string(raw))
 	}
+	if !strings.Contains(string(raw), "探针平均延迟 42.6 ms · 运营商：测试运营商") {
+		t.Fatal("added IP missing provider", string(raw))
+	}
 }
 
 func TestDNSFeishuAddedIPDelay(t *testing.T) {
@@ -53,9 +56,9 @@ func TestDNSFeishuAddedIPDelay(t *testing.T) {
 	report.Records = []dnsPlanRecord{{Name: "jp.reiiv.com", Type: "AAAA", Action: "create", Applied: true,
 		Desired: []string{"2606:4700:4700::1111", "2606:4700:4700::1001", "2606:4700:4700::1002"}}}
 	report.Candidates = []dnsCandidate{
-		{IP: "2606:4700:4700:0:0:0:0:1111", State: "healthy", Delay: 12.34},
+		{IP: "2606:4700:4700:0:0:0:0:1111", Provider: "IPv6 运营商", State: "healthy", Delay: 12.34},
 		{IP: "2606:4700:4700::1001", State: "healthy", Delay: 0},
-		{IP: "2606:4700:4700::1002", State: "unknown", Delay: 10},
+		{IP: "2606:4700:4700::1002", Provider: "未就绪运营商", State: "unknown", Delay: 10},
 	}
 	messages, err := dnsFeishuMessages(report)
 	if err != nil || len(messages) != 1 {
@@ -63,6 +66,11 @@ func TestDNSFeishuAddedIPDelay(t *testing.T) {
 	}
 	raw, _ := json.Marshal(messages[0])
 	for _, want := range []string{"`2606:4700:4700::1111` · 探针平均延迟 12.3 ms", "`2606:4700:4700::1001` · 探针平均延迟 0.0 ms", "`2606:4700:4700::1002` · 探针平均延迟暂无"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("card missing %q: %s", want, raw)
+		}
+	}
+	for _, want := range []string{"12.3 ms · 运营商：IPv6 运营商", "0.0 ms · 运营商：未知运营商", "延迟暂无 · 运营商：未就绪运营商"} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("card missing %q: %s", want, raw)
 		}

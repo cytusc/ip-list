@@ -19,6 +19,34 @@ func dnsTestConfig() dnsConfig {
 	return dnsConfig{Domain: "reiiv.com", Interval: 300, TTL: 300, MaxIPs: 10, Window: 5, MinSuccess: 80}
 }
 
+func TestDNSCandidateProvider(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	_, err := a.db.Exec(ctx, `
+ INSERT INTO nodes(name,address,port,share_uri) VALUES('provider-test','sample.invalid',443,'vless://test@sample.invalid:443?type=grpc');
+ INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+ SELECT 'grpc',ip::inet,true,10,now(),md5('vless://test@sample.invalid:443?type=grpc'),'{"status":"passed"}'::jsonb
+ FROM unnest(ARRAY['192.0.2.1','2001:db8::1','198.51.100.1']) ip;
+ INSERT INTO networks(name,cidr,provider,enabled) VALUES
+ ('broad','192.0.0.0/16','宽网段运营商',true),
+ ('specific','192.0.2.0/24','精确运营商',true),
+ ('disabled','192.0.2.1/32','停用运营商',false),
+ ('ipv6','2001:db8::/32','IPv6 运营商',true);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, _, err := a.dnsCandidates(ctx, dnsTestConfig())
+	if err != nil || len(candidates) != 3 {
+		t.Fatalf("candidates=%+v err=%v", candidates, err)
+	}
+	want := map[string]string{"192.0.2.1": "精确运营商", "2001:db8::1": "IPv6 运营商", "198.51.100.1": ""}
+	for _, candidate := range candidates {
+		if provider, ok := want[candidate.IP]; !ok || provider != candidate.Provider {
+			t.Fatalf("unexpected provider: %+v", candidate)
+		}
+	}
+}
+
 func TestDNSHealth(t *testing.T) {
 	now := time.Now()
 	sample := func(seconds int, ok bool) dnsSample {

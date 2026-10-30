@@ -65,7 +65,7 @@ func dnsFeishuMarkdown(content string) map[string]any {
 	return map[string]any{"tag": "div", "text": map[string]string{"tag": "lark_md", "content": content}}
 }
 
-func dnsFeishuIPList(label string, ips []string, delays map[string]float64) map[string]any {
+func dnsFeishuIPList(label string, ips []string, delays map[string]float64, providers map[string]string) map[string]any {
 	content := "无"
 	if len(ips) > 0 {
 		lines := make([]string, 0, len(ips))
@@ -77,6 +77,13 @@ func dnsFeishuIPList(label string, ips []string, delays map[string]float64) map[
 				} else {
 					line += " · 探针平均延迟暂无"
 				}
+			}
+			if providers != nil {
+				provider := strings.TrimSpace(providers[ip])
+				if provider == "" {
+					provider = "未知运营商"
+				}
+				line += " · 运营商：" + provider
 			}
 			lines = append(lines, line)
 		}
@@ -112,12 +119,19 @@ func dnsFeishuMessages(report dnsReport) ([]dnsFeishuMessage, error) {
 	m := newMessage()
 	count := 0
 	delays := make(map[string]float64, len(report.Candidates))
+	providers := make(map[string]string, len(report.Candidates))
 	for _, candidate := range report.Candidates {
 		ip, err := netip.ParseAddr(candidate.IP)
-		if err != nil || candidate.State != "healthy" || candidate.Delay < 0 || math.IsNaN(candidate.Delay) || math.IsInf(candidate.Delay, 0) {
+		if err != nil {
 			continue
 		}
 		key := ip.Unmap().String()
+		if provider := strings.TrimSpace(candidate.Provider); provider != "" {
+			providers[key] = provider
+		}
+		if candidate.State != "healthy" || candidate.Delay < 0 || math.IsNaN(candidate.Delay) || math.IsInf(candidate.Delay, 0) {
+			continue
+		}
 		if old, ok := delays[key]; !ok || candidate.Delay < old {
 			delays[key] = candidate.Delay
 		}
@@ -141,8 +155,8 @@ func dnsFeishuMessages(report dnsReport) ([]dnsFeishuMessage, error) {
 		block := []map[string]any{
 			{"tag": "hr"},
 			dnsFeishuMarkdown(fmt.Sprintf("**%s %s · %s**\n%s · %s · 新增 **%d** / 移除 **%d**", flag, strings.ToUpper(country), r.Name, r.Type, action, len(added), len(removed))),
-			dnsFeishuIPList("🟢 新增 IP", added, delays),
-			dnsFeishuIPList("🔴 移除 IP", removed, nil),
+			dnsFeishuIPList("🟢 新增 IP", added, delays, providers),
+			dnsFeishuIPList("🔴 移除 IP", removed, nil, nil),
 		}
 		candidate := m
 		candidate.Card.Elements = append(append([]map[string]any(nil), m.Card.Elements...), block...)
