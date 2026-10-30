@@ -113,6 +113,7 @@ func main() {
 		log.Fatal(err)
 	}
 	a.scanContext = ctx
+	go a.maintainConnectivityData(ctx)
 	go a.revalidateLegacyCertificates(ctx)
 	go a.resumeNodeSchedules(ctx)
 	go a.maintainAutomaticScans(ctx)
@@ -379,6 +380,7 @@ func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
 		extra = ",COALESCE((SELECT json_agg(p.protocol ORDER BY p.protocol) FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'[]'::json) AS disabled_protocols"
 		extra += `,(SELECT count(*) FROM current_node_ip_pool p
           WHERE p.protocol='grpc' AND p.available AND p.ip <<= n.cidr
+          AND p.ip >= network(n.cidr)::inet AND p.ip <= host(broadcast(n.cidr))::inet
           AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)) AS available_count`
 		order = "available_count DESC,n.created_at DESC,n.id DESC"
 	}

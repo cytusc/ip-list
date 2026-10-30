@@ -365,7 +365,9 @@ func (a *app) scanNetworkProgress(ctx context.Context) (networkScanProgress, err
   NOT EXISTS(SELECT 1 FROM network_auto_scans q WHERE q.network_id=n.id AND q.protocol=$1 AND q.cidr=n.cidr)
   AND (SELECT count(*) FROM (
     SELECT p.ip FROM node_ip_pool p WHERE p.protocol=$1 AND p.ip <<= n.cidr
+      AND p.ip >= network(n.cidr)::inet AND p.ip <= host(broadcast(n.cidr))::inet
     UNION SELECT b.ip FROM ip_blacklist b WHERE b.ip <<= n.cidr
+      AND b.ip >= network(n.cidr)::inet AND b.ip <= host(broadcast(n.cidr))::inet
    ) checked) >= power(2::numeric, (CASE family(n.cidr) WHEN 4 THEN 32 ELSE 128 END)-masklen(n.cidr)))
  FROM networks n WHERE n.enabled`, connectivityProtocol).Scan(&progress.Total, &progress.Completed)
 	progress.Pending = progress.Total - progress.Completed
