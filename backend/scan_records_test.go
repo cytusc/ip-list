@@ -149,3 +149,78 @@ func TestScanRecords(t *testing.T) {
 		t.Fatalf("second round: %+v", items)
 	}
 }
+
+// Counters use durable IP coverage, including failures and blacklist entries,
+// rather than completed batch records or the current page of history.
+func TestScanNetworkProgress(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("设置 TEST_DATABASE_URL 可验证网段总体进度")
+	}
+	ctx := context.Background()
+	db, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !strings.HasSuffix(db.Config().ConnConfig.Database, "_test") {
+		t.Fatal("测试数据库名必须以 _test 结尾")
+	}
+	if _, err = db.Exec(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{db: db}
+	baseline, err := a.scanNetworkProgress(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cidr := fmt.Sprintf("fd91:%x:%x::/126", time.Now().UnixNano()&65535, (time.Now().UnixNano()>>16)&65535)
+	var id, uid string
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = db.QueryRow(ctx, `INSERT INTO users(username,password_hash) VALUES($1,'unused') RETURNING id::text`, fmt.Sprintf("progress%d", time.Now().UnixNano())).Scan(&uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = db.Exec(ctx, "DELETE FROM users WHERE id=$1", uid) }()
+	err = db.QueryRow(ctx, `INSERT INTO networks(name,cidr,provider,asn) VALUES('进度测试',$1::cidr,'测试运营商','AS64512') RETURNING id::text`, cidr).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(ctx, "DELETE FROM networks WHERE id=$1", id)
+		_, _ = db.Exec(ctx, "DELETE FROM node_ip_pool WHERE ip <<= $1::cidr", cidr)
+		_, _ = db.Exec(ctx, "DELETE FROM ip_blacklist WHERE ip <<= $1::cidr", cidr)
+	}()
+	check := func(completed, pending int) {
+		t.Helper()
+		got, err := a.scanNetworkProgress(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := networkScanProgress{Total: baseline.Total + 1, Completed: baseline.Completed + completed, Pending: baseline.Pending + pending}
+		if got != want {
+			t.Fatalf("progress=%+v, want %+v", got, want)
+		}
+	}
+	check(0, 1) // A missing queue entry does not mean completed.
+	exec(`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at) SELECT $1,network($2::cidr)::inet+g,false,0,now() FROM generate_series(0,1) g`, connectivityProtocol, cidr)
+	check(0, 1) // A finished batch or partial scan is still pending.
+	exec(`INSERT INTO ip_blacklist(ip) SELECT network($1::cidr)::inet+g FROM generate_series(1,3) g`, cidr)
+	check(1, 0) // Overlapping blacklist and results count each IP once.
+	exec(`INSERT INTO network_auto_scans(network_id,cidr,protocol,user_id) VALUES($1,$2::cidr,$3,$4)`, id, cidr, connectivityProtocol, uid)
+	check(0, 1) // A full recheck stays pending despite historical coverage.
+	metadata, err := a.scanNetworkMetadata(ctx, []string{cidr})
+	if err != nil || len(metadata) != 1 || metadata[0].Provider != "测试运营商" || metadata[0].ASN != "AS64512" {
+		t.Fatalf("metadata=%+v err=%v", metadata, err)
+	}
+	exec("UPDATE networks SET enabled=false WHERE id=$1", id)
+	got, err := a.scanNetworkProgress(ctx)
+	if err != nil || got != baseline {
+		t.Fatalf("disabled range counted: %+v err=%v", got, err)
+	}
+}

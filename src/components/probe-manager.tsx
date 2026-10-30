@@ -33,6 +33,7 @@ import type {
   Node,
   ScanRecord,
   ScanRecordList,
+  ScanNetwork,
 } from "@/lib/types";
 
 const statusText: Record<string, string> = {
@@ -56,6 +57,8 @@ export function ProbeList({
   const {data,setPage,refresh,loading,error}=usePagedList("scan-records",initial,{protocol},data=>(data as typeof initial).active ? 2000 : 10000);
   const [stopping,setStopping]=useState(false);
   const active=(data as typeof initial).active;
+  const scanNetworks = (data as typeof initial).networks ?? [];
+  const networkProgress = (data as typeof initial).network_progress;
   const protocols=["grpc",...Object.keys(protocolLabels)];
   return (
     <div className="space-y-6">
@@ -94,9 +97,22 @@ export function ProbeList({
         </p>
       )}
 
+      {networkProgress && (
+        <div className="rounded-xl border bg-white p-4 sm:px-5" aria-label="网段总体进度">
+          <p className="text-sm font-medium">网段检测进度</p>
+          <div className="mt-3 grid grid-cols-3 gap-3 text-sm tabular-nums">
+            <div><p className="text-xs text-muted-foreground">启用网段</p><p className="mt-1 text-xl font-semibold">{networkProgress.total}</p></div>
+            <div><p className="text-xs text-muted-foreground">已完成</p><p className="mt-1 text-xl font-semibold text-emerald-700">{networkProgress.completed}</p></div>
+            <div><p className="text-xs text-muted-foreground">待完成（含检测中）</p><p className="mt-1 text-xl font-semibold text-primary">{networkProgress.pending}</p></div>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">统计全部启用网段；全部 IP 已检测或已屏蔽且无排队复测时计为完成。</p>
+        </div>
+      )}
+
       {active && (
         <ActiveBanner
           active={active}
+          networks={scanNetworks}
           record={data.items.find(
             (item) =>
               item.job_id === active.job_id && item.round === active.round,
@@ -148,6 +164,7 @@ export function ProbeList({
           </div>
           <RecordTable
             items={data.items}
+            networks={scanNetworks}
             active={active}
             onRetried={() => refresh()}
           />
@@ -168,11 +185,13 @@ export function ProbeList({
 
 function ActiveBanner({
   active,
+  networks,
   record,
   stopping,
   onStop,
 }: {
   active: ActiveScan;
+  networks: ScanNetwork[];
   record?: ScanRecord;
   stopping: boolean;
   onStop: () => void;
@@ -198,7 +217,7 @@ function ActiveBanner({
             </Badge>
             {running && (
               <span className="font-normal text-muted-foreground tabular-nums">
-                {active.completed} / {active.total}（{done}%）
+                IP {active.completed} / {active.total}（{done}%）
               </span>
             )}
           </p>
@@ -212,6 +231,10 @@ function ActiveBanner({
               ? ` · 自动巡检间隔 ${active.interval_minutes} 分钟`
               : ""}
           </p>
+          <div className="mt-3 text-sm">
+            <p className="mb-1 text-xs text-muted-foreground">{running ? "当前检测网段" : "本轮网段"}</p>
+            <NetworkSummary cidrs={active.cidrs ?? record?.cidrs ?? []} networks={networks} />
+          </div>
           {running && (
             <progress
               aria-label="检测进度"
@@ -238,10 +261,12 @@ function ActiveBanner({
 
 function RecordTable({
   items,
+  networks,
   active,
   onRetried,
 }: {
   items: ScanRecord[];
+  networks: ScanNetwork[];
   active: ActiveScan | null;
   onRetried: () => void;
 }) {
@@ -258,9 +283,9 @@ function RecordTable({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate font-medium">{item.node_name}</p>
+                    <NetworkSummary cidrs={item.cidrs} networks={networks} />
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      {item.protocol === "grpc" ? connectivityLabel : protocolLabels[item.protocol] || item.protocol} · 第{" "}
+                      第{" "}
                       {item.round} 轮 ·{" "}
                       {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测" : "全量"}
                     </p>
@@ -315,7 +340,7 @@ function RecordTable({
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="pl-5">开始时间</TableHead>
-              <TableHead>节点 / 协议</TableHead>
+              <TableHead>网段 / 运营商</TableHead>
               <TableHead className="w-32">轮次</TableHead>
               <TableHead className="w-32">可用 / 已测</TableHead>
               <TableHead className="w-24">可用率</TableHead>
@@ -337,11 +362,8 @@ function RecordTable({
                       href={`/probes/${item.id}`}
                       className="font-medium after:absolute after:inset-0 after:content-[''] group-hover:text-primary"
                     >
-                      {item.node_name}
+                      <NetworkSummary cidrs={item.cidrs} networks={networks} />
                     </Link>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {item.protocol === "grpc" ? connectivityLabel : protocolLabels[item.protocol] || item.protocol}
-                    </p>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
                     第 {item.round} 轮 ·{" "}
@@ -414,6 +436,21 @@ function RecordTable({
       </div>
     </>
   );
+}
+
+function NetworkSummary({ cidrs, networks }: { cidrs: string[]; networks: ScanNetwork[] }) {
+  if (!cidrs.length) return <span className="text-muted-foreground">暂无网段信息</span>;
+  return <div className="space-y-2">
+    {cidrs.map((cidr) => {
+      const network = networks.find((item) => item.cidr === cidr);
+      return <div key={cidr} className="min-w-0">
+        <p className="break-all font-mono text-sm font-medium">{cidr}</p>
+        <p className="mt-0.5 break-words text-xs font-normal text-muted-foreground">
+          {[network?.name, network?.provider || "未知运营商", network?.asn].filter(Boolean).join(" · ")}
+        </p>
+      </div>;
+    })}
+  </div>;
 }
 
 function RetryScanButton({

@@ -218,6 +218,7 @@ export function ConfigManager({
               <TableHead className="pl-6">{label}名称</TableHead>
               <TableHead>{isNode ? "节点地址" : "CIDR 网段"}</TableHead>
               {!isNode && <TableHead>ASN / 服务商</TableHead>}
+              {!isNode && <TableHead className="text-right">可用 IP ↓</TableHead>}
               <TableHead>{isNode ? "状态" : "全局 / 协议池状态"}</TableHead>
               <TableHead className="hidden xl:table-cell">更新时间</TableHead>
               <TableHead className="pr-6 text-right">操作</TableHead>
@@ -258,6 +259,11 @@ export function ConfigManager({
                     <p className="mt-1 break-words text-muted-foreground">
                       {item.provider || "未填写"}
                     </p>
+                  </TableCell>
+                )}
+                {"cidr" in item && (
+                  <TableCell className="text-right font-medium tabular-nums text-emerald-700">
+                    {item.available_count ?? 0}
                   </TableCell>
                 )}
                 <TableCell>

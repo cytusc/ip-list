@@ -316,3 +316,62 @@ func TestCFDetailPagination(t *testing.T) {
 		}
 	}
 }
+
+func TestNetworkAvailableCountOrdering(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	statements := []string{
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('grpc','sample',443,'vless://sample@host:443?type=grpc'),('ws','sample',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO networks(name,cidr,created_at) SELECT 'rank-'||i,('198.19.'||i||'.0/24')::cidr,'2026-01-01'::timestamptz FROM generate_series(0,55) i`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+   SELECT 'grpc',('198.19.'||i||'.'||j)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}'::jsonb
+   FROM generate_series(1,55) i CROSS JOIN LATERAL generate_series(1,i) j`,
+		`INSERT INTO ip_blacklist(ip) VALUES('198.19.55.1')`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) VALUES
+   ('grpc','198.19.55.250',true,20,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"invalid"}'),
+   ('grpc','198.19.55.251',true,20,now(),'outdated','{"status":"passed"}'),
+   ('grpc','198.19.55.252',false,0,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}')`,
+	}
+	for _, query := range statements {
+		if _, err := a.db.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := func(w http.ResponseWriter, r *http.Request) { a.list(w, r, "networks") }
+	type entry struct {
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Count int    `json:"available_count"`
+	}
+	seen := map[string]bool{}
+	previous := 100
+	for page, size := range []int{50, 6} {
+		w := pageRequest(t, handler, fmt.Sprintf("/networks?page=%d", page+1), 200)
+		var rows []entry
+		if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != size {
+			t.Fatalf("page size=%d, want %d", len(rows), size)
+		}
+		for _, row := range rows {
+			var want int
+			if _, err := fmt.Sscanf(row.Name, "rank-%d", &want); err != nil {
+				t.Fatal(err)
+			}
+			if want == 55 {
+				want--
+			}
+			if row.Count != want || row.Count > previous || seen[row.ID] {
+				t.Fatalf("incorrect count/order or duplicate: %+v, previous=%d", row, previous)
+			}
+			previous, seen[row.ID] = row.Count, true
+		}
+	}
+	// Filters preserve the same count/order, rather than sorting only one page.
+	w := pageRequest(t, handler, "/networks?search=rank-55", 200)
+	var rows []entry
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil || len(rows) != 1 || rows[0].Count != 54 {
+		t.Fatalf("filtered rows=%+v err=%v", rows, err)
+	}
+}

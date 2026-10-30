@@ -46,11 +46,28 @@ type scanRecord struct {
 
 // The list only needs the summary plus a pointer to the round that is running.
 type scanRecordList struct {
-	Items  []scanRecord `json:"items"`
-	Active *activeScan  `json:"active"`
+	Items           []scanRecord        `json:"items"`
+	Active          *activeScan         `json:"active"`
+	Networks        []scanNetwork       `json:"networks"`
+	NetworkProgress networkScanProgress `json:"network_progress"`
+}
+
+// Metadata is limited to ranges visible on this page and in the live task.
+type scanNetwork struct {
+	CIDR     string `json:"cidr"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	ASN      string `json:"asn"`
+}
+
+type networkScanProgress struct {
+	Total     int `json:"total"`
+	Completed int `json:"completed"`
+	Pending   int `json:"pending"`
 }
 
 type activeScan struct {
+	CIDRs           []string   `json:"cidrs"`
 	JobID           string     `json:"job_id"`
 	Protocol        string     `json:"protocol"`
 	NodeName        string     `json:"node_name"`
@@ -158,7 +175,25 @@ func (a *app) listScanRecords(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	respond(w, 200, scanRecordList{Items: items, Active: a.activeScan(r.Context())})
+	active := a.activeScan(r.Context())
+	cidrs := []string{}
+	for _, item := range items {
+		cidrs = append(cidrs, item.CIDRs...)
+	}
+	if active != nil {
+		cidrs = append(cidrs, active.CIDRs...)
+	}
+	networks, err := a.scanNetworkMetadata(r.Context(), cidrs)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	progress, err := a.scanNetworkProgress(r.Context())
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	respond(w, 200, scanRecordList{Items: items, Active: active, Networks: networks, NetworkProgress: progress})
 }
 
 func (a *app) getScanRecord(w http.ResponseWriter, r *http.Request) {
@@ -292,8 +327,52 @@ func (a *app) activeScan(ctx context.Context) *activeScan {
 		return nil
 	}
 	return &activeScan{
-		JobID: job.ID, Protocol: job.Protocol, NodeName: job.NodeName, Round: job.Round,
+		CIDRs: job.CIDRs, JobID: job.ID, Protocol: job.Protocol, NodeName: job.NodeName, Round: job.Round,
 		Status: job.Status, Total: job.Total, Completed: job.Completed, Success: job.Success,
 		IntervalMinutes: job.Input.IntervalMinutes, NextRunAt: job.NextRunAt,
 	}
+}
+
+func (a *app) scanNetworkMetadata(ctx context.Context, cidrs []string) ([]scanNetwork, error) {
+	rows, err := a.db.Query(ctx, `SELECT cidr::text,name,provider,asn FROM networks WHERE cidr=ANY($1::cidr[]) ORDER BY cidr`, cidrs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []scanNetwork{}
+	for rows.Next() {
+		var item scanNetwork
+		if err := rows.Scan(&item.CIDR, &item.Name, &item.Provider, &item.ASN); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// A queued range stays pending across all 4096-IP batches. Unscheduled ranges
+// without full coverage must not appear completed merely because no queue
+// entry exists. Durable results outlive the seven-day round history.
+func (a *app) scanNetworkProgress(ctx context.Context) (networkScanProgress, error) {
+	var progress networkScanProgress
+	const cacheKey = "ipfilter:scan:network-progress"
+	if a.redis != nil {
+		if data, err := a.redis.Get(ctx, cacheKey).Bytes(); err == nil && json.Unmarshal(data, &progress) == nil {
+			return progress, nil
+		}
+	}
+	err := a.db.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE
+  NOT EXISTS(SELECT 1 FROM network_auto_scans q WHERE q.network_id=n.id AND q.protocol=$1 AND q.cidr=n.cidr)
+  AND (SELECT count(*) FROM (
+    SELECT p.ip FROM node_ip_pool p WHERE p.protocol=$1 AND p.ip <<= n.cidr
+    UNION SELECT b.ip FROM ip_blacklist b WHERE b.ip <<= n.cidr
+   ) checked) >= power(2::numeric, (CASE family(n.cidr) WHEN 4 THEN 32 ELSE 128 END)-masklen(n.cidr)))
+ FROM networks n WHERE n.enabled`, connectivityProtocol).Scan(&progress.Total, &progress.Completed)
+	progress.Pending = progress.Total - progress.Completed
+	if err == nil && a.redis != nil {
+		if data, marshalErr := json.Marshal(progress); marshalErr == nil {
+			_ = a.redis.Set(ctx, cacheKey, data, 10*time.Second).Err()
+		}
+	}
+	return progress, err
 }

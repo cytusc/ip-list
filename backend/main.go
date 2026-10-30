@@ -373,9 +373,14 @@ func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
 	search, status := r.URL.Query().Get("search"), r.URL.Query().Get("status")
 	text := "n.name||' '||n.address||' '||n.description"
 	extra := ""
+	order := "n.created_at DESC,n.id DESC"
 	if kind == "networks" {
 		text = "n.name||' '||n.cidr::text||' '||n.description||' '||n.asn||' '||n.provider||' '||COALESCE((SELECT string_agg(p.protocol,' ') FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'')"
 		extra = ",COALESCE((SELECT json_agg(p.protocol ORDER BY p.protocol) FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'[]'::json) AS disabled_protocols"
+		extra += `,(SELECT count(*) FROM current_node_ip_pool p
+          WHERE p.protocol='grpc' AND p.available AND p.ip <<= n.cidr
+          AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)) AS available_count`
+		order = "available_count DESC,n.created_at DESC,n.id DESC"
 	}
 	where := " FROM " + kind + " n WHERE ($1='' OR position(lower($1) in lower(" + text + "))>0) AND ($2='' OR $2='all' OR ($2='enabled' AND n.enabled) OR ($2='disabled' AND NOT n.enabled)"
 	if kind == "networks" {
@@ -401,7 +406,7 @@ func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
 	}
 	w.Header().Set("X-All-Total", strconv.Itoa(total))
 	w.Header().Set("X-Enabled-Count", strconv.Itoa(enabled))
-	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.*" + extra + where + " ORDER BY n.created_at DESC,n.id DESC LIMIT $4 OFFSET $5) t"
+	query := "SELECT COALESCE(json_agg(t),'[]'::json) FROM (SELECT n.*" + extra + where + " ORDER BY " + order + " LIMIT $4 OFFSET $5) t"
 	var data json.RawMessage
 	if err := a.db.QueryRow(r.Context(), query, search, status, ids, p.Size, p.Offset()).Scan(&data); err != nil {
 		dbError(w, err)

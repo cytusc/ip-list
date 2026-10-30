@@ -11,6 +11,7 @@ export type Node = {
   updated_at: string;
 };
 export type Network = {
+  available_count?: number;
   disabled_protocols?: string[];
   asn: string;
   provider: string;
@@ -89,6 +90,7 @@ export type ScanRecord = {
 };
 /** 后台仍在进行的任务：巡检等待下一轮时没有任何记录处于运行状态。 */
 export type ActiveScan = {
+  cidrs?: string[];
   job_id: string;
   protocol: string;
   node_name: string;
@@ -100,7 +102,10 @@ export type ActiveScan = {
   interval_minutes: number;
   next_run_at?: string | null;
 };
+export type ScanNetwork = Pick<Network, "cidr" | "name" | "provider" | "asn">;
 export type ScanRecordList = {
+  networks?: ScanNetwork[];
+  network_progress?: { total: number; completed: number; pending: number };
   items: ScanRecord[];
   active: ActiveScan | null;
 };

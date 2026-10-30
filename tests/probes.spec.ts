@@ -28,7 +28,7 @@ test("导入节点、单次检测、记录详情与巡检停止", async ({
       .fill(process.env.ADMIN_PASSWORD!);
     await page.getByRole("button", { name: "登录控制台" }).click();
     await expect(page).toHaveURL(/\/nodes$/);
-    await page.getByRole("button", { name: "导入 VLESS 节点" }).click();
+    await page.getByRole("button", { name: "导入 VLESS / Trojan 节点" }).click();
     const importDialog = page.getByRole("dialog");
     await importDialog
       .getByLabel("节点链接")
@@ -80,8 +80,8 @@ test("导入节点、单次检测、记录详情与巡检停止", async ({
       page.getByRole("option", { name: new RegExp(name) }),
     ).toContainText("已勾选");
     await page.getByRole("button", { name: "完成", exact: true }).click();
-    await dialog.getByLabel("巡检方式", { exact: true }).click();
-    await page.getByRole("option", { name: "单次检测", exact: true }).click();
+    await dialog.getByLabel("检测方式", { exact: true }).click();
+    await page.getByRole("option", { name: "全量检测 · 单次", exact: true }).click();
     await dialog.getByLabel("检测网址").fill("http://probe.example/generate_204");
     await dialog.getByLabel("单 IP 超时（毫秒）").fill("15000");
     await dialog.getByLabel("并发数", { exact: true }).fill("1");
@@ -94,7 +94,11 @@ test("导入节点、单次检测、记录详情与巡检停止", async ({
       page.getByRole("button", { name: "停止测试", exact: true }),
     ).toBeVisible({ timeout: 15000 });
     await expect(row()).toContainText("检测中");
-    await expect(row()).toContainText("gRPC · 所有协议共用");
+    await expect(row()).toContainText("127.0.0.0/26");
+    await expect(page.getByRole("columnheader", { name: "节点 / 协议" })).toHaveCount(0);
+    await expect(page.getByRole("columnheader", { name: "网段 / 运营商" })).toBeVisible();
+    await expect(page.getByLabel("网段总体进度")).toContainText("待完成（含检测中）");
+    await expect(page.getByText("当前检测网段", { exact: true })).toBeVisible();
 
     // 进入记录详情，刷新后仍在同一轮检测中。
     await row().getByRole("link", { name }).click();
@@ -122,7 +126,7 @@ test("导入节点、单次检测、记录详情与巡检停止", async ({
       "http://probe.example/generate_204",
     );
     await expect(dialog.getByLabel("并发数", { exact: true })).toHaveValue("1");
-    await dialog.getByLabel("巡检方式", { exact: true }).click();
+    await dialog.getByLabel("检测方式", { exact: true }).click();
     await page
       .getByRole("option", { name: "自动巡检 · 间隔 5 分钟", exact: true })
       .click();
