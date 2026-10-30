@@ -1,0 +1,11 @@
+[Unit]
+Description=Queue nightly full IP Guard node and CF scans
+Requires=ip-list-api.service
+After=network-online.target ip-list-api.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/ip-list.env
+ExecStart=/usr/local/sbin/ip-list-daily-scan
+TimeoutStartSec=180
+UMask=0077
