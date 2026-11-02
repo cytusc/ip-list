@@ -119,3 +119,104 @@ func TestWebsiteDNSNotifications(t *testing.T) {
 		t.Fatal(string(raw))
 	}
 }
+
+func TestWebsiteDNSStability(t *testing.T) {
+	c := dnsTestConfig()
+	c.WebsiteEnabled = true
+	now := time.Now().UTC()
+	item := dnsCandidate{IP: "8.8.8.8", Country: "JP", Pool: "cf", State: "healthy", Delay: 65}
+	history := func() []dnsReport {
+		result := []dnsReport{}
+		for _, minutes := range []int{5, 10, 15} {
+			old := item
+			old.State = "pending"
+			result = append(result, dnsReport{Mode: "sync", Config: c, StartedAt: now.Add(-time.Duration(minutes) * time.Minute), Candidates: []dnsCandidate{old}})
+		}
+		return result
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*dnsCandidate, []dnsReport) []dnsReport
+		want bool
+	}{
+		{"sustained recovery", func(_ *dnsCandidate, h []dnsReport) []dnsReport { return h }, true},
+		{"too little history", func(_ *dnsCandidate, h []dnsReport) []dnsReport { return h[:2] }, false},
+		{"admission boundary", func(i *dnsCandidate, h []dnsReport) []dnsReport { i.Delay = 70; return h }, true},
+		{"near removal threshold", func(i *dnsCandidate, h []dnsReport) []dnsReport { i.Delay = 75; return h }, false},
+		{"spike during stable period", func(_ *dnsCandidate, h []dnsReport) []dnsReport { h[1].Candidates[0].Delay = 81; return h }, false},
+		{"missing probe data", func(_ *dnsCandidate, h []dnsReport) []dnsReport { h[1].Candidates[0].State = "unknown"; return h }, false},
+		{"sync gap", func(_ *dnsCandidate, h []dnsReport) []dnsReport { return h[2:] }, false},
+		{"monitor outage", func(_ *dnsCandidate, h []dnsReport) []dnsReport { h[1].Warning = "monitor unavailable"; return h }, false},
+		{"policy changed", func(_ *dnsCandidate, h []dnsReport) []dnsReport { h[1].Config.Window = 20; return h }, false},
+		{"recent removal", func(_ *dnsCandidate, h []dnsReport) []dnsReport {
+			return append(h, dnsReport{StartedAt: now.Add(-20 * time.Minute), Records: []dnsPlanRecord{{Name: "url.reiiv.com", Applied: true, Action: "update", Current: []string{item.IP}}}})
+		}, false},
+		{"failed cloud write", func(_ *dnsCandidate, h []dnsReport) []dnsReport {
+			return append(h, dnsReport{StartedAt: now.Add(-20 * time.Minute), Records: []dnsPlanRecord{{Name: "url.reiiv.com", Applied: false, Action: "update", Current: []string{item.IP}}}})
+		}, true},
+		{"cooldown expired", func(_ *dnsCandidate, h []dnsReport) []dnsReport {
+			return append(h, dnsReport{StartedAt: now.Add(-30 * time.Minute), Records: []dnsPlanRecord{{Name: "url.reiiv.com", Applied: true, Action: "update", Current: []string{item.IP}}}})
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := item
+			h := tc.edit(&candidate, history())
+			if got := dnsWebsiteStable(c, candidate, h, now); got != tc.want {
+				t.Fatalf("stable=%v want=%v", got, tc.want)
+			}
+		})
+	}
+	// Existing healthy entries are retained up to 80ms, but an 81ms entry is
+	// removed immediately even if the same address is still healthy in grpc.
+	current := []dnsRemoteRecord{{Name: "url.reiiv.com", Type: "A", Status: "ACTIVE", Line: "default_view", TTL: 300, Values: []string{item.IP}}}
+	for _, delay := range []float64{75, 81} {
+		candidate := item
+		candidate.Delay = delay
+		candidates := []dnsCandidate{candidate, {IP: "1.1.1.1", Country: "HK", State: "healthy", Delay: 30}}
+		dnsStabilizeWebsite(c, candidates, current, nil, now)
+		plan := dnsBuildPlan(c, candidates, current, map[string]bool{"url.reiiv.com/A": true}, false)
+		for _, r := range plan {
+			if r.Name == "url.reiiv.com" {
+				want := "unchanged"
+				if delay > 80 {
+					want = "delete"
+				}
+				if r.Action != want {
+					t.Fatal(r)
+				}
+			}
+		}
+	}
+	candidates := []dnsCandidate{item, {IP: "1.1.1.1", Country: "HK", State: "healthy", Delay: 30}}
+	dnsStabilizeWebsite(c, candidates, nil, nil, now)
+	if candidates[0].State != "pending" || candidates[1].State != "healthy" {
+		t.Fatal(candidates)
+	}
+}
+
+func TestWebsiteDNSHistory(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	c := dnsTestConfig()
+	c.WebsiteEnabled = true
+	now := time.Now().UTC()
+	item := dnsCandidate{IP: "8.8.8.8", Country: "JP", Pool: "cf", State: "pending", Delay: 65}
+	for _, age := range []int{15, 10, 5} {
+		at := now.Add(-time.Duration(age) * time.Minute)
+		report := dnsReport{Mode: "sync", Domain: c.Domain, Config: c, StartedAt: at, Candidates: []dnsCandidate{item, {IP: "1.1.1.1", State: "healthy"}}, Records: []dnsPlanRecord{{Name: "hk.reiiv.com"}}}
+		raw, err := json.Marshal(report)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = a.db.Exec(ctx, `INSERT INTO dns_sync_runs(started_at,report) VALUES($1,$2)`, at, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := a.dnsWebsiteHistory(ctx, c)
+	if err != nil || len(history) != 3 {
+		t.Fatalf("%+v %v", history, err)
+	}
+	if len(history[0].Candidates) != 1 || len(history[0].Records) != 0 || !dnsWebsiteStable(c, item, history, now) {
+		t.Fatal(history)
+	}
+}

@@ -514,6 +514,13 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	if err != nil {
 		return err
 	}
+	if c.WebsiteEnabled {
+		history, historyErr := a.dnsWebsiteHistory(ctx, c)
+		if historyErr != nil {
+			return historyErr
+		}
+		dnsStabilizeWebsite(c, candidates, remote, history, report.StartedAt)
+	}
 	report.Candidates = candidates
 	report.Records = dnsBuildPlan(c, candidates, remote, managed, uncertain)
 	if uncertain {
