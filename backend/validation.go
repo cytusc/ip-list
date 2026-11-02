@@ -10,15 +10,17 @@ import (
 var validate = validator.New()
 
 type ConfigInput struct {
-	ASN         string `json:"asn"`
-	Provider    string `json:"provider"`
-	ShareURI    string `json:"share_uri"`
-	Name        string `json:"name"`
-	Address     string `json:"address"`
-	Port        int    `json:"port"`
-	Enabled     bool   `json:"enabled"`
-	Description string `json:"description"`
-	CIDR        string `json:"cidr"`
+	RegistryCountry string `json:"-"`
+	RegistryHolder  string `json:"-"`
+	ASN             string `json:"asn"`
+	Provider        string `json:"provider"`
+	ShareURI        string `json:"share_uri"`
+	Name            string `json:"name"`
+	Address         string `json:"address"`
+	Port            int    `json:"port"`
+	Enabled         bool   `json:"enabled"`
+	Description     string `json:"description"`
+	CIDR            string `json:"cidr"`
 }
 
 func (in *ConfigInput) validate(kind string) map[string]string {

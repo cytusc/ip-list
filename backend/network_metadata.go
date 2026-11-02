@@ -19,6 +19,117 @@ import (
 type networkMetadata struct {
 	ASN      string `json:"asn"`
 	Provider string `json:"provider"`
+	Country  string `json:"registry_country"`
+	Registry string `json:"registry_holder"`
+}
+
+// Registration describes the whole allocation, not the physical location or
+// operator of every address. Never infer routing metadata from a sample IP.
+func lookupNetworkRegistration(ctx context.Context, client *http.Client, base string, prefix netip.Prefix) (networkMetadata, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", base+"/data/whois/data.json?resource="+url.QueryEscape(prefix.String()), nil)
+	if err != nil {
+		return networkMetadata{}, err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return networkMetadata{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return networkMetadata{}, fmt.Errorf("RIPE WHOIS HTTP %d", response.StatusCode)
+	}
+	var payload struct {
+		Status string
+		Data   struct {
+			Records [][]struct{ Key, Value string }
+		}
+	}
+	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return networkMetadata{}, err
+	}
+	var result networkMetadata
+	var bestFirst, bestLast netip.Addr
+	for _, record := range payload.Data.Records {
+		fields := map[string]string{}
+		for _, entry := range record {
+			key := strings.ToLower(entry.Key)
+			if fields[key] == "" {
+				fields[key] = strings.TrimSpace(entry.Value)
+			}
+		}
+		var first, last netip.Addr
+		for _, key := range []string{"inetnum", "inet6num", "netrange"} {
+			raw := fields[key]
+			if p, err := netip.ParsePrefix(raw); err == nil {
+				first, last = p.Masked().Addr(), prefixLastAddress(p)
+				break
+			}
+			if parts := strings.Split(raw, " - "); len(parts) == 2 {
+				first, _ = netip.ParseAddr(strings.TrimSpace(parts[0]))
+				last, _ = netip.ParseAddr(strings.TrimSpace(parts[1]))
+				break
+			}
+		}
+		if !first.IsValid() || !last.IsValid() || first.BitLen() != prefix.Addr().BitLen() ||
+			first.Compare(prefix.Masked().Addr()) > 0 || last.Compare(prefixLastAddress(prefix)) < 0 {
+			continue
+		}
+		if bestFirst.IsValid() && (first.Compare(bestFirst) < 0 || last.Compare(bestLast) > 0) {
+			continue
+		}
+		country := strings.ToUpper(fields["country"])
+		if len(country) != 2 || strings.Trim(country, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
+			country = ""
+		}
+		holder := ""
+		for _, key := range []string{"org-name", "orgname", "owner", "descr", "netname"} {
+			if fields[key] != "" {
+				holder = fields[key]
+				break
+			}
+		}
+		if country == "" && holder == "" {
+			continue
+		}
+		bestFirst, bestLast = first, last
+		result.Country = country
+		result.Registry = string([]rune(holder)[:min(200, len([]rune(holder)))])
+	}
+	if payload.Status != "ok" || (result.Country == "" && result.Registry == "") {
+		return networkMetadata{}, errors.New("no registration covering this range")
+	}
+	return result, nil
+}
+
+func lookupCompleteNetworkMetadata(ctx context.Context, client *http.Client, base string, prefix netip.Prefix) (networkMetadata, error) {
+	type outcome struct {
+		metadata networkMetadata
+		err      error
+	}
+	// Independent requests: a fragmented or unannounced route must not discard
+	// useful WHOIS data, and a WHOIS outage must not discard verified routing.
+	results := make(chan outcome, 2)
+	go func() { m, err := lookupNetworkRegistration(ctx, client, base, prefix); results <- outcome{m, err} }()
+	go func() { m, err := lookupNetworkMetadata(ctx, client, base, prefix); results <- outcome{m, err} }()
+	var result networkMetadata
+	var failures []error
+	for i := 0; i < 2; i++ {
+		item := <-results
+		if item.err != nil {
+			failures = append(failures, item.err)
+			continue
+		}
+		if item.metadata.ASN != "" {
+			result.ASN, result.Provider = item.metadata.ASN, item.metadata.Provider
+		}
+		if item.metadata.Country != "" || item.metadata.Registry != "" {
+			result.Country, result.Registry = item.metadata.Country, item.metadata.Registry
+		}
+	}
+	if result == (networkMetadata{}) {
+		return result, errors.Join(failures...)
+	}
+	return result, nil
 }
 
 func prefixLastAddress(prefix netip.Prefix) netip.Addr {
@@ -125,13 +236,13 @@ func lookupNetworkMetadata(ctx context.Context, client *http.Client, base string
 }
 
 func (a *app) networkMetadata(ctx context.Context, prefix netip.Prefix) (networkMetadata, error) {
-	key := "ipfilter:network-metadata:v1:" + prefix.String()
+	key := "ipfilter:network-metadata:v2:" + prefix.String()
 	if a.redis != nil {
 		cacheCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 		raw, err := a.redis.Get(cacheCtx, key).Bytes()
 		cancel()
 		var cached networkMetadata
-		if err == nil && json.Unmarshal(raw, &cached) == nil && cached.ASN != "" && cached.Provider != "" {
+		if err == nil && json.Unmarshal(raw, &cached) == nil && cached.ASN != "" && cached.Provider != "" && cached.Country != "" && cached.Registry != "" {
 			return cached, nil
 		}
 	}
@@ -139,7 +250,7 @@ func (a *app) networkMetadata(ctx context.Context, prefix netip.Prefix) (network
 	// this optional external lookup. Missing metadata is retried in the background.
 	lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	result, err := lookupNetworkMetadata(lookupCtx, http.DefaultClient, "https://stat.ripe.net", prefix)
+	result, err := lookupCompleteNetworkMetadata(lookupCtx, http.DefaultClient, "https://stat.ripe.net", prefix)
 	if err == nil && a.redis != nil {
 		raw, _ := json.Marshal(result)
 		cacheCtx, stop := context.WithTimeout(ctx, 150*time.Millisecond)
@@ -207,16 +318,16 @@ func nextMetadataRetry(previous metadataRetry, now time.Time) metadataRetry {
 }
 
 func (a *app) fillMissingNetworkMetadata(ctx context.Context, retries map[string]metadataRetry) {
-	rows, err := a.db.Query(ctx, "SELECT id::text,cidr::text,asn,provider FROM networks WHERE asn='' OR provider='' ORDER BY updated_at,id")
+	rows, err := a.db.Query(ctx, "SELECT id::text,cidr::text,asn,provider,registry_country,registry_holder FROM networks WHERE asn='' OR provider='' OR registry_country='' OR registry_holder='' ORDER BY updated_at,id")
 	if err != nil {
 		log.Printf("网段归属补全读取失败: %v", err)
 		return
 	}
-	type missing struct{ id, cidr, asn, provider string }
+	type missing struct{ id, cidr, asn, provider, country, registry string }
 	items := []missing{}
 	for rows.Next() {
 		var item missing
-		if err = rows.Scan(&item.id, &item.cidr, &item.asn, &item.provider); err != nil {
+		if err = rows.Scan(&item.id, &item.cidr, &item.asn, &item.provider, &item.country, &item.registry); err != nil {
 			break
 		}
 		items = append(items, item)
@@ -259,15 +370,21 @@ func (a *app) fillMissingNetworkMetadata(ctx context.Context, retries map[string
 			log.Printf("网段归属补全暂未成功 cidr=%s error=%v", item.cidr, err)
 			continue
 		}
-		delete(retries, key)
+		if metadata.ASN == "" || metadata.Provider == "" || metadata.Country == "" || metadata.Registry == "" {
+			retries[key] = nextMetadataRetry(retries[key], time.Now())
+		} else {
+			delete(retries, key)
+		}
 		if item.asn != "" && item.asn != metadata.ASN {
-			continue
+			metadata.ASN, metadata.Provider = "", ""
 		}
 		// Compare the old values so concurrent manual edits/CIDR changes win.
 		_, err = a.db.Exec(ctx, `UPDATE networks SET
-		 asn=CASE WHEN asn='' THEN $5 ELSE asn END,
-		 provider=CASE WHEN provider='' THEN $6 ELSE provider END,updated_at=now()
-		 WHERE id=$1 AND cidr=$2::cidr AND asn=$3 AND provider=$4`, item.id, item.cidr, item.asn, item.provider, metadata.ASN, metadata.Provider)
+		 asn=CASE WHEN asn='' THEN $7 ELSE asn END,
+		 provider=CASE WHEN provider='' THEN $8 ELSE provider END,
+		 registry_country=CASE WHEN registry_country='' THEN $9 ELSE registry_country END,
+		 registry_holder=CASE WHEN registry_holder='' THEN $10 ELSE registry_holder END,updated_at=now()
+		 WHERE id=$1 AND cidr=$2::cidr AND asn=$3 AND provider=$4 AND registry_country=$5 AND registry_holder=$6`, item.id, item.cidr, item.asn, item.provider, item.country, item.registry, metadata.ASN, metadata.Provider, metadata.Country, metadata.Registry)
 		if err != nil {
 			log.Printf("网段归属补全保存失败 cidr=%s error=%v", item.cidr, err)
 		}

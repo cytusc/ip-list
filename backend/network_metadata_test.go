@@ -102,3 +102,85 @@ func TestNetworkMetadataFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestNetworkRegistration(t *testing.T) {
+	for _, tc := range []struct {
+		name, records, country, holder string
+		want                           bool
+	}{
+		{"allocation", `[[{"key":"inetnum","value":"152.175.0.0/16"},{"key":"country","value":"jp"},{"key":"descr","value":"SAKURA LINK LIMITED"}]]`, "JP", "SAKURA LINK LIMITED", true},
+		{"range", `[[{"key":"NetRange","value":"152.175.0.0 - 152.175.255.255"},{"key":"Country","value":"JP"},{"key":"OrgName","value":"Example"}]]`, "JP", "Example", true},
+		{"most-specific", `[[{"key":"inetnum","value":"152.0.0.0/8"},{"key":"country","value":"US"},{"key":"descr","value":"Parent"}],[{"key":"inetnum","value":"152.175.0.0/16"},{"key":"country","value":"JP"},{"key":"descr","value":"Child"}]]`, "JP", "Child", true},
+		{"unrelated", `[[{"key":"inetnum","value":"152.174.0.0/16"},{"key":"country","value":"JP"}]]`, "", "", false},
+		{"partial", `[[{"key":"inetnum","value":"152.175.0.0/24"},{"key":"country","value":"JP"}]]`, "", "", false},
+		{"contact-only", `[[{"key":"country","value":"JP"},{"key":"descr","value":"Contact address"}]]`, "", "", false},
+		{"invalid-country", `[[{"key":"inetnum","value":"152.175.0.0/16"},{"key":"country","value":"JAPAN"},{"key":"netname","value":"Example"}]]`, "", "Example", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("resource") != "152.175.0.0/16" {
+					t.Error("must query the whole prefix")
+				}
+				fmt.Fprintf(w, `{"status":"ok","data":{"records":%s}}`, tc.records)
+			}))
+			defer server.Close()
+			got, err := lookupNetworkRegistration(context.Background(), server.Client(), server.URL, netip.MustParsePrefix("152.175.0.0/16"))
+			if (err == nil) != tc.want || got.Country != tc.country || got.Registry != tc.holder || got.ASN != "" || got.Provider != "" {
+				t.Fatalf("registration must not be presented as an operator: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestCompleteNetworkMetadataPreservesIndependentResults(t *testing.T) {
+	for _, mode := range []string{"routing-fails", "routing-timeout", "whois-fails", "both-succeed", "both-fail"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/data/whois/data.json" {
+					if mode == "whois-fails" || mode == "both-fail" {
+						w.WriteHeader(503)
+						return
+					}
+					fmt.Fprint(w, `{"status":"ok","data":{"records":[[{"key":"inetnum","value":"152.175.0.0/16"},{"key":"country","value":"JP"},{"key":"descr","value":"Registered holder"}]]}}`)
+					return
+				}
+				if mode == "routing-timeout" {
+					<-r.Context().Done()
+					return
+				}
+				if mode == "routing-fails" || mode == "both-fail" {
+					w.WriteHeader(503)
+					return
+				}
+				if r.URL.Path == "/data/network-info/data.json" {
+					fmt.Fprint(w, `{"status":"ok","data":{"asns":["202069"],"prefix":"152.175.0.0/16"}}`)
+				} else {
+					fmt.Fprint(w, `{"status":"ok","data":{"holder":"Actual operator"}}`)
+				}
+			}))
+			defer server.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			got, err := lookupCompleteNetworkMetadata(ctx, server.Client(), server.URL, netip.MustParsePrefix("152.175.0.0/16"))
+			if mode == "both-fail" {
+				if err == nil {
+					t.Fatal("missing failure")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != "whois-fails" && (got.Country != "JP" || got.Registry != "Registered holder") {
+				t.Fatal(got)
+			}
+			if mode == "routing-fails" || mode == "routing-timeout" {
+				if got.ASN != "" || got.Provider != "" {
+					t.Fatal("must not use the registrant as the operator", got)
+				}
+			} else if got.ASN != "AS202069" || got.Provider != "Actual operator" {
+				t.Fatal(got)
+			}
+		})
+	}
+}

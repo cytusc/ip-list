@@ -11,6 +11,8 @@ export type Node = {
   updated_at: string;
 };
 export type Network = {
+  registry_country: string;
+  registry_holder: string;
   available_count?: number;
   disabled_protocols?: string[];
   asn: string;

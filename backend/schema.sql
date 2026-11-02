@@ -202,6 +202,9 @@ INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at)
 ALTER TABLE networks ADD COLUMN IF NOT EXISTS asn varchar(12) NOT NULL DEFAULT '';
 ALTER TABLE networks ALTER COLUMN asn TYPE varchar(255);
 ALTER TABLE networks ADD COLUMN IF NOT EXISTS provider varchar(100) NOT NULL DEFAULT '';
+-- WHOIS allocation metadata is distinct from the operator and IP geolocation.
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS registry_country varchar(2) NOT NULL DEFAULT '';
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS registry_holder varchar(200) NOT NULL DEFAULT '';
 
 -- Migrate node-bound ranges once. Keep the oldest ID so existing selections
 -- remain valid where possible, merge notes, and retain any enabled copy.

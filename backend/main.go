@@ -383,7 +383,7 @@ func (a *app) list(w http.ResponseWriter, r *http.Request, kind string) {
 	extra := ""
 	order := "n.created_at DESC,n.id DESC"
 	if kind == "networks" {
-		text = "n.name||' '||n.cidr::text||' '||n.description||' '||n.asn||' '||n.provider||' '||COALESCE((SELECT string_agg(p.protocol,' ') FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'')"
+		text = "n.name||' '||n.cidr::text||' '||n.description||' '||n.asn||' '||n.provider||' '||n.registry_country||' '||n.registry_holder||' '||COALESCE((SELECT string_agg(p.protocol,' ') FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'')"
 		extra = ",COALESCE((SELECT json_agg(p.protocol ORDER BY p.protocol) FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'[]'::json) AS disabled_protocols"
 		extra += `,(SELECT count(*) FROM current_node_ip_pool p
           WHERE p.protocol='grpc' AND p.available AND p.ip <<= n.cidr
@@ -442,7 +442,7 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 		if id != "" {
 			var oldCIDR string
 			var oldEnabled bool
-			if err := a.db.QueryRow(r.Context(), "SELECT cidr::text,enabled FROM networks WHERE id=$1", id).Scan(&oldCIDR, &oldEnabled); err != nil {
+			if err := a.db.QueryRow(r.Context(), "SELECT cidr::text,enabled,registry_country,registry_holder FROM networks WHERE id=$1", id).Scan(&oldCIDR, &oldEnabled, &input.RegistryCountry, &input.RegistryHolder); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					apiError(w, 404, "配置已被删除，请刷新列表", nil)
 				} else {
@@ -454,23 +454,34 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 			// Metadata from a previous address range must not follow an edited CIDR.
 			if oldCIDR != input.CIDR {
 				input.ASN, input.Provider = "", ""
+				input.RegistryCountry, input.RegistryHolder = "", ""
 			}
 		}
 		prefix := netip.MustParsePrefix(input.CIDR)
-		if (input.ASN == "" || input.Provider == "") && publicMetadataPrefix(prefix) {
+		if (input.ASN == "" || input.Provider == "" || input.RegistryCountry == "" || input.RegistryHolder == "") && publicMetadataPrefix(prefix) {
 			metadata, err := a.networkMetadata(r.Context(), prefix)
 			if err != nil {
 				warning = "网段已保存，暂未获取到 ASN 和服务商；后台会自动重试，也可手动补充"
-			} else if input.ASN == "" || input.ASN == metadata.ASN {
-				// Preserve manual values; never attach a holder to a different manual ASN.
-				if input.ASN == "" {
-					input.ASN = metadata.ASN
-				}
-				if input.Provider == "" {
-					input.Provider = metadata.Provider
-				}
 			} else {
-				warning = "网段已保存，手填 ASN 与查询结果不同，请手动确认服务商"
+				if input.RegistryCountry == "" {
+					input.RegistryCountry = metadata.Country
+				}
+				if input.RegistryHolder == "" {
+					input.RegistryHolder = metadata.Registry
+				}
+				if metadata.ASN == "" || metadata.Provider == "" {
+					warning = "网段已保存，已补充可查询的登记信息；暂未确认整个网段的 ASN 和服务商，后台会继续重试"
+				} else if input.ASN == "" || input.ASN == metadata.ASN {
+					// Preserve manual values; never attach a holder to a different manual ASN.
+					if input.ASN == "" {
+						input.ASN = metadata.ASN
+					}
+					if input.Provider == "" {
+						input.Provider = metadata.Provider
+					}
+				} else {
+					warning = "网段已保存，手填 ASN 与查询结果不同，请手动确认服务商"
+				}
 			}
 		}
 	}
@@ -483,10 +494,10 @@ func (a *app) save(w http.ResponseWriter, r *http.Request, kind, id string) {
 			query = "UPDATE nodes SET name=$1,address=$2,port=$3,enabled=$4,description=$5,share_uri=$6,updated_at=now() WHERE id=$7"
 		}
 	} else {
-		values = []any{input.Name, input.CIDR, input.Enabled, input.Description, input.ASN, input.Provider}
-		query = "INSERT INTO networks(name,cidr,enabled,description,asn,provider) VALUES($1,$2::cidr,$3,$4,$5,$6)"
+		values = []any{input.Name, input.CIDR, input.Enabled, input.Description, input.ASN, input.Provider, input.RegistryCountry, input.RegistryHolder}
+		query = "INSERT INTO networks(name,cidr,enabled,description,asn,provider,registry_country,registry_holder) VALUES($1,$2::cidr,$3,$4,$5,$6,$7,$8)"
 		if id != "" {
-			query = "UPDATE networks SET name=$1,cidr=$2::cidr,enabled=$3,description=$4,asn=$5,provider=$6,updated_at=now() WHERE id=$7"
+			query = "UPDATE networks SET name=$1,cidr=$2::cidr,enabled=$3,description=$4,asn=$5,provider=$6,registry_country=$7,registry_holder=$8,updated_at=now() WHERE id=$9"
 		}
 	}
 	if id != "" {

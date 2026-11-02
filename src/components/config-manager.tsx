@@ -46,6 +46,7 @@ import {
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
 import { NetworkRecheck } from "@/components/network-recheck";
+import { countryName } from "@/components/ip-location";
 import { NodeImport } from "@/components/node-import";
 import { ConfigForm } from "@/components/config-form";
 import { ListPagination } from "@/components/list-pagination";
@@ -184,7 +185,7 @@ export function ConfigManager({
               placeholder={
                 isNode
                   ? "搜索节点名称、地址或备注…"
-                  : "搜索网段名称、CIDR 或备注…"
+                  : "搜索 CIDR、ASN、服务商或登记机构…"
               }
               className="h-10 bg-white pl-9"
             />
@@ -217,7 +218,8 @@ export function ConfigManager({
             <TableRow className="bg-slate-50/80 hover:bg-slate-50/80">
               <TableHead className="pl-6">{label}名称</TableHead>
               <TableHead>{isNode ? "节点地址" : "CIDR 网段"}</TableHead>
-              {!isNode && <TableHead>ASN / 服务商</TableHead>}
+              {!isNode && <TableHead title="WHOIS 登记国家或地区，具体 IP 的实际归属地可能不同">国家 / 地区（登记）</TableHead>}
+              {!isNode && <TableHead>ASN / 服务商 / 登记机构</TableHead>}
               {!isNode && <TableHead className="text-right">可用 IP ↓</TableHead>}
               <TableHead>{isNode ? "状态" : "全局 / 协议池状态"}</TableHead>
               <TableHead className="hidden xl:table-cell">更新时间</TableHead>
@@ -253,12 +255,24 @@ export function ConfigManager({
                     ? `${item.address.includes(":") ? `[${item.address}]` : item.address}:${item.port}`
                     : item.cidr}
                 </TableCell>
+                {"cidr" in item && (
+                  <TableCell className="text-xs" title="来源：RIPEstat WHOIS 登记信息；具体 IP 的实际归属地请查看可用 IP 列表">
+                    {/^[A-Z]{2}$/.test(item.registry_country || "")
+                      ? `${countryName(item.registry_country)} · ${item.registry_country}`
+                      : "暂未查到"}
+                  </TableCell>
+                )}
                 {"asn" in item && (
                   <TableCell className="max-w-48 whitespace-normal text-xs">
-                    <p className="font-mono">{item.asn || "—"}</p>
+                    <p className="font-mono">{item.asn || "ASN 待确认"}</p>
                     <p className="mt-1 break-words text-muted-foreground">
-                      {item.provider || "未填写"}
+                      {item.provider || "服务商待确认"}
                     </p>
+                    {item.registry_holder && (
+                      <p className="mt-1 break-words text-muted-foreground" title="地址资源的登记机构，可能与实际服务商不同">
+                        登记机构：{item.registry_holder}
+                      </p>
+                    )}
                   </TableCell>
                 )}
                 {"cidr" in item && (
@@ -391,7 +405,7 @@ export function ConfigManager({
         <Info className="mt-0.5 size-3.5 shrink-0" />
         {isNode
           ? "节点与网段独立维护，在连通性测试中按需组合。启用状态不代表在线状态。"
-          : "网段可用于代理节点与 CF 检测；ASN 和服务商信息会展示在可用 IP 列表中。"}
+          : "国家和登记机构来自 WHOIS；大网段可能包含多个运营商，登记机构与实际服务商可能不同。具体 IP 的实际归属地请查看可用 IP 列表。"}
       </p>
       {editor && (
         <ConfigForm
