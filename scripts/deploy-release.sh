@@ -10,14 +10,17 @@ archive="$(realpath "${2:?Missing release archive}")"
 env_file=/etc/ip-list.env
 release_root=/opt/ip-list-releases
 current=/opt/ip-list-current
+previous_link=/opt/ip-list-previous
 release_dir="$release_root/$revision"
 backup_root=/opt/ip-list-backups/cicd
+cleanup_script="$(dirname "$(realpath "$0")")/cleanup-deployments.py"
 exec 9>/run/lock/ip-list-deploy.lock
 flock -n 9 || { echo "Another deployment is running" >&2; exit 1; }
 test -r "$env_file"
 id ipguard >/dev/null
-for tool in curl systemd-run pg_dump runuser python3; do command -v "$tool" >/dev/null; done
+for tool in curl systemd-run pg_dump pg_restore runuser python3; do command -v "$tool" >/dev/null; done
 (cd "$(dirname "$archive")" && sha256sum --check "$(basename "$archive").sha256")
+python3 "$cleanup_script"
 
 if [[ -L "$current" && "$(readlink -f "$current")" == "$release_dir" ]]; then
   systemctl is-active --quiet ip-list-api ip-list-web
@@ -63,9 +66,12 @@ cleanup() {
     done
     systemctl daemon-reload
     systemctl restart ip-list-api ip-list-web || true
-    echo "Database backup: $snapshot/database.dump (database is not automatically restored)" >&2
+    if [[ -f "$snapshot/database.dump" ]]; then
+      echo "Database backup: $snapshot/database.dump (database is not automatically restored)" >&2
+    fi
   fi
   rm -rf "$staging"
+  python3 "$cleanup_script" || echo "Deployment cleanup failed; inspect server storage" >&2
   exit "$status"
 }
 trap cleanup EXIT
@@ -77,14 +83,25 @@ test -x "$staging/runtime/node"
 test -f "$staging/server.js"
 test -f "$staging/bin/latency-probe/latency-probe-linux-amd64"
 "$staging/runtime/node" --version
+fingerprint=$(cat "$staging/DATABASE_FINGERPRINT")
+[[ "$fingerprint" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid database fingerprint" >&2; exit 1; }
+needs_migration=1
+if [[ -f "$current/DATABASE_FINGERPRINT" && "$(cat "$current/DATABASE_FINGERPRINT")" == "$fingerprint" ]]; then
+  needs_migration=0
+fi
 
-database_name=$(systemd-run --quiet --wait --pipe --collect \
-  --property="EnvironmentFile=$env_file" \
-  /usr/bin/python3 -c 'import os, urllib.parse; print(urllib.parse.unquote(urllib.parse.urlsplit(os.environ["DATABASE_URL"]).path[1:]))')
-[[ -n "$database_name" ]] || { echo "Missing database name" >&2; exit 1; }
-runuser -u postgres -- pg_dump --format=custom --dbname="$database_name" > "$snapshot/database.dump"
-test -s "$snapshot/database.dump"
-chmod 600 "$snapshot/database.dump"
+if [[ "$needs_migration" -eq 1 ]]; then
+  database_name=$(systemd-run --quiet --wait --pipe --collect \
+    --property="EnvironmentFile=$env_file" \
+    /usr/bin/python3 -c 'import os, urllib.parse; print(urllib.parse.unquote(urllib.parse.urlsplit(os.environ["DATABASE_URL"]).path[1:]))')
+  [[ -n "$database_name" ]] || { echo "Missing database name" >&2; exit 1; }
+  runuser -u postgres -- pg_dump --format=custom --dbname="$database_name" > "$snapshot/database.dump.partial"
+  pg_restore --list "$snapshot/database.dump.partial" >/dev/null
+  mv "$snapshot/database.dump.partial" "$snapshot/database.dump"
+  chmod 600 "$snapshot/database.dump"
+else
+  echo "Database initialization code is unchanged; skipping backup and migration"
+fi
 
 if [[ -e "$release_dir" ]]; then
   echo "Removing an inactive release from a previous attempt: $revision"
@@ -95,11 +112,13 @@ chown -R ipguard:ipguard "$release_dir"
 # Stop both processes so the old API cannot write during schema migration.
 stopped=1
 systemctl stop ip-list-web ip-list-api
-systemd-run --quiet --wait --pipe --collect \
+if [[ "$needs_migration" -eq 1 ]]; then
+  systemd-run --quiet --wait --pipe --collect \
   --property="EnvironmentFile=$env_file" \
   --property=User=ipguard --property=Group=ipguard \
   --property="WorkingDirectory=$release_dir" \
   "$release_dir/bin/ipguard" -init
+fi
 
 for service in api web; do
   install -d -m 755 "/etc/systemd/system/ip-list-$service.service.d"
@@ -136,11 +155,10 @@ for ((attempt=0; attempt<30; attempt++)); do
   sleep 2
 done
 [[ "$healthy" -eq 1 ]] || { echo "Application health checks failed" >&2; exit 1; }
+if [[ -n "$previous" && "$previous" != "$release_dir" ]]; then
+  ln -s "$previous" "$previous_link.next.$$"
+  mv -Tf "$previous_link.next.$$" "$previous_link"
+fi
 completed=1
 echo "Successfully deployed $revision"
-echo "Database backup: $snapshot/database.dump"
-# Keep the active release and two previous versions. Leave backups for manual retention.
-mapfile -t old_releases < <(find "$release_root" -mindepth 1 -maxdepth 1 -type d -name '[0-9a-f]*' -printf '%T@ %p\n' | sort -rn | tail -n +4 | cut -d ' ' -f 2-)
-for old_release in "${old_releases[@]}"; do
-  if [[ "$old_release" != "$release_dir" && "$old_release" != "$previous" ]]; then rm -rf "$old_release"; fi
-done
+if [[ -f "$snapshot/database.dump" ]]; then echo "Database backup: $snapshot/database.dump"; fi

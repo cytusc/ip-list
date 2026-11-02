@@ -31,6 +31,8 @@ jobs:
         run: |
           npm run lint
           npm run typecheck
+      - name: Check deployment retention
+        run: python3 -m unittest discover -s scripts/tests -p 'test_cleanup_deployments.py'
       - name: Check backend
         run: |
           go -C backend test ./...
@@ -91,10 +93,13 @@ jobs:
           target="$DEPLOY_USER@$DEPLOY_HOST"
           remote_dir="/var/tmp/ip-list-cicd/$RUN_ID"
           ssh_options=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          cleanup_remote() {
+            ssh "${ssh_options[@]}" -p "$port" "$target" "rm -rf '$remote_dir'" || true
+          }
+          trap cleanup_remote EXIT
           ssh "${ssh_options[@]}" -p "$port" "$target" "install -d -m 700 '$remote_dir'"
-          scp "${ssh_options[@]}" -P "$port" "dist/ip-list-$REVISION.tar.gz" "dist/ip-list-$REVISION.tar.gz.sha256" scripts/deploy-release.sh "$target:$remote_dir/"
+          scp "${ssh_options[@]}" -P "$port" "dist/ip-list-$REVISION.tar.gz" "dist/ip-list-$REVISION.tar.gz.sha256" scripts/deploy-release.sh scripts/cleanup-deployments.py "$target:$remote_dir/"
           ssh "${ssh_options[@]}" -p "$port" "$target" "bash '$remote_dir/deploy-release.sh' '$REVISION' '$remote_dir/ip-list-$REVISION.tar.gz'"
-          ssh "${ssh_options[@]}" -p "$port" "$target" "rm -rf '$remote_dir'"
       - name: Deployment summary
         env:
           REVISION: ${{ github.sha }}

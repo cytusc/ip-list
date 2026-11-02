@@ -43,14 +43,20 @@
 
 1. 发布包传到 `/var/tmp/ip-list-cicd/<run-id>-<attempt>/` 并校验 SHA-256。
 2. 新版解压到 `/opt/ip-list-releases/<commit-sha>/`。
-3. PostgreSQL 备份保存到 `/opt/ip-list-backups/cicd/deploy-<time>-<id>/database.dump`。
-4. 停止 Web 和 API，用新 API 执行数据库初始化/迁移。
+3. 对比发布包的数据库指纹（`backend/schema.sql` 和含初始化逻辑的 `backend/main.go`）。变化时才备份，PostgreSQL 备份保存到 `/opt/ip-list-backups/cicd/deploy-<time>-<id>/database.dump`。
+4. 停止 Web 和 API；数据库指纹变化时，用新 API 执行初始化/迁移；指纹相同则跳过备份和迁移。旧发布包没有指纹时，首次升级仍执行一次备份和迁移。
 5. 原子更新 `/opt/ip-list-current` 链接，重启两个服务。
 6. 检查服务状态、API `/health` 和 Web `/login`。失败时自动恢复之前的链接和 systemd drop-in，并启动旧应用。
 
-首次部署前的 `/opt/ip-list` 源码安装保留；第一次部署失败可直接恢复原服务。自动恢复只切回应用版本，**不会自动还原数据库**。数据库变更需要兼容旧版应用；不兼容的迁移应安排维护和人工恢复。数据库备份包含敏感数据，目录仅允许 root 访问，请按磁盘空间和备份策略定期归档。
+首次部署前的 `/opt/ip-list` 源码安装保留；第一次部署失败可直接恢复原服务。自动恢复只切回应用版本，**不会自动还原数据库**。数据库变更需要兼容旧版应用；不兼容的迁移应安排维护和人工恢复。数据库备份包含敏感数据，目录仅允许 root 访问。
 
-成功部署后保留最近三个发布目录（当前及上一次版本一定保留）。数据库备份不自动删除。发布串行执行，服务器另用 `flock` 防止重复部署。
+每次部署前后自动清理：
+
+- 发布目录只保留 `/opt/ip-list-current` 和 `/opt/ip-list-previous` 指向的当前及上一版；失败的新版本在恢复旧版后删除。
+- CI/CD 数据库备份只保留最近 3 份完整备份，残缺备份自动删除；其他目录中的历史备份不受此规则影响。
+- 上传目录在流水线成功或失败退出时删除；取消运行遗留的上传包和解压目录超过 24 小时后，在下次部署时清理。
+
+发布串行执行，服务器另用 `flock` 防止重复部署。服务器采用 systemd 运行预构建产物，不产生 Docker 镜像或容器。
 
 需要手动部署或回退到保留的构建时，从对应 Actions 运行下载 artifact，解压其中的 tar.gz 和 sha256 到同一目录，在服务器运行：
 
@@ -58,7 +64,7 @@
 bash scripts/deploy-release.sh <完整提交SHA> /path/to/ip-list-<完整提交SHA>.tar.gz
 ```
 
-脚本可从对应版本的仓库获取，发布包的 `scripts/` 中也包含一份。手动回退同样执行数据库初始化/迁移，需先确认版本兼容。
+`deploy-release.sh` 和同目录的 `cleanup-deployments.py` 必须一起获取；发布包的 `scripts/` 中包含两者。手动回退会比较数据库指纹，变化时执行初始化/迁移，需先确认版本兼容。
 
 查看当前版本及运行状态：
 
