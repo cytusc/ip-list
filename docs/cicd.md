@@ -32,6 +32,7 @@
 - `ip-list-api.service`、`ip-list-web.service` 已存在。
 - `/etc/ip-list.env` 保存运行配置和密钥，包括 `DATABASE_URL`、`REDIS_URL`、`APP_ORIGIN`、`APP_ENV=production`、固定的 `PROBE_CREDENTIAL_KEY`。
 - 数据库升级使用 API 的 `-init`，因此环境文件需提供有效 `ADMIN_USERNAME`、`ADMIN_PASSWORD`；已有管理员密码不会被覆盖。
+- 初始化/迁移默认允许 5 分钟，可在环境文件设置 `DB_INIT_TIMEOUT=10m` 调整；普通 API 启动仍使用 10 秒连接超时。
 - PostgreSQL 在本机运行，可通过 `postgres` 系统用户执行 `pg_dump`。
 - 已安装 `curl`、Python 3、PostgreSQL 客户端和 `flock`。
 - Go API 监听 `127.0.0.1:8081`，Web 监听 `127.0.0.1:3000`，Nginx 提供外部 HTTPS。

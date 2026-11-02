@@ -84,7 +84,14 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	startup, cancel := context.WithTimeout(ctx, 10*time.Second)
+	startupTimeout := 10 * time.Second
+	if *initialize {
+		startupTimeout, err = time.ParseDuration(env("DB_INIT_TIMEOUT", "5m"))
+		if err != nil || startupTimeout <= 0 {
+			log.Fatal("DB_INIT_TIMEOUT 必须是正数时长，例如 5m")
+		}
+	}
+	startup, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
 	if err = db.Ping(startup); err != nil {
 		log.Fatal("PostgreSQL 连接失败: ", err)
