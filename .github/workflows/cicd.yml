@@ -1,0 +1,106 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: npm ci
+      - name: Check frontend
+        run: |
+          npm run lint
+          npm run typecheck
+      - name: Check backend
+        run: |
+          go -C backend test ./...
+          go -C backend vet ./...
+      - name: Build application and probe downloads
+        run: |
+          npm run api:build
+          npm run probe:build
+          npm run build
+      - name: Package Linux x64 release
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: bash scripts/ci/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ip-list-linux-x64-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ip-list-linux-x64-${{ github.sha }}
+          path: dist
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$SSH_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Upload and deploy the built release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          REVISION: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          port="${DEPLOY_PORT:-22}"
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          remote_dir="/var/tmp/ip-list-cicd/$RUN_ID"
+          ssh_options=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          ssh "${ssh_options[@]}" -p "$port" "$target" "install -d -m 700 '$remote_dir'"
+          scp "${ssh_options[@]}" -P "$port" "dist/ip-list-$REVISION.tar.gz" "dist/ip-list-$REVISION.tar.gz.sha256" scripts/deploy-release.sh "$target:$remote_dir/"
+          ssh "${ssh_options[@]}" -p "$port" "$target" "bash '$remote_dir/deploy-release.sh' '$REVISION' '$remote_dir/ip-list-$REVISION.tar.gz'"
+          ssh "${ssh_options[@]}" -p "$port" "$target" "rm -rf '$remote_dir'"
+      - name: Deployment summary
+        env:
+          REVISION: ${{ github.sha }}
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+        run: |
+          printf 'Deployed `%s` to %s. The server ran the prebuilt release without compiling.\n' "$REVISION" "$PRODUCTION_URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove SSH credentials
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts

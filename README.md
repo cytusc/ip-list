@@ -194,6 +194,10 @@ npm run test:e2e
 
 ## 生产构建
 
+已配置 GitHub Actions：推送 `main` 后自动在 GitHub 构建完整 Linux x64 发布包并部署，服务器无需再次编译。发布包包含 Next.js standalone、Node.js 22、Go API 和各平台探针下载程序。配置、数据库备份及恢复方式见 [CI/CD 部署说明](docs/cicd.md)。
+
+手动从源码构建：
+
 ```sh
 npm run api:build
 npm run build
