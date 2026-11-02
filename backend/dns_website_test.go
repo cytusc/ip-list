@@ -30,7 +30,7 @@ func TestWebsiteDNSSelection(t *testing.T) {
 	if strings.Join(url.Desired, ",") != "1.1.1.1,8.8.8.8,9.9.9.9" {
 		t.Fatal(desired)
 	}
-	if len(desired) != 2 || len(desired["hk.reiiv.com/A"].Desired) != 1 {
+	if len(desired) != 3 || len(desired["hk.reiiv.com/A"].Desired) != 1 || strings.Join(desired["sg.reiiv.com/A"].Desired, ",") != "4.2.2.2" {
 		t.Fatal(desired)
 	}
 	old := dnsRemoteRecord{Name: "url.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"8.8.4.4"}}

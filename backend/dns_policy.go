@@ -164,6 +164,22 @@ func dnsDesired(c dnsConfig, candidates []dnsCandidate) map[string]dnsPlanRecord
 		key := dnsRecordKey(name, kind)
 		groups[key] = append(groups[key], item)
 	}
+	// Fall back independently for A and AAAA, using only healthy Hong Kong
+	// candidates from the ordinary protocol pool. Website candidates must not
+	// bypass their separate admission policy or enter country records.
+	fallback := map[string]bool{}
+	for _, kind := range []string{"A", "AAAA"} {
+		key := dnsRecordKey("sg."+c.Domain, kind)
+		if len(groups[key]) != 0 {
+			continue
+		}
+		for _, item := range groups[dnsRecordKey("hk."+c.Domain, kind)] {
+			if item.Delay >= 0 && !math.IsNaN(item.Delay) && !math.IsInf(item.Delay, 0) {
+				groups[key] = append(groups[key], item)
+			}
+		}
+		fallback[key] = len(groups[key]) > 0
+	}
 	result := map[string]dnsPlanRecord{}
 	for key, items := range groups {
 		sort.Slice(items, func(i, j int) bool {
@@ -174,9 +190,14 @@ func dnsDesired(c dnsConfig, candidates []dnsCandidate) map[string]dnsPlanRecord
 		})
 		parts := strings.Split(key, "/")
 		r := dnsPlanRecord{Name: parts[0], Type: parts[1], Country: strings.ToUpper(strings.Split(parts[0], ".")[0]), Desired: []string{}, Current: []string{}}
+		limit := c.MaxIPs
+		if fallback[key] {
+			limit = min(limit, 3)
+			r.Reason = "新加坡没有符合条件的 IP，使用香港延迟最低的最多 3 个 IP 兜底"
+		}
 		seen := map[string]bool{}
 		for _, item := range items {
-			if !seen[item.IP] && len(r.Desired) < c.MaxIPs {
+			if !seen[item.IP] && len(r.Desired) < limit {
 				r.Desired = append(r.Desired, item.IP)
 				seen[item.IP] = true
 			}

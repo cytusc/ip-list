@@ -97,7 +97,7 @@ func TestDNSCountryAndDesired(t *testing.T) {
 		{IP: "127.0.0.1", Country: "HK", State: "healthy"},
 	}
 	desired := dnsDesired(c, candidates)
-	if len(desired) != 2 || !slices.Equal(desired["hk.reiiv.com/A"].Desired, []string{"191.222.220.126"}) || desired["jp.reiiv.com/AAAA"].Type != "AAAA" {
+	if len(desired) != 3 || !slices.Equal(desired["hk.reiiv.com/A"].Desired, []string{"191.222.220.126"}) || desired["jp.reiiv.com/AAAA"].Type != "AAAA" {
 		t.Fatal(desired)
 	}
 	c.Domain = "REIIV.COM."
@@ -164,7 +164,7 @@ func TestDNSPlans(t *testing.T) {
 	hk := dnsRemoteRecord{ID: "hk", Name: "hk.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"103.135.251.114", "191.222.220.126"}}
 	healthy := []dnsCandidate{{IP: "191.222.220.126", Country: "HK", State: "healthy"}, {IP: "8.8.8.8", Country: "US", State: "healthy"}, {IP: "103.135.251.114", Country: "HK", State: "failed"}}
 	p := dnsBuildPlan(c, healthy, []dnsRemoteRecord{hk}, nil, false)
-	if len(p) != 2 || p[0].Action != "update" || !slices.Equal(p[0].Desired, []string{"191.222.220.126"}) || p[1].Name != "us.reiiv.com" || p[1].Action != "create" {
+	if len(p) != 3 || p[0].Action != "update" || !slices.Equal(p[0].Desired, []string{"191.222.220.126"}) || p[2].Name != "us.reiiv.com" || p[2].Action != "create" {
 		t.Fatal(p)
 	}
 	for _, tc := range []struct {
@@ -225,7 +225,11 @@ func TestDNSProbeFailureEvidencePreservesRecords(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate := dnsCandidate{IP: remote.Values[0], Country: "HK", State: dnsCorroborateFailure(tc.state, tc.otherOK)}
 			plan := dnsBuildPlan(dnsTestConfig(), []dnsCandidate{candidate}, []dnsRemoteRecord{remote}, map[string]bool{"hk.reiiv.com/A": true}, false)
-			if len(plan) != 1 || slices.Contains(plan[0].Desired, remote.Values[0]) != tc.preserve {
+			wantRecords := 1
+			if tc.state == "healthy" {
+				wantRecords = 2 // Hong Kong plus the new Singapore fallback.
+			}
+			if len(plan) != wantRecords || slices.Contains(plan[0].Desired, remote.Values[0]) != tc.preserve {
 				t.Fatalf("unexpected plan: %+v", plan)
 			}
 		})
