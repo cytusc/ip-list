@@ -1,4 +1,6 @@
 export type DNSConfig = {
+  website_enabled: boolean;
+  website_url: string;
   domain: string;
   enabled: boolean;
   interval_seconds: number;
@@ -17,7 +19,7 @@ export type DNSReport = {
   candidate_count?: number;
   mode?: string; domain?: string; config?: DNSConfig; started_at?: string; finished_at?: string;
   error?: string; warning?: string; records?: DNSRecord[];
-  candidates?: { ip: string; country: string; state: string; reason: string; delay_ms: number }[];
+  candidates?: { ip: string; pool?: string; country: string; state: string; reason: string; delay_ms: number; https_state?: string; https_url?: string; https_reason?: string }[];
 };
 export type DNSStatus = {
   config: DNSConfig; credentials_ready: boolean; running: boolean; requested: string;

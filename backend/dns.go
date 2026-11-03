@@ -37,6 +37,11 @@ func (a *app) loadDNSConfig(ctx context.Context) (dnsConfig, error) {
 	if err == nil {
 		err = json.Unmarshal(raw, &c)
 	}
+	// Upgrade legacy website policies using their existing scan target. The
+	// effective URL is returned to the UI and stored in subsequent reports.
+	if err == nil && c.WebsiteEnabled && c.WebsiteURL == "" {
+		err = a.db.QueryRow(ctx, "SELECT COALESCE((SELECT url FROM cf_targets ORDER BY created_at LIMIT 1),'')").Scan(&c.WebsiteURL)
+	}
 	return c, err
 }
 
@@ -437,6 +442,7 @@ func (a *app) dnsLocation(ctx context.Context, ip string) (string, error) {
 }
 
 func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, provider dnsProvider) error {
+	report.Warning = ""
 	var err error
 	if provider == nil {
 		provider, err = newHuaweiDNS()
@@ -464,39 +470,50 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 		candidates = append(candidates, website...)
 		uncertain = uncertain || websiteUncertain
 	}
-	// Bound external geolocation concurrency. Resolve unknown candidates too,
-	// so their existing country records are held rather than accidentally erased.
-	jobs := make(chan int)
+	if c.WebsiteEnabled {
+		dnsCheckWebsiteHTTPS(ctx, c, candidates)
+	}
+	// Resolve each IP once even when it belongs to both pools. A lookup failure
+	// affects this IP only: retain it if published, and block new grouping.
+	geoCtx, stopGeo := context.WithTimeout(ctx, 60*time.Second)
+	defer stopGeo()
+	byIP := map[string][]int{}
+	for i := range candidates {
+		if candidates[i].State != "failed" {
+			byIP[candidates[i].IP] = append(byIP[candidates[i].IP], i)
+		}
+	}
+	jobs := make(chan string, len(byIP))
+	for ip := range byIP {
+		jobs <- ip
+	}
+	close(jobs)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	locationIncomplete := false
 	for w := 0; w < 4; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := range jobs {
-				if candidates[i].State == "failed" {
-					continue
-				}
-				country, err := a.dnsLocation(ctx, candidates[i].IP)
-				if errors.Is(err, errLocationConflict) {
-					candidates[i].State = "unknown"
-					candidates[i].Reason = errLocationConflict.Error()
-				} else if err != nil {
-					mu.Lock()
-					uncertain = true
-					mu.Unlock()
-					candidates[i].State = "unknown"
-					candidates[i].Reason = "归属地查询失败，暂不发布"
-				} else {
-					candidates[i].Country = country
+			for ip := range jobs {
+				country, err := a.dnsLocation(geoCtx, ip)
+				for _, i := range byIP[ip] {
+					if errors.Is(err, errLocationConflict) {
+						candidates[i].State = "unknown"
+						candidates[i].Reason = errLocationConflict.Error()
+					} else if err != nil {
+						mu.Lock()
+						locationIncomplete = true
+						mu.Unlock()
+						candidates[i].State = "unknown"
+						candidates[i].Reason = "归属地查询失败：保留该 IP 已有解析，暂停新增分组"
+					} else {
+						candidates[i].Country = country
+					}
 				}
 			}
 		}()
 	}
-	for i := range candidates {
-		jobs <- i
-	}
-	close(jobs)
 	wg.Wait()
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -530,7 +547,9 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	report.Candidates = candidates
 	report.Records = dnsBuildPlan(c, candidates, remote, managed, uncertain)
 	if uncertain {
-		report.Warning = "探针整体不可用或归属地查询不完整，本轮保留云端解析"
+		report.Warning = "探针整体不可用，暂停新增；网站记录仅清理经 HTTPS 复测确认失效的 IP"
+	} else if locationIncomplete {
+		report.Warning = "部分 IP 定位查询不完整：仅保留这些 IP 的已有解析，不影响其他 IP 更新或失效清理"
 	}
 	if report.Mode == "preview" {
 		return nil

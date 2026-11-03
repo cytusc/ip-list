@@ -165,8 +165,13 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
           </Select>
         </div>
       </fieldset>
+      <fieldset disabled={pending || busy} className="space-y-4 rounded-lg border bg-slate-50/50 p-4">
+        <div className="flex items-center justify-between gap-4"><div><Label htmlFor="dns-website-enabled">SaaS 网站优选</Label><p className="mt-1 text-xs text-muted-foreground">向 url.{config.domain || "托管域名"} 发布通过 HTTPS 和稳定性验证的 IP。</p></div><Switch id="dns-website-enabled" checked={!!config.website_enabled} onCheckedChange={v => update("website_enabled", v)} /></div>
+        {config.website_enabled && <div className="space-y-2"><Label htmlFor="dns-website-url">实际业务 HTTPS 检测地址</Label><Input id="dns-website-url" type="url" required value={config.website_url || ""} placeholder="https://api.example.com/" onChange={e => update("website_url", e.target.value)} /><p className="text-xs leading-5 text-muted-foreground">填写 SaaS 已绑定的业务域名及可访问路径。每轮同步保留该域名的 Host/SNI，指定 IP 验证证书与 HTTP 200–399 响应，不跟随重定向。HTTP 80 端口不在此策略的保障范围内。</p></div>}
+        <p className="text-xs leading-5 text-muted-foreground">HTTPS 连续两次失败且存在健康对照 IP 时移出；短暂失败或所有地址同时检测失败时保留已有解析、暂停新增。新加入或恢复仍需至少 15 分钟稳定观察，移除后冷却 30 分钟。</p>
+      </fieldset>
       <p className="text-xs leading-6 text-muted-foreground">仅发布当前可用池中未屏蔽、通过证书检查的 IP。探针需有至少两次、跨度不少于 1 分钟的新鲜采样。成功率设为 0 时，仍检查持续失败、丢包和延迟波动；设为正数时，需最新采样成功且成功率达标。所有 IP 均检查最近 5 分钟的稳定性：丢包超过 20%，或出现至少两次尖峰、P95 延迟超过中位数 2 倍且高出 100 ms 时移出。新加入和恢复的 IP 需有连续 10 分钟完整采样、丢包不超过 10%，且 P95 与中位数的差不超过 60 ms 或中位数的 50%（取较大值）。同一地区的所有达标 IP 都会加入，超过数量上限时优先选择平均延迟较低的 IP。</p>
-      <p className="text-xs leading-6 text-muted-foreground">接管对应国家或地区的「全网默认」A / AAAA 记录，保留其他线路和其他子域名。已接管记录没有合格 IP 时会移除；采样待确认的已有 IP 暂时保留；探针整体离线或归属地查询失败时保留原解析。关闭定时同步会保留当前解析。</p>
+      <p className="text-xs leading-6 text-muted-foreground">接管对应国家或地区的「全网默认」A / AAAA 记录，保留其他线路和其他子域名。已接管记录没有合格 IP 时会移除；单个 IP 采样或定位待确认时，仅保留它的已有解析，不阻止其他地址更新。探针整体离线时暂停新增，网站记录仍可清理经 HTTPS 复测确认失效的地址。关闭定时同步会保留当前解析。</p>
       <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{dirty ? "配置有修改，请先保存再预览或同步。" : config.enabled ? `下次同步：${timeText(status.next_run_at)}` : "定时同步已关闭，可手动预览或同步。"}</span>
         <Button type="submit" disabled={pending || busy || !dirty}>{pending && <Loader2 className="animate-spin" />}保存策略</Button>
       </div>
@@ -184,7 +189,7 @@ function DNSCandidates() {
   const list=usePagedList<NonNullable<DNSReport["candidates"]>[number]>("dns-candidates",emptyList,{},10000);
   return <div className="mt-4">
     {list.error && <p role="alert" className="text-sm text-destructive">{list.error}</p>}
-    <Table><TableHeader><TableRow className="bg-slate-50"><TableHead>IP</TableHead><TableHead>地区</TableHead><TableHead>状态</TableHead><TableHead>说明</TableHead></TableRow></TableHeader><TableBody>{list.data.items.map(ip=><TableRow key={ip.ip}><TableCell className="font-mono">{ip.ip}</TableCell><TableCell>{ip.country ? countryName(ip.country) : "—"}</TableCell><TableCell>{stateNames[ip.state] || ip.state}</TableCell><TableCell className="whitespace-normal text-xs">{ip.reason}{ip.state==="healthy" && ` · 平均 ${ip.delay_ms.toFixed(1)} ms`}</TableCell></TableRow>)}{!list.data.items.length && <TableRow><TableCell colSpan={4} className="py-12 text-center text-muted-foreground">{list.loading ? "正在读取筛选明细…" : "本轮暂无 IP 筛选明细。"}</TableCell></TableRow>}</TableBody></Table>
+    <Table><TableHeader><TableRow className="bg-slate-50"><TableHead>IP</TableHead><TableHead>地区</TableHead><TableHead>状态</TableHead><TableHead>说明</TableHead></TableRow></TableHeader><TableBody>{list.data.items.map(ip=><TableRow key={`${ip.pool || "protocol"}/${ip.ip}`}><TableCell className="font-mono">{ip.ip}{ip.pool === "cf" && <span className="mt-1 block font-sans text-xs text-muted-foreground">SaaS 网站池</span>}</TableCell><TableCell>{ip.country ? countryName(ip.country) : "—"}</TableCell><TableCell>{stateNames[ip.state] || ip.state}</TableCell><TableCell className="whitespace-normal text-xs">{ip.reason}{ip.state==="healthy" && ` · 平均 ${ip.delay_ms.toFixed(1)} ms`}{ip.https_state && <p className={cn("mt-1", ip.https_state === "failed" ? "text-destructive" : "text-muted-foreground")} title={ip.https_url}>HTTPS {ip.https_state === "healthy" ? "通过" : ip.https_state === "failed" ? "失败" : "待确认"} · {ip.https_reason}</p>}</TableCell></TableRow>)}{!list.data.items.length && <TableRow><TableCell colSpan={4} className="py-12 text-center text-muted-foreground">{list.loading ? "正在读取筛选明细…" : "本轮暂无 IP 筛选明细。"}</TableCell></TableRow>}</TableBody></Table>
     <ListPagination data={list.data} onPage={list.setPage} loading={list.loading}/>
   </div>;
 }

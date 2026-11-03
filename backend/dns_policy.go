@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 type dnsConfig struct {
 	WebsiteEnabled bool   `json:"website_enabled"`
+	WebsiteURL     string `json:"website_url"`
 	Domain         string `json:"domain"`
 	Enabled        bool   `json:"enabled"`
 	Interval       int    `json:"interval_seconds"`
@@ -26,6 +28,13 @@ type dnsConfig struct {
 }
 
 func (c *dnsConfig) validate() error {
+	c.WebsiteURL = strings.TrimSpace(c.WebsiteURL)
+	if c.WebsiteEnabled || c.WebsiteURL != "" {
+		u, err := url.Parse(c.WebsiteURL)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || len(c.WebsiteURL) > 2048 {
+			return fmt.Errorf("网站优选需填写实际业务的 HTTPS 检测地址，例如 https://api.example.com/，不含账号或片段")
+		}
+	}
 	c.Domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(c.Domain), "."))
 	if len(c.Domain) > 253 || !regexp.MustCompile(`^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`).MatchString(c.Domain) {
 		return fmt.Errorf("请输入有效的托管域名，例如 reiiv.com")
@@ -117,6 +126,9 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 }
 
 type dnsCandidate struct {
+	HTTPSState     string  `json:"https_state,omitempty"`
+	HTTPSURL       string  `json:"https_url,omitempty"`
+	HTTPSReason    string  `json:"https_reason,omitempty"`
 	StabilityReady bool    `json:"stability_ready"`
 	Pool           string  `json:"pool,omitempty"`
 	IP             string  `json:"ip"`
@@ -157,6 +169,9 @@ func dnsDesired(c dnsConfig, candidates []dnsCandidate) map[string]dnsPlanRecord
 		}
 		name := country + "." + c.Domain
 		if item.Pool == "cf" {
+			if c.WebsiteURL != "" && (item.HTTPSState != "healthy" || item.HTTPSURL != c.WebsiteURL) {
+				continue
+			}
 			if !c.WebsiteEnabled || (country != "hk" && country != "jp" && country != "sg") || item.Delay < 0 || math.IsNaN(item.Delay) || math.IsInf(item.Delay, 0) || (country != "hk" && item.Delay > 80) {
 				continue
 			}

@@ -136,7 +136,11 @@ func (h *huaweiDNS) Apply(ctx context.Context, zone string, r dnsPlanRecord, ttl
 func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteRecord, managed map[string]bool, uncertain bool) []dnsPlanRecord {
 	desired := dnsDesired(c, candidates)
 	unknown := map[string]bool{}
+	httpsFailed := map[string]bool{}
 	for _, ip := range candidates {
+		if ip.Pool == "cf" && ip.HTTPSState == "failed" && ip.HTTPSURL == c.WebsiteURL && c.WebsiteURL != "" {
+			httpsFailed[ip.IP] = true
+		}
 		if ip.State == "unknown" {
 			unknown[ip.Pool+"/"+ip.IP] = true
 		}
@@ -183,8 +187,25 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 			}
 		}
 		sort.Strings(r.Desired)
+		// Even during a probe outage, independently confirmed HTTPS failures can
+		// leave the website record. This mode never admits or moves other IPs.
+		cleanup := false
+		if uncertain && c.WebsiteEnabled && r.Name == "url."+c.Domain && len(existing) > 0 {
+			kept := []string{}
+			for _, ip := range r.Current {
+				if httpsFailed[ip] {
+					cleanup = true
+				} else {
+					kept = append(kept, ip)
+				}
+			}
+			if cleanup {
+				r.Desired = kept
+				r.Reason = "仅移除经实际业务 HTTPS 连续两次确认失效的 IP，其他已有地址保持不变"
+			}
+		}
 		switch {
-		case uncertain:
+		case uncertain && !cleanup:
 			r.Action = "hold"
 			r.Reason = "探针采样或归属地不完整，保留原解析"
 		case len(existing) > 1 || cnames[r.Name]:

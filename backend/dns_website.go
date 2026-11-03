@@ -54,6 +54,9 @@ func dnsWebsiteStable(c dnsConfig, item dnsCandidate, history []dnsReport, now t
 	if !dnsWebsiteAdmissionOK(item) {
 		return false
 	}
+	if c.WebsiteURL != "" && (item.HTTPSState != "healthy" || item.HTTPSURL != c.WebsiteURL) {
+		return false
+	}
 	for _, report := range history {
 		if report.StartedAt.After(now) || now.Sub(report.StartedAt) >= websiteReentryCooldown {
 			continue
@@ -76,12 +79,12 @@ func dnsWebsiteStable(c dnsConfig, item dnsCandidate, history []dnsReport, now t
 		if report.StartedAt.After(now) {
 			continue
 		}
-		if report.Mode != "sync" || report.Error != "" || report.Warning != "" || report.Config.Domain != c.Domain || !report.Config.WebsiteEnabled || report.Config.ProbeID != c.ProbeID || report.Config.Window != c.Window || report.Config.MinSuccess != c.MinSuccess || previous.Sub(report.StartedAt) > maxGap {
+		if report.Mode != "sync" || report.Error != "" || (c.WebsiteURL == "" && report.Warning != "") || report.Config.WebsiteURL != c.WebsiteURL || report.Config.Domain != c.Domain || !report.Config.WebsiteEnabled || report.Config.ProbeID != c.ProbeID || report.Config.Window != c.Window || report.Config.MinSuccess != c.MinSuccess || previous.Sub(report.StartedAt) > maxGap {
 			return false
 		}
 		found := false
 		for _, old := range report.Candidates {
-			if old.IP == item.IP && old.Country == item.Country && dnsWebsiteAdmissionOK(old) {
+			if old.IP == item.IP && old.Country == item.Country && dnsWebsiteAdmissionOK(old) && (c.WebsiteURL == "" || (old.HTTPSState == "healthy" && old.HTTPSURL == c.WebsiteURL)) {
 				found = true
 				break
 			}
