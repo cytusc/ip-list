@@ -25,7 +25,7 @@ import type { PageResult } from "@/lib/pagination";
 const emptyList:PageResult<never>={items:[],page:1,pageSize:50,total:0};
 
 const actionNames: Record<string, string> = { create: "新增", update: "更新", delete: "移除", hold: "保留", unchanged: "一致" };
-const stateNames: Record<string, string> = { healthy: "符合条件", failed: "不可用", unknown: "待确认" };
+const stateNames: Record<string, string> = { healthy: "符合条件", failed: "不可用", unknown: "待确认", pending: "稳定观察中" };
 const timeText = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 function countryName(code: string) {
   try { return new Intl.DisplayNames(["zh-CN"], { type: "region" }).of(code) || code; }
@@ -145,7 +145,7 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
         {([
           ["interval_seconds", "更新间隔（秒）", 60, 86400], ["ttl", "TTL（秒）", 60, 86400],
           ["max_ips", "每个地区每种记录最多 IP 数", 1, 50], ["window_minutes", "探针观察窗口（分钟）", 2, 60],
-          ["min_success_percent", "最低采样成功率（%，0 为仅排除持续失败）", 0, 100],
+          ["min_success_percent", "最低采样成功率（%，0 为不额外限制成功率）", 0, 100],
         ] as const).map(([key, label, min, max]) => <div key={key} className="space-y-2"><Label htmlFor={`dns-${key}`}>{label}</Label><Input id={`dns-${key}`} type="number" required min={min} max={max} value={config[key]} onChange={e => update(key, Number(e.target.value))} /></div>)}
         <div className="space-y-2"><Label htmlFor="dns-probe">依据探针</Label>
           <Select value={config.probe_id || "any"} onValueChange={v => update("probe_id", v === "any" ? "" : v)} disabled={pending || busy}>
@@ -165,7 +165,7 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
           </Select>
         </div>
       </fieldset>
-      <p className="text-xs leading-6 text-muted-foreground">仅发布当前可用池中未屏蔽、通过证书检查的 IP。探针需有至少两次、跨度不少于 1 分钟的新鲜采样。成功率设为 0 时，近期测通且未连续失败满 60 秒即可加入，容忍短暂丢包；设为正数时，需最新采样成功且成功率达标。同一地区的所有达标 IP 都会加入，超过数量上限时优先选择平均延迟较低的 IP。</p>
+      <p className="text-xs leading-6 text-muted-foreground">仅发布当前可用池中未屏蔽、通过证书检查的 IP。探针需有至少两次、跨度不少于 1 分钟的新鲜采样。成功率设为 0 时，仍检查持续失败、丢包和延迟波动；设为正数时，需最新采样成功且成功率达标。所有 IP 均检查最近 5 分钟的稳定性：丢包超过 20%，或出现至少两次尖峰、P95 延迟超过中位数 2 倍且高出 100 ms 时移出。新加入和恢复的 IP 需有连续 10 分钟完整采样、丢包不超过 10%，且 P95 与中位数的差不超过 60 ms 或中位数的 50%（取较大值）。同一地区的所有达标 IP 都会加入，超过数量上限时优先选择平均延迟较低的 IP。</p>
       <p className="text-xs leading-6 text-muted-foreground">接管对应国家或地区的「全网默认」A / AAAA 记录，保留其他线路和其他子域名。已接管记录没有合格 IP 时会移除；采样待确认的已有 IP 暂时保留；探针整体离线或归属地查询失败时保留原解析。关闭定时同步会保留当前解析。</p>
       <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{dirty ? "配置有修改，请先保存再预览或同步。" : config.enabled ? `下次同步：${timeText(status.next_run_at)}` : "定时同步已关闭，可手动预览或同步。"}</span>
         <Button type="submit" disabled={pending || busy || !dirty}>{pending && <Loader2 className="animate-spin" />}保存策略</Button>

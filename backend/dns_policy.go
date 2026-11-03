@@ -117,13 +117,14 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 }
 
 type dnsCandidate struct {
-	Pool     string  `json:"pool,omitempty"`
-	IP       string  `json:"ip"`
-	Provider string  `json:"provider"`
-	Country  string  `json:"country"`
-	State    string  `json:"state"`
-	Reason   string  `json:"reason"`
-	Delay    float64 `json:"delay_ms"`
+	StabilityReady bool    `json:"stability_ready"`
+	Pool           string  `json:"pool,omitempty"`
+	IP             string  `json:"ip"`
+	Provider       string  `json:"provider"`
+	Country        string  `json:"country"`
+	State          string  `json:"state"`
+	Reason         string  `json:"reason"`
+	Delay          float64 `json:"delay_ms"`
 }
 
 type dnsPlanRecord struct {

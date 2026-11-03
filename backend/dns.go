@@ -316,7 +316,7 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
  LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('At',checked_at,'Success',success,'Delay',delay_ms) ORDER BY checked_at,id) AS data
  FROM latency_probe_results WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
  AND checked_at>=now()-make_interval(mins=>$3)) samples ON true
- WHERE `+probeOnlineSQL+` AND ($2='' OR p.id::text=$2)`, c.Protocol, c.ProbeID, c.Window)
+ WHERE `+probeOnlineSQL+` AND ($2='' OR p.id::text=$2)`, c.Protocol, c.ProbeID, max(c.Window, 10))
 	if err != nil {
 		return nil, false, err
 	}
@@ -324,6 +324,7 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 	states := map[string][]string{}
 	totals := map[string]float64{}
 	counts := map[string]int{}
+	instability := map[string]string{}
 	for rows.Next() {
 		var ip string
 		var fresh int
@@ -337,6 +338,18 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 			break
 		}
 		state, delay := dnsProbeHealth(samples, now, time.Duration(fresh)*time.Second, c)
+		reason, ready := dnsProbeStability(samples, now, time.Duration(fresh)*time.Second)
+		if state != "failed" && reason != "" {
+			state = "failed"
+			if otherTargetOK {
+				instability[ip] = reason
+			}
+		}
+		if state == "healthy" && ready {
+			if i, ok := index[ip]; ok {
+				items[i].StabilityReady = true
+			}
+		}
 		if website && state == "healthy" {
 			for _, sample := range samples {
 				if sample.Success && sample.Delay >= 0 && !math.IsNaN(sample.Delay) && !math.IsInf(sample.Delay, 0) && !sample.At.Before(now.Add(-time.Duration(c.Window)*time.Minute)) && !sample.At.After(now) {
@@ -395,6 +408,9 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 				if c.MinSuccess == 0 {
 					items[i].Reason = "连续失败至少 60 秒，或观察窗口内没有成功采样"
 				}
+			}
+			if failed && instability[items[i].IP] != "" {
+				items[i].Reason = instability[items[i].IP]
 			}
 		}
 	}
@@ -521,6 +537,7 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 		}
 		dnsStabilizeWebsite(c, candidates, remote, history, report.StartedAt)
 	}
+	dnsStabilizeCandidates(c, candidates, remote)
 	report.Candidates = candidates
 	report.Records = dnsBuildPlan(c, candidates, remote, managed, uncertain)
 	if uncertain {
