@@ -77,7 +77,7 @@ export function AvailableIPList({
         if (controller.signal.aborted) return;
         const resolved: Record<string, IPLocation | null> = {};
         for (const { ip, location } of results) {
-          const validLocation = location && /^[A-Z]{2}$/.test(location.country) ? location : null;
+          const validLocation = location || null;
           locationCache.current[ip] = validLocation;
           resolved[ip] = validLocation;
         }
@@ -305,7 +305,11 @@ export function AvailableIPList({
                     </button>
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
-                    <IPLocationCell location={locations[item.ip]} />
+                    <IPLocationCell ip={item.ip} location={locations[item.ip]} onChange={location => {
+                      locationCache.current[item.ip] = location;
+                      setLocations(current => ({ ...current, [item.ip]: location }));
+                      reload();
+                    }} />
                   </TableCell>
                   <TableCell className="max-w-44 whitespace-normal align-top text-xs">
                     <p className="font-mono">{item.asn || "—"}</p>

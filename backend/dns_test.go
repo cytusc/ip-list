@@ -274,7 +274,7 @@ func TestDNSIntegration(t *testing.T) {
 	protocol := "dns/test"
 	_, err = db.Exec(ctx, `INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at) VALUES
  ('dns/test','191.222.220.126',true,39,now()),('dns/test','103.135.251.114',true,39,now()),('dns/test','8.8.8.8',true,39,now());
- INSERT INTO dns_ip_locations(ip,country) VALUES('191.222.220.126','HK'),('8.8.8.8','US') ON CONFLICT(ip) DO UPDATE SET country=excluded.country,checked_at=now()`)
+ INSERT INTO dns_ip_locations(ip,country,policy_version) VALUES('191.222.220.126','HK',3),('8.8.8.8','US',3) ON CONFLICT(ip) DO UPDATE SET country=excluded.country,policy_version=excluded.policy_version,checked_at=now()`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestDNSIntegration(t *testing.T) {
 	defer db.Exec(ctx, "DELETE FROM latency_probes WHERE id=$1", probe)
 	_, err = db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
  SELECT $1::uuid,ip::inet,ip<>'103.135.251.114',39,now()-make_interval(secs=>age)
- FROM unnest(ARRAY['191.222.220.126','103.135.251.114','8.8.8.8']) ip CROSS JOIN unnest(ARRAY[121,81,41,1]) age`, probe)
+ FROM unnest(ARRAY['191.222.220.126','103.135.251.114','8.8.8.8']) ip CROSS JOIN generate_series(1,601,20) age`, probe)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestDNSIntegration(t *testing.T) {
 	if err = a.executeDNS(ctx, c, &report, fake); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.writes) != 0 || len(report.Records) != 2 || report.Records[0].Action != "update" || len(report.Records[0].Desired) != 1 {
+	if len(fake.writes) != 0 || len(report.Records) != 3 || report.Records[0].Action != "update" || len(report.Records[0].Desired) != 1 {
 		t.Fatal(report)
 	}
 	for _, ip := range report.Candidates {
@@ -314,7 +314,7 @@ func TestDNSIntegration(t *testing.T) {
 	if err = a.executeDNS(ctx, c, &report, fake); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.writes) != 2 || !report.Records[0].Applied {
+	if len(fake.writes) != 3 || !report.Records[0].Applied {
 		t.Fatal(report)
 	}
 	// A live heartbeat with a broken probe network must not remove IPs.

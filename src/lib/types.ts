@@ -163,7 +163,11 @@ export type LatencyProbeResult = {
   checked_at: string;
 };
 export type BlacklistedIP = { ip: string; created_at: string };
+export type IPLocationSource = { name: string; country: string; region: string; city: string };
 export type IPLocation = {
+  status?: "consensus" | "manual" | "conflict" | "insufficient" | "unknown";
+  source?: string;
+  sources?: IPLocationSource[];
   country: string;
   region: string;
   city: string;

@@ -218,9 +218,10 @@ ORDER BY t.ip,p.created_at`
 // Filter unique addresses before applying LIMIT, then fetch protocol checks and
 // probe samples only for those addresses. Region filters use the shared cache.
 const availableIPCandidatesSQL = `WITH candidates AS MATERIALIZED (
- SELECT s.ip,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider,COALESCE(l.country,'') AS country
+ SELECT s.ip,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider,COALESCE(o.country,l.country,'') AS country
  FROM (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available) s ` + networkInfoJoin + `
- LEFT JOIN dns_ip_locations l ON l.ip=s.ip
+ LEFT JOIN dns_ip_locations l ON l.ip=s.ip AND l.policy_version=3
+ LEFT JOIN ip_location_overrides o ON o.ip=s.ip
  WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
 ), filtered AS (
  SELECT c.* FROM candidates c WHERE

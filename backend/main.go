@@ -227,6 +227,8 @@ func (a *app) routes() http.Handler {
 	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
 	mux.Handle("GET /available-ips/links", a.protected(http.HandlerFunc(a.generateIPLinks)))
 	mux.Handle("GET /available-ips/location", a.protected(http.HandlerFunc(a.availableIPLocation)))
+	mux.Handle("PUT /available-ips/location", a.protected(http.HandlerFunc(a.saveIPLocationOverride)))
+	mux.Handle("DELETE /available-ips/location", a.protected(http.HandlerFunc(a.deleteIPLocationOverride)))
 	mux.Handle("DELETE /protocol-networks/{id}", a.protected(http.HandlerFunc(a.restoreProtocolNetwork)))
 	mux.Handle("GET /certificate-issues", a.protected(http.HandlerFunc(a.certificateIssues)))
 	mux.Handle("GET /available-ips", a.protected(http.HandlerFunc(a.availableIPs)))

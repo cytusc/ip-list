@@ -148,6 +148,17 @@ CREATE TABLE IF NOT EXISTS dns_ip_locations (
  checked_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Version automatic decisions independently from durable manual corrections.
+ALTER TABLE dns_ip_locations ADD COLUMN IF NOT EXISTS policy_version integer NOT NULL DEFAULT 0;
+ALTER TABLE dns_ip_locations ADD COLUMN IF NOT EXISTS location jsonb NOT NULL DEFAULT '{}'::jsonb;
+CREATE TABLE IF NOT EXISTS ip_location_overrides (
+ ip inet PRIMARY KEY,
+ country varchar(2) NOT NULL,
+ region varchar(200) NOT NULL DEFAULT '',
+ city varchar(200) NOT NULL DEFAULT '',
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS cf_targets (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  name varchar(100) NOT NULL,

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -418,36 +419,21 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 }
 
 func (a *app) dnsLocation(ctx context.Context, ip string) (string, error) {
-	var country string
-	err := a.db.QueryRow(ctx, "SELECT country FROM dns_ip_locations WHERE ip=$1::inet AND checked_at>now()-interval '24 hours'", ip).Scan(&country)
-	if err == nil && dnsCountry(country) != "" {
-		return country, nil
+	ipAddr, err := netip.ParseAddr(ip)
+	if err != nil || !publicMetadataPrefix(netip.PrefixFrom(ipAddr, ipAddr.BitLen())) {
+		return "", fmt.Errorf("非公网地址")
 	}
-	if a.redis != nil {
-		raw, err := a.redis.Get(ctx, "ipfilter:ip-location:v2:"+ip).Bytes()
-		var location ipLocation
-		if err == nil && json.Unmarshal(raw, &location) == nil && dnsCountry(location.Country) != "" {
-			country = location.Country
-		}
+	location, err := a.resolveIPLocation(ctx, ip)
+	if err != nil {
+		return "", err
 	}
-	if country == "" {
-		ipAddr, err := netip.ParseAddr(ip)
-		if err != nil || !publicMetadataPrefix(netip.PrefixFrom(ipAddr, ipAddr.BitLen())) {
-			return "", fmt.Errorf("非公网地址")
-		}
-		lookupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
-		defer cancel()
-		location, err := lookupIPLocation(lookupCtx, http.DefaultClient, "https://api.123169.xyz", ip)
-		if err != nil {
-			return "", err
-		}
-		country = location.Country
+	if location.Status == "conflict" || location.Status == "insufficient" {
+		return "", errLocationConflict
 	}
-	if dnsCountry(country) == "" {
+	if dnsCountry(location.Country) == "" {
 		return "", fmt.Errorf("归属国家或地区未知")
 	}
-	_, err = a.db.Exec(ctx, `INSERT INTO dns_ip_locations(ip,country) VALUES($1::inet,$2) ON CONFLICT(ip) DO UPDATE SET country=excluded.country,checked_at=now()`, ip, country)
-	return country, err
+	return location.Country, nil
 }
 
 func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, provider dnsProvider) error {
@@ -492,7 +478,10 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 					continue
 				}
 				country, err := a.dnsLocation(ctx, candidates[i].IP)
-				if err != nil {
+				if errors.Is(err, errLocationConflict) {
+					candidates[i].State = "unknown"
+					candidates[i].Reason = errLocationConflict.Error()
+				} else if err != nil {
 					mu.Lock()
 					uncertain = true
 					mu.Unlock()
