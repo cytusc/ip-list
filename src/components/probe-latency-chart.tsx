@@ -59,13 +59,13 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
   const yMax = Math.ceil(Math.max(10, (data.maximum ?? 0) * 1.1) / 10) * 10;
   const plotWidth = width - plot.left - plot.right;
   const plotHeight = height - plot.top - plot.bottom;
-  const x = (time: string | number) => plot.left + ((typeof time === "string" ? Date.parse(time) : time) - data.from) / (hours * 3600000) * plotWidth;
+  const x = (time: string | number) => plot.left + Math.max(0, ((typeof time === "string" ? Date.parse(time) : time) - data.from) / (hours * 3600000)) * plotWidth;
   const y = (delay: number) => plot.top + (1 - delay / yMax) * plotHeight;
   const current = data.latest;
   const measurement = probe.mode === "tcp" ? `TCP 建连延迟 :${probe.tcp_port}` : "ICMP 往返延迟";
   const failure = probe.mode === "tcp" ? "连接失败或超时" : "ICMP 超时";
   const stale = current && now - Date.parse(current.checked_at) > gapSeconds * 1000;
-  const state = !probe.enabled ? "已停用" : !probe.online ? "探针离线" : !current ? "等待检测" : stale ? "数据已过期" : current.success ? "检测成功" : data.currentState === "unavailable" ? "持续不可用" : "偶发超时，等待确认";
+  const state = !probe.enabled ? "已停用" : !probe.online ? "探针离线" : !current ? "等待检测" : stale ? "数据已过期" : current.bucket_seconds ? "历史汇总" : current.success ? "检测成功" : data.currentState === "unavailable" ? "持续不可用" : "偶发超时，等待确认";
   const hovered = selected == null ? undefined : data.samples[selected];
   function selectAt(clientX: number, bounds: DOMRect) {
     const position = Math.max(0, Math.min(1, ((clientX - bounds.left) / bounds.width * width - plot.left) / plotWidth));
@@ -96,21 +96,21 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
       {error && <p role="alert" className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">{error}；当前保留上次成功获取的数据。</p>}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg bg-slate-50 p-3 text-sm">
         <span className="font-medium">{state}</span>
-        <span>最近一次：{current ? current.success ? ms(current.delay_ms) : failure : "—"}{current && (!probe.online || stale) ? "（历史值）" : ""}</span>
+        <span>{current?.bucket_seconds ? "最近区间平均：" : "最近一次："}{current ? current.success ? ms(current.delay_ms) : failure : "—"}{current && (!probe.online || stale) ? "（历史值）" : ""}</span>
         <span className="text-xs text-muted-foreground">检测时间：{current ? timeLabel(current.checked_at) : "暂无"}</span>
         <span className="text-xs text-muted-foreground">心跳：{probe.last_seen ? timeLabel(probe.last_seen) : "尚未连接"}</span>
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
         <Stat label="平均延迟" value={ms(data.average)} />
         <Stat label="最低 / 最高 (ms)" value={data.minimum == null ? "—" : `${data.minimum.toFixed(2)} / ${data.maximum?.toFixed(2)}`} />
-        <Stat label="P95 延迟" value={ms(data.p95)} />
-        <Stat label="平均相邻抖动" value={ms(data.jitter)} />
+        <Stat label="P95 延迟" value={data.hasRollups ? "汇总后不提供" : ms(data.p95)} />
+        <Stat label="平均相邻抖动" value={data.hasRollups ? "汇总后不提供" : ms(data.jitter)} />
         <Stat label="采样失败率" value={data.loss == null ? "—" : `${data.loss.toFixed(1)}%`} />
-        <Stat label="成功 / 总采样" value={`${data.samples.length - data.failed.length} / ${data.samples.length}`} />
+        <Stat label="成功 / 总采样" value={`${data.successCount} / ${data.sampleCount}`} />
       </div>
       {data.samples.length ? (
         <div className="rounded-lg border bg-slate-50/50 p-2">
-          <p aria-live="polite" className="min-h-7 px-2 text-xs tabular-nums text-slate-600">{hovered ? `${timeLabel(hovered.checked_at)} · ${hovered.success ? ms(hovered.delay_ms) : failure}` : "移动到曲线上查看采样，或聚焦后使用左右方向键。"}</p>
+          <p aria-live="polite" className="min-h-7 px-2 text-xs tabular-nums text-slate-600">{hovered ? `${timeLabel(hovered.checked_at)} · ${hovered.bucket_seconds ? `5 分钟汇总 · 平均 ${hovered.success ? ms(hovered.delay_ms) : "—"} · 成功 ${hovered.success_count || 0}/${hovered.sample_count}` : hovered.success ? ms(hovered.delay_ms) : failure}` : "移动到曲线上查看采样，或聚焦后使用左右方向键。"}</p>
           <svg viewBox={`0 0 ${width} ${height}`} className="w-full" role="img" aria-label={`${probeName} 对 ${ip} 的 ${measurement}历史曲线`} tabIndex={0}
             onPointerMove={event => selectAt(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerLeave={() => setSelected(null)}
             onKeyDown={event => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); setSelected(value => event.key === "Home" ? 0 : event.key === "End" ? data.samples.length - 1 : Math.max(0, Math.min(data.samples.length - 1, (value ?? data.samples.length - 1) + (event.key === "ArrowLeft" ? -1 : 1)))); } }}>
@@ -135,7 +135,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
           </svg>
         </div>
       ) : <div className="rounded-lg border border-dashed py-14 text-center"><Activity className="mx-auto size-7 text-slate-300" /><p className="mt-3 text-sm font-medium">此时间段暂无延迟记录</p><p className="mt-1 text-xs text-muted-foreground">检查探针连接，或选择更长的时间范围。</p></div>}
-      <p className="text-xs text-muted-foreground">蓝线为{measurement}，灰色标记为待确认超时，连续至少 4 次失败且持续满 60 秒后标红；成功一次即恢复。偶发超时不参与延迟计算，断报留空且不连线。失败率仅统计已上报采样；抖动为连续成功采样延迟差的平均绝对值。仅显示当前模式及端口的历史记录。</p>
+      <p className="text-xs text-muted-foreground">最近 2 小时保留逐次采样，较早历史按 5 分钟汇总，保留 7 天。汇总区间显示成功采样的平均延迟，失败标记表示区间内有失败；统计按真实采样数加权，P95 和相邻抖动仅在全部为原始采样时提供。蓝线为{measurement}，灰色标记为待确认超时，原始采样连续至少 4 次失败且持续满 60 秒后标红；成功一次即恢复。偶发超时不参与延迟计算，断报留空且不连线。失败率仅统计已上报采样；抖动为连续成功采样延迟差的平均绝对值。仅显示当前模式及端口的历史记录。</p>
     </section>
   );
 }

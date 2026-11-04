@@ -161,6 +161,12 @@ export type LatencyProbeResult = {
   delay_ms: number;
   success: boolean;
   checked_at: string;
+  bucket_seconds?: number;
+  sample_count?: number;
+  success_count?: number;
+  delay_sum?: number;
+  min_delay_ms?: number;
+  max_delay_ms?: number;
 };
 export type BlacklistedIP = { ip: string; created_at: string };
 export type IPLocationSource = { name: string; country: string; region: string; city: string };

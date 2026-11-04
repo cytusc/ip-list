@@ -94,3 +94,40 @@ test('minute cells retain missing minutes and confirm sustained loss across minu
  assert.equal(stale[12].delay_ms,80);assert.equal(stale[15].totalCount,0);
  assert.ok(aggregateProbeMinutes([],end,106).every(c=>c.delay_ms===null && !c.unavailable));
 });
+
+test('rollups preserve weighted statistics and never fabricate percentiles or outage streaks', () => {
+ const bucket = (id, secondsAgo, total, ok, sum, min, max) => ({
+  ...sample(id, secondsAgo, ok ? sum / ok : 0, ok > 0), bucket_seconds:300,
+  sample_count:total, success_count:ok, delay_sum:sum, min_delay_ms:min, max_delay_ms:max,
+ });
+ const items=[bucket(-1,12000,15,12,120,5,20),bucket(-2,11700,3,2,200,80,120),sample(1,20,40)];
+ const data=analyzeProbeHistory(items,now,6,180);
+ assert.equal(data.sampleCount,19);
+ assert.equal(data.successCount,15);
+ assert.equal(data.average,24);
+ assert.equal(data.minimum,5);
+ assert.equal(data.maximum,120);
+ assert.equal(data.loss,4/19*100);
+ assert.equal(data.p95,null);
+ assert.equal(data.jitter,null);
+ assert.equal(data.hasRollups,true);
+ assert.deepEqual(data.failed.map(p=>p.id),[-1,-2]);
+ assert.equal(data.unavailable.length,0);
+ assert.deepEqual(data.segments.map(s=>s.map(p=>p.id)),[[-1,-2],[1]]);
+ const failed=analyzeProbeHistory([0,1,2,3].map(i=>bucket(-i-1,12000-i*300,15,0,0,null,null)),now,6,180);
+ assert.equal(failed.average,null);
+ assert.equal(failed.minimum,null);
+ assert.equal(failed.maximum,null);
+ assert.equal(failed.loss,100);
+ assert.equal(failed.unavailable.length,0);
+ assert.equal(failed.segments.length,0);
+});
+
+test('summaries reset raw failure evidence and missing buckets break the curve',()=> {
+ const bucket={...sample(-1,400,50),bucket_seconds:300,sample_count:15,success_count:15,delay_sum:750,min_delay_ms:40,max_delay_ms:60};
+ const items=[sample(-2,1000,60),bucket,sample(1,80,0,false),sample(2,60,0,false),sample(3,40,0,false)];
+ const data=analyzeProbeHistory(items,now,1,180);
+ assert.deepEqual(data.segments.map(s=>s.map(p=>p.id)),[[-2],[-1]]);
+ assert.equal(data.unavailable.length,0);
+ assert.equal(data.currentState,'pending');
+});

@@ -53,11 +53,17 @@ type latencyProbeInput struct {
 }
 
 type latencyProbeResult struct {
-	ID        int64     `json:"id"`
-	IP        string    `json:"ip"`
-	DelayMS   float64   `json:"delay_ms"`
-	Success   bool      `json:"success"`
-	CheckedAt time.Time `json:"checked_at"`
+	ID            int64     `json:"id"`
+	IP            string    `json:"ip"`
+	DelayMS       float64   `json:"delay_ms"`
+	Success       bool      `json:"success"`
+	CheckedAt     time.Time `json:"checked_at"`
+	BucketSeconds int       `json:"bucket_seconds,omitempty"`
+	SampleCount   int64     `json:"sample_count,omitempty"`
+	SuccessCount  int64     `json:"success_count,omitempty"`
+	DelaySum      float64   `json:"delay_sum,omitempty"`
+	MinDelayMS    *float64  `json:"min_delay_ms,omitempty"`
+	MaxDelayMS    *float64  `json:"max_delay_ms,omitempty"`
 }
 
 type latencyProbeReport struct {
@@ -295,11 +301,7 @@ func (a *app) latencyProbeHistory(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "探针不存在", nil)
 		return
 	}
-	rows, err := a.db.Query(r.Context(), `SELECT id,host(ip),delay_ms,success,checked_at
-FROM latency_probe_results r WHERE probe_id=$1 AND ip=$2::inet
-AND EXISTS(SELECT 1 FROM latency_probes p WHERE p.id=r.probe_id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END)
-AND checked_at>now()-make_interval(hours=>$3)
-ORDER BY checked_at`, id, canonical, hours)
+	rows, err := a.db.Query(r.Context(), probeHistorySQL, id, canonical, hours)
 	if err != nil {
 		dbError(w, err)
 		return
@@ -308,7 +310,7 @@ ORDER BY checked_at`, id, canonical, hours)
 	items := []latencyProbeResult{}
 	for rows.Next() {
 		var item latencyProbeResult
-		if err = rows.Scan(&item.ID, &item.IP, &item.DelayMS, &item.Success, &item.CheckedAt); err != nil {
+		if err = rows.Scan(&item.ID, &item.IP, &item.DelayMS, &item.Success, &item.CheckedAt, &item.BucketSeconds, &item.SampleCount, &item.SuccessCount, &item.DelaySum, &item.MinDelayMS, &item.MaxDelayMS); err != nil {
 			dbError(w, err)
 			return
 		}
@@ -385,7 +387,7 @@ GROUP BY p.ip ORDER BY p.ip`)
 	}
 	respond(w, http.StatusOK, map[string]any{"ips": ips, "interval_seconds": interval,
 		"timeout_ms": timeout, "concurrency": concurrency, "interface_name": interfaceName,
-		"mode": mode, "tcp_port": port, "retention_days": 30})
+		"mode": mode, "tcp_port": port, "retention_days": 7, "raw_retention_hours": 2, "history_bucket_seconds": 300})
 }
 
 func (a *app) reportProbeResults(w http.ResponseWriter, r *http.Request) {
@@ -472,8 +474,6 @@ AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
 RETURNING 1
 ), seen AS (
 UPDATE latency_probes SET last_seen=now() WHERE id=$1 RETURNING id
-), pruned AS (
-DELETE FROM latency_probe_results WHERE checked_at<now()-interval '30 days' AND probe_id=$1 RETURNING 1
 )
 SELECT count(*) FROM inserted`, id, string(body), input.Mode, input.TCPPort).Scan(&saved)
 	if err != nil {

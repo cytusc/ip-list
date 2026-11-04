@@ -16,6 +16,20 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ipguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ipguard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,12 +45,17 @@ jobs:
         run: |
           npm run lint
           npm run typecheck
+          node --experimental-strip-types --test scripts/tests/probe-history.test.mjs
       - name: Check deployment retention
         run: python3 -m unittest discover -s scripts/tests -p 'test_cleanup_deployments.py'
       - name: Check backend
         run: |
           go -C backend test ./...
           go -C backend vet ./...
+      - name: Check probe data retention
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable
+        run: go -C backend test -run 'TestProbeCompaction' -count=1
       - name: Build application and probe downloads
         run: |
           npm run api:build

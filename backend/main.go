@@ -121,6 +121,7 @@ func main() {
 	}
 	a.scanContext = ctx
 	go a.maintainConnectivityData(ctx)
+	go a.maintainProbeSamples(ctx)
 	go a.revalidateLegacyCertificates(ctx)
 	go a.resumeNodeSchedules(ctx)
 	go a.maintainAutomaticScans(ctx)

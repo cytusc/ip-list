@@ -18,7 +18,7 @@ export default async function LatencyProbeDetailPage({
     searchParams,
   ]);
   const probe = (await api<LatencyProbe[]>(`/latency-probes?id=${encodeURIComponent(id)}`)).data[0];
-  const history = ip ? await getLatencyProbeHistory(id, ip) : [];
+  const history = ip ? await getLatencyProbeHistory(id, ip, 1) : [];
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">

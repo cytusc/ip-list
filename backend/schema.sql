@@ -400,3 +400,20 @@ CREATE OR REPLACE VIEW shared_node_ip_pool AS
    COALESCE(substring(share_uri FROM '[?&]type=([^&#]+)'), 'tcp') AS protocol
   FROM nodes WHERE enabled AND share_uri ~ '^(vless|trojan)://'
  ) protocols WHERE p.protocol='grpc';
+
+-- Detailed measurements serve live decisions; older measurements are compacted.
+CREATE TABLE IF NOT EXISTS latency_probe_rollups (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ probe_id uuid NOT NULL REFERENCES latency_probes(id) ON DELETE CASCADE,
+ ip inet NOT NULL,
+ mode text NOT NULL CHECK (mode IN ('icmp','tcp')),
+ tcp_port integer NOT NULL CHECK ((mode='icmp' AND tcp_port=0) OR (mode='tcp' AND tcp_port BETWEEN 1 AND 65535)),
+ bucket_start timestamptz NOT NULL,
+ sample_count bigint NOT NULL CHECK (sample_count>0),
+ success_count bigint NOT NULL CHECK (success_count BETWEEN 0 AND sample_count),
+ delay_sum double precision NOT NULL,
+ min_delay_ms double precision,
+ max_delay_ms double precision,
+ UNIQUE(probe_id,ip,mode,tcp_port,bucket_start)
+);
+CREATE INDEX IF NOT EXISTS latency_probe_rollups_time_idx ON latency_probe_rollups(bucket_start);

@@ -5,6 +5,8 @@ export function classifyProbeSamples(items: LatencyProbeResult[], gapSeconds: nu
   let count = 0, since = 0, previous = NaN;
   return items.map(sample => {
     const time = Date.parse(sample.checked_at);
+    // Bucket counts do not preserve failure order or outage duration.
+    if (sample.bucket_seconds) { count = 0; since = 0; previous = NaN; return "summary" as const; }
     if (sample.success) { count = 0; since = 0; previous = time; return "available" as const; }
     if (!Number.isFinite(time) || !Number.isFinite(previous) || time <= previous || time - previous > gapSeconds * 1000) {
       count = 0; since = time;
@@ -20,7 +22,7 @@ export function analyzeProbeHistory(items: LatencyProbeResult[], now: number, ho
   const from = now - hours * 3600000;
   const samples = items.filter(item => {
     const time = Date.parse(item.checked_at);
-    return time >= from && time <= now && Number.isFinite(item.delay_ms);
+    return (item.bucket_seconds ? time + item.bucket_seconds * 1000 > from : time >= from) && time <= now && Number.isFinite(item.delay_ms);
   }).sort((a, b) => Date.parse(a.checked_at) - Date.parse(b.checked_at) || a.id - b.id);
   const segments: LatencyProbeResult[][] = [];
   let segment: LatencyProbeResult[] = [];
@@ -28,8 +30,8 @@ export function analyzeProbeHistory(items: LatencyProbeResult[], now: number, ho
   const changes: number[] = [];
   const states = classifyProbeSamples(samples, gapSeconds);
   for (const [index, sample] of samples.entries()) {
-    const continuous = previous?.success && Date.parse(sample.checked_at) - Date.parse(previous.checked_at) <= gapSeconds * 1000;
-    if (states[index] === "unavailable" || (sample.success && !continuous)) {
+    const continuous = previous?.success && Date.parse(sample.checked_at) - Date.parse(previous.checked_at) <= (gapSeconds + Math.max(previous.bucket_seconds || 0, sample.bucket_seconds || 0)) * 1000;
+    if (states[index] === "unavailable" || (sample.bucket_seconds && !sample.success) || (sample.success && !continuous)) {
       if (segment.length) segments.push(segment);
       segment = [];
     }
@@ -41,18 +43,24 @@ export function analyzeProbeHistory(items: LatencyProbeResult[], now: number, ho
   }
   if (segment.length) segments.push(segment);
   const values = samples.filter(item => item.success).map(item => item.delay_ms).sort((a, b) => a - b);
-  const failed = samples.filter(item => !item.success);
+  const failed = samples.filter(item => item.bucket_seconds ? (item.sample_count || 0) > (item.success_count || 0) : !item.success);
+  const hasRollups = samples.some(item => !!item.bucket_seconds);
+  const sampleCount = samples.reduce((sum, item) => sum + (item.bucket_seconds ? item.sample_count || 0 : 1), 0);
+  const successCount = samples.reduce((sum, item) => sum + (item.bucket_seconds ? item.success_count || 0 : item.success ? 1 : 0), 0);
+  const delaySum = samples.reduce((sum, item) => sum + (item.bucket_seconds ? item.delay_sum || 0 : item.success ? item.delay_ms : 0), 0);
+  const minima = samples.filter(item => item.success).map(item => item.min_delay_ms ?? item.delay_ms);
+  const maxima = samples.filter(item => item.success).map(item => item.max_delay_ms ?? item.delay_ms);
   return {
-    from, samples, segments, failed, states,
+    from, samples, segments, failed, states, hasRollups, sampleCount, successCount,
     unavailable: samples.filter((_, index) => states[index] === "unavailable"),
     currentState: states.at(-1),
     latest: samples.at(-1),
-    average: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
-    minimum: values[0] ?? null,
-    maximum: values.at(-1) ?? null,
-    p95: values.length ? values[Math.ceil(values.length * .95) - 1] : null,
-    jitter: changes.length ? changes.reduce((sum, value) => sum + value, 0) / changes.length : null,
-    loss: samples.length ? failed.length / samples.length * 100 : null,
+    average: successCount ? delaySum / successCount : null,
+    minimum: minima.length ? Math.min(...minima) : null,
+    maximum: maxima.length ? Math.max(...maxima) : null,
+    p95: !hasRollups && values.length ? values[Math.ceil(values.length * .95) - 1] : null,
+    jitter: !hasRollups && changes.length ? changes.reduce((sum, value) => sum + value, 0) / changes.length : null,
+    loss: sampleCount ? (sampleCount - successCount) / sampleCount * 100 : null,
   };
 }
 
