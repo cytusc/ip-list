@@ -67,7 +67,8 @@ func (a *app) maintainProbeSamples(ctx context.Context) {
 			n, err := a.compactProbeSamples(batch, 20000)
 			stop()
 			if err != nil {
-				if ctx.Err() == nil {
+				// Expiring the pass budget intentionally yields to foreground work.
+				if ctx.Err() == nil && work.Err() == nil {
 					log.Printf("压缩探针采样失败: %v", err)
 				}
 				break
