@@ -165,7 +165,7 @@ export type LatencyProbeResult = {
 export type BlacklistedIP = { ip: string; created_at: string };
 export type IPLocationSource = { name: string; country: string; region: string; city: string };
 export type IPLocation = {
-  status?: "consensus" | "manual" | "conflict" | "insufficient" | "unknown";
+  status?: "consensus" | "manual" | "conflict" | "insufficient" | "unknown" | "unavailable";
   source?: string;
   sources?: IPLocationSource[];
   country: string;

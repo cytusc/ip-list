@@ -53,7 +53,7 @@ export function IPLocationCell({ ip, location, onChange }: {
 
   return <div className="min-h-12 space-y-1">
     {!valid ? <span className={status === "conflict" ? "text-amber-700" : "text-muted-foreground"}>
-      {location === undefined ? "查询中…" : status === "conflict" ? "定位冲突 · 待确认" : status === "insufficient" ? "定位来源不足" : "未知归属地"}
+      {location === undefined ? "查询中…" : status === "conflict" ? "定位冲突 · 待确认" : status === "insufficient" ? "定位来源不足" : status === "unavailable" || location === null ? "定位服务暂不可用 · 稍后重试" : "未知归属地"}
     </span> : <>
       <p className="flex items-center gap-2"><span role="img" aria-label={`${country}国旗`} className="text-base">{flag}</span>{country}</p>
       {detail.length > 0 && <p className="text-muted-foreground">{detail.join(" · ")}</p>}

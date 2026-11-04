@@ -91,6 +91,23 @@ export function AvailableIPList({
     return () => controller.abort();
   }, [locationIPs, locationVersion]);
 
+  // Retry temporary lookup failures even while telemetry keeps the same page.
+  // Successful results and deliberate conflict/insufficient states stay cached.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      let retry = false;
+      for (const ip of locationIPs.split(",").filter(Boolean)) {
+        const location = locationCache.current[ip];
+        if (!location || location.status === "unknown" || location.status === "unavailable") {
+          delete locationCache.current[ip];
+          retry = true;
+        }
+      }
+      if (retry) setLocationVersion(version => version + 1);
+    }, 60000);
+    return () => clearInterval(timer);
+  }, [locationIPs]);
+
   const countries = [...new Set([
     ...(data.countries || []),
     ...items.flatMap(item => locations[item.ip]?.country ? [locations[item.ip]!.country] : []),

@@ -48,7 +48,7 @@ type ipGeoRecord struct {
 func consensusIPLocation(geo map[string]ipGeoRecord) (ipLocation, error) {
 	result := ipLocation{Status: "conflict", Sources: []ipLocationSource{}}
 	votes := map[string]int{}
-	for _, aliases := range [][]string{{"MaxMind"}, {"IPInfo", "IPInfo.io", "IPinfo", "ipinfo"}, {"DB-IP"}, {"IP2Location"}} {
+	for _, aliases := range [][]string{{"MaxMind"}, {"IPInfo", "IPInfo.io", "IPinfo", "ipinfo"}, {"DB-IP"}, {"IP2Location"}, {"IPWho.is"}} {
 		for _, name := range aliases {
 			record, ok := geo[name]
 			country := strings.ToUpper(strings.TrimSpace(record.Country))
@@ -61,7 +61,7 @@ func consensusIPLocation(geo map[string]ipGeoRecord) (ipLocation, error) {
 		}
 	}
 	if len(result.Sources) == 0 {
-		return ipLocation{}, errors.New("IPPure 未返回有效的归属地信息")
+		return ipLocation{}, errors.New("定位服务未返回有效的归属地信息")
 	}
 	if len(result.Sources) == 1 {
 		result.Status = "insufficient"
@@ -189,7 +189,7 @@ func (a *app) resolveIPLocation(ctx context.Context, ip string) (ipLocation, err
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-	location, err := lookupIPLocation(lookupCtx, http.DefaultClient, "https://api.123169.xyz", ip)
+	location, err := lookupReliableIPLocation(lookupCtx, http.DefaultClient, "https://api.123169.xyz", ip)
 	if err != nil {
 		return ipLocation{}, err
 	}
@@ -221,7 +221,7 @@ func (a *app) availableIPLocation(w http.ResponseWriter, r *http.Request) {
 	}
 	location, err := a.resolveIPLocation(r.Context(), ip)
 	if err != nil {
-		location = ipLocation{Status: "unknown"}
+		location = ipLocation{Status: "unavailable"}
 	}
 	respond(w, 200, location)
 }
