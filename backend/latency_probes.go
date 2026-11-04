@@ -286,8 +286,8 @@ func (a *app) latencyProbeHistory(w http.ResponseWriter, r *http.Request) {
 	hours := 24
 	if raw := r.URL.Query().Get("hours"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > 168 {
-			apiError(w, http.StatusBadRequest, "时间范围需为 1–168 小时", nil)
+		if err != nil || parsed < 1 || parsed > 24 {
+			apiError(w, http.StatusBadRequest, "时间范围需为 1–24 小时", nil)
 			return
 		}
 		hours = parsed
@@ -387,7 +387,7 @@ GROUP BY p.ip ORDER BY p.ip`)
 	}
 	respond(w, http.StatusOK, map[string]any{"ips": ips, "interval_seconds": interval,
 		"timeout_ms": timeout, "concurrency": concurrency, "interface_name": interfaceName,
-		"mode": mode, "tcp_port": port, "retention_days": 7, "raw_retention_hours": 2, "history_bucket_seconds": 300})
+		"mode": mode, "tcp_port": port, "retention_days": 1, "raw_retention_hours": 2, "history_bucket_seconds": 900})
 }
 
 func (a *app) reportProbeResults(w http.ResponseWriter, r *http.Request) {

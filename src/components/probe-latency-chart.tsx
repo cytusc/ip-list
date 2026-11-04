@@ -88,7 +88,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
         </div>
         <div className="flex items-center gap-2">
           <select aria-label="选择历史时间范围" className="h-9 rounded-md border bg-white px-3 text-sm" value={hours} onChange={event => { setSelected(null); setHours(Number(event.target.value)); }}>
-            {[1, 6, 24, 72, 168].map(value => <option key={value} value={value}>最近 {value < 24 ? `${value} 小时` : `${value / 24} 天`}</option>)}
+            {[1, 6, 24].map(value => <option key={value} value={value}>最近 {value < 24 ? `${value} 小时` : `${value / 24} 天`}</option>)}
           </select>
           <Button variant="outline" size="icon" aria-label="刷新延迟历史" disabled={refreshing} onClick={() => void refresh()}><RefreshCw className={refreshing ? "animate-spin" : ""} /></Button>
         </div>
@@ -110,7 +110,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
       </div>
       {data.samples.length ? (
         <div className="rounded-lg border bg-slate-50/50 p-2">
-          <p aria-live="polite" className="min-h-7 px-2 text-xs tabular-nums text-slate-600">{hovered ? `${timeLabel(hovered.checked_at)} · ${hovered.bucket_seconds ? `5 分钟汇总 · 平均 ${hovered.success ? ms(hovered.delay_ms) : "—"} · 成功 ${hovered.success_count || 0}/${hovered.sample_count}` : hovered.success ? ms(hovered.delay_ms) : failure}` : "移动到曲线上查看采样，或聚焦后使用左右方向键。"}</p>
+          <p aria-live="polite" className="min-h-7 px-2 text-xs tabular-nums text-slate-600">{hovered ? `${timeLabel(hovered.checked_at)} · ${hovered.bucket_seconds ? `15 分钟汇总 · 平均 ${hovered.success ? ms(hovered.delay_ms) : "—"} · 成功 ${hovered.success_count || 0}/${hovered.sample_count}` : hovered.success ? ms(hovered.delay_ms) : failure}` : "移动到曲线上查看采样，或聚焦后使用左右方向键。"}</p>
           <svg viewBox={`0 0 ${width} ${height}`} className="w-full" role="img" aria-label={`${probeName} 对 ${ip} 的 ${measurement}历史曲线`} tabIndex={0}
             onPointerMove={event => selectAt(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerLeave={() => setSelected(null)}
             onKeyDown={event => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); setSelected(value => event.key === "Home" ? 0 : event.key === "End" ? data.samples.length - 1 : Math.max(0, Math.min(data.samples.length - 1, (value ?? data.samples.length - 1) + (event.key === "ArrowLeft" ? -1 : 1)))); } }}>
@@ -135,7 +135,7 @@ export function ProbeLatencyChart({ probeID, probeName, ip, initial, initialProb
           </svg>
         </div>
       ) : <div className="rounded-lg border border-dashed py-14 text-center"><Activity className="mx-auto size-7 text-slate-300" /><p className="mt-3 text-sm font-medium">此时间段暂无延迟记录</p><p className="mt-1 text-xs text-muted-foreground">检查探针连接，或选择更长的时间范围。</p></div>}
-      <p className="text-xs text-muted-foreground">最近 2 小时保留逐次采样，较早历史按 5 分钟汇总，保留 7 天。汇总区间显示成功采样的平均延迟，失败标记表示区间内有失败；统计按真实采样数加权，P95 和相邻抖动仅在全部为原始采样时提供。蓝线为{measurement}，灰色标记为待确认超时，原始采样连续至少 4 次失败且持续满 60 秒后标红；成功一次即恢复。偶发超时不参与延迟计算，断报留空且不连线。失败率仅统计已上报采样；抖动为连续成功采样延迟差的平均绝对值。仅显示当前模式及端口的历史记录。</p>
+      <p className="text-xs text-muted-foreground">最近 2 小时保留逐次采样，较早历史按 15 分钟汇总，保留 24 小时。汇总区间显示成功采样的平均延迟，失败标记表示区间内有失败；统计按真实采样数加权，P95 和相邻抖动仅在全部为原始采样时提供。蓝线为{measurement}，灰色标记为待确认超时，原始采样连续至少 4 次失败且持续满 60 秒后标红；成功一次即恢复。偶发超时不参与延迟计算，断报留空且不连线。失败率仅统计已上报采样；抖动为连续成功采样延迟差的平均绝对值。仅显示当前模式及端口的历史记录。</p>
     </section>
   );
 }
