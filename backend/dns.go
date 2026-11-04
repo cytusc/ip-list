@@ -310,19 +310,26 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 		return nil, false, err
 	}
 	// Only selected, online probes and samples matching the current mode count.
-	rows, err = a.db.Query(ctx, `SELECT host(t.ip),LEAST(300,`+probeSampleWindowSQL+`*2),COALESCE(samples.data,'[]'::jsonb),
- EXISTS(SELECT 1 FROM latency_probe_results ok WHERE ok.probe_id=p.id AND ok.ip<>t.ip
- AND ok.mode=p.mode AND ok.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
- AND ok.success AND ok.checked_at>now()-make_interval(secs=>LEAST(300,`+probeSampleWindowSQL+`*2))
- AND NOT EXISTS(SELECT 1 FROM latency_probe_results newer WHERE newer.probe_id=ok.probe_id
- AND newer.ip=ok.ip AND newer.mode=ok.mode AND newer.tcp_port=ok.tcp_port
- AND (newer.checked_at,newer.id)>(ok.checked_at,ok.id)))
- FROM latency_probes p CROSS JOIN (SELECT DISTINCT ip FROM (`+poolSQL+`) s WHERE available
+	// Materialize fresh probe controls once. The previous correlated anti-join
+	// searched all retained history again for every candidate and successful row.
+	rows, err = a.db.Query(ctx, `WITH probes AS MATERIALIZED (
+ SELECT p.*,LEAST(300,`+probeSampleWindowSQL+`*2) AS fresh FROM latency_probes p
+ WHERE `+probeOnlineSQL+` AND ($2='' OR p.id::text=$2)
+ ), controls AS MATERIALIZED (
+ SELECT p.id AS probe_id,r.ip,r.success FROM probes p
+ CROSS JOIN LATERAL (SELECT DISTINCT ON (ip) ip,success
+ FROM latency_probe_results WHERE probe_id=p.id AND mode=p.mode
+ AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
+ AND checked_at>now()-make_interval(secs=>p.fresh)
+ ORDER BY ip,checked_at DESC,id DESC) r
+ )
+ SELECT host(t.ip),p.fresh,COALESCE(samples.data,'[]'::jsonb),
+ EXISTS(SELECT 1 FROM controls ok WHERE ok.probe_id=p.id AND ok.ip<>t.ip AND ok.success)
+ FROM probes p CROSS JOIN (SELECT DISTINCT ip FROM (`+poolSQL+`) s WHERE available
  AND ($1='' OR protocol=$1) AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)) t
  LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('At',checked_at,'Success',success,'Delay',delay_ms) ORDER BY checked_at,id) AS data
  FROM latency_probe_results WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
- AND checked_at>=now()-make_interval(mins=>$3)) samples ON true
- WHERE `+probeOnlineSQL+` AND ($2='' OR p.id::text=$2)`, c.Protocol, c.ProbeID, max(c.Window, 10))
+ AND checked_at>=now()-make_interval(mins=>$3)) samples ON true`, c.Protocol, c.ProbeID, max(c.Window, 10))
 	if err != nil {
 		return nil, false, err
 	}
@@ -460,14 +467,16 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	}
 	candidates, uncertain, err := a.dnsCandidates(ctx, c)
 	if err != nil {
-		return err
+		return fmt.Errorf("读取节点探针采样失败: %w", err)
 	}
+	report.Candidates = candidates
 	if c.WebsiteEnabled {
 		website, websiteUncertain, websiteErr := a.dnsPoolCandidates(ctx, c, true)
 		if websiteErr != nil {
-			return websiteErr
+			return fmt.Errorf("读取网站探针采样失败: %w", websiteErr)
 		}
 		candidates = append(candidates, website...)
+		report.Candidates = candidates
 		uncertain = uncertain || websiteUncertain
 	}
 	if c.WebsiteEnabled {

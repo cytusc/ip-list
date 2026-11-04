@@ -32,6 +32,11 @@ function countryName(code: string) {
   catch { return code || "未知"; }
 }
 
+function sameDNSConfig(a: DNSConfig, b: DNSConfig) {
+  return (Object.keys(a) as (keyof DNSConfig)[]).every(key => a[key] === b[key])
+    && (Object.keys(b) as (keyof DNSConfig)[]).every(key => a[key] === b[key]);
+}
+
 export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
   const [status, setStatus] = useState(initialStatus);
   const [config, setConfig] = useState(initialStatus.config);
@@ -45,9 +50,9 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
   const [pending, startTransition] = useTransition();
   const [pollError, setPollError] = useState("");
   const busy = status.running || !!status.requested;
-  const dirty = JSON.stringify(config) !== JSON.stringify(status.config);
+  const dirty = !sameDNSConfig(config, status.config);
   const report = status.report;
-  const reportOutdated = !!report.domain && (report.domain !== status.config.domain || !!report.config && JSON.stringify(report.config) !== JSON.stringify(status.config));
+  const reportOutdated = !!report.domain && (report.domain !== status.config.domain || !!report.config && !sameDNSConfig(report.config, status.config));
 
   useEffect(() => {
     let active = true;
@@ -105,7 +110,7 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
       {dirty && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-amber-900"><span>策略有未保存的修改，保存后可预览或同步。</span><Button variant="ghost" size="sm" onClick={() => setTab("policy")}>查看策略<ArrowRight className="size-3.5" /></Button></div>}
       {pollError && <p role="alert" className="text-destructive">{pollError}</p>}
       {reportOutdated && <p className="text-amber-700">这是旧策略的结果，请重新预览当前策略。</p>}
-      {report.error && <p role="alert" className="text-destructive">{report.error}</p>}
+      {report.error && <p role="alert" className="text-destructive">{busy ? `上次任务失败：${report.error}` : report.error}</p>}
       {report.warning && <p className="text-amber-700">{report.warning}</p>}
     </div>
     <Tabs.Root value={tab} onValueChange={setTab} className="space-y-5">
@@ -128,7 +133,7 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
               <TableCell><DNSIPDiff record={r} preview={report.mode === "preview"} timestamp={report.started_at} /></TableCell>
               <TableCell className="max-w-72 whitespace-normal pr-5 sm:pr-6"><Badge variant="outline" className={cn("gap-1.5 border-0 font-normal", r.action === "delete" ? "bg-rose-50 text-rose-700" : ["create", "update"].includes(r.action) ? "bg-blue-50 text-blue-700" : r.action === "hold" ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-700")}>{r.action === "unchanged" && <Check className="size-3" />}{actionNames[r.action] || r.action}{r.applied && r.action !== "unchanged" ? " · 已提交" : report.mode === "preview" ? " · 预览" : !r.applied && ["create", "update", "delete"].includes(r.action) ? " · 未执行" : ""}</Badge>{r.reason && <p className="mt-2 text-xs leading-5 text-muted-foreground">{r.reason}</p>}</TableCell>
             </TableRow>)}
-            {!records.data.items.length && <TableRow><TableCell colSpan={4} className="py-16 text-center"><span className="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-500"><Globe className="size-6" /></span><p className="font-medium text-slate-700">{records.loading ? "正在读取解析记录…" : report.finished_at ? "本轮没有可发布的地区记录" : "从一次预览开始"}</p><p className="mt-2 text-xs text-muted-foreground">{report.finished_at ? "切换到「筛选明细」查看 IP 未被选中的原因。" : "保存策略后预览，即可对比云端与计划 IP。"}</p></TableCell></TableRow>}
+            {!records.data.items.length && <TableRow><TableCell colSpan={4} className="py-16 text-center"><span className="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-500"><Globe className="size-6" /></span><p className="font-medium text-slate-700">{records.loading ? "正在读取解析记录…" : report.error ? "上次任务未完成，未生成解析计划" : report.finished_at ? "本轮没有可发布的地区记录" : "从一次预览开始"}</p><p className="mt-2 text-xs text-muted-foreground">{report.error ? "空快照不代表云端解析为空；请查看错误信息或任务历史。" : report.finished_at ? "切换到「筛选明细」查看 IP 未被选中的原因。" : "保存策略后预览，即可对比云端与计划 IP。"}</p></TableCell></TableRow>}
           </TableBody></Table>
           <ListPagination data={records.data} onPage={records.setPage} loading={records.loading}/>
           <div className="flex items-start gap-2 border-t border-slate-100 bg-slate-50/60 px-5 py-4 text-xs leading-5 text-muted-foreground sm:px-6"><Clock3 className="mt-0.5 size-3.5 shrink-0" />云端写入后仍需等待 DNS 缓存过期；当前 TTL 为 {status.config.ttl} 秒。预览仅查询，不修改解析。</div>

@@ -157,3 +157,44 @@ func TestDNSStabilityRemovalRecoveryAndFallback(t *testing.T) {
 		t.Fatal(candidates)
 	}
 }
+
+// Control evidence must use the newest matching measurement, including ID ties;
+// a historical success or a success in another mode cannot confirm an IP fault.
+func TestDNSLatestControlEvidence(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	_, err := a.db.Exec(ctx, `
+ INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at) VALUES('103.26.8.38',true,65,200,now());
+ INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('control','control',now(),now());
+ INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
+ SELECT id,'103.26.8.38',false,0,now()-make_interval(secs=>age)
+ FROM latency_probes CROSS JOIN generate_series(1,181,20) age;
+ INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
+ SELECT id,'1.1.1.1',true,20,now()-interval '10 seconds' FROM latency_probes;
+ INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
+ SELECT id,'1.1.1.1',false,0,now()-interval '10 seconds' FROM latency_probes;
+ INSERT INTO latency_probe_results(probe_id,ip,mode,tcp_port,success,delay_ms,checked_at)
+ SELECT id,'8.8.8.8','tcp',443,true,20,now() FROM latency_probes;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(want string) {
+		t.Helper()
+		items, uncertain, err := a.dnsPoolCandidates(ctx, dnsTestConfig(), true)
+		if err != nil || uncertain || len(items) != 1 || items[0].State != want {
+			t.Fatalf("items=%+v uncertain=%v err=%v", items, uncertain, err)
+		}
+	}
+	check("unknown")
+	// A fresh success outside the publication pool is still valid control evidence.
+	_, err = a.db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at) SELECT id,'9.9.9.9',true,20,now() FROM latency_probes`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("failed")
+	_, err = a.db.Exec(ctx, `UPDATE latency_probe_results SET checked_at=now()-interval '1 hour' WHERE ip='9.9.9.9'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("unknown")
+}
