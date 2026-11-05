@@ -176,7 +176,7 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
         <p className="text-xs leading-5 text-muted-foreground">HTTPS 连续两次失败且存在健康对照 IP 时移出；短暂失败或所有地址同时检测失败时保留已有解析、暂停新增。新加入或恢复仍需至少 15 分钟稳定观察，移除后冷却 30 分钟。</p>
       </fieldset>
       <p className="text-xs leading-6 text-muted-foreground">仅发布当前可用池中未屏蔽、通过证书检查的 IP。探针需有至少两次、跨度不少于 1 分钟的新鲜采样。成功率设为 0 时，仍检查持续失败、丢包和延迟波动；设为正数时，需最新采样成功且成功率达标。所有 IP 均检查最近 5 分钟的稳定性：丢包超过 20%，或出现至少两次尖峰、P95 延迟超过中位数 2 倍且高出 100 ms 时移出。新加入和恢复的 IP 需有连续 10 分钟完整采样、丢包不超过 10%，且 P95 与中位数的差不超过 60 ms 或中位数的 50%（取较大值）。同一地区的所有达标 IP 都会加入，超过数量上限时优先选择平均延迟较低的 IP。</p>
-      <p className="text-xs leading-6 text-muted-foreground">接管对应国家或地区的「全网默认」A / AAAA 记录，保留其他线路和其他子域名。已接管记录没有合格 IP 时会移除；单个 IP 采样或定位待确认时，仅保留它的已有解析，不阻止其他地址更新。探针整体离线时暂停新增，网站记录仍可清理经 HTTPS 复测确认失效的地址。关闭定时同步会保留当前解析。</p>
+      <p className="text-xs leading-6 text-muted-foreground">接管对应国家或地区的「全网默认」A / AAAA 记录，保留其他线路和其他子域名。已接管记录没有合格 IP 时会移除；单个 IP 采样或定位待确认时，仅保留它的已有解析，不阻止其他地址更新。指定依据探针后，仅使用该探针的数据；该探针离线或缺少新鲜采样时，暂停全部 DNS 同步，包括网站解析，保留当前解析。关闭定时同步会保留当前解析。</p>
       <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{dirty ? "配置有修改，请先保存再预览或同步。" : config.enabled ? `下次同步：${timeText(status.next_run_at)}` : "定时同步已关闭，可手动预览或同步。"}</span>
         <Button type="submit" disabled={pending || busy || !dirty}>{pending && <Loader2 className="animate-spin" />}保存策略</Button>
       </div>

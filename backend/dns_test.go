@@ -237,13 +237,17 @@ func TestDNSProbeFailureEvidencePreservesRecords(t *testing.T) {
 }
 
 type dnsFakeProvider struct {
-	records []dnsRemoteRecord
-	writes  []dnsPlanRecord
-	fail    bool
+	records   []dnsRemoteRecord
+	writes    []dnsPlanRecord
+	fail      bool
+	onRecords func()
 }
 
 func (f *dnsFakeProvider) Zone(context.Context, string) (string, error) { return "dns-test-zone", nil }
 func (f *dnsFakeProvider) Records(context.Context, string) ([]dnsRemoteRecord, error) {
+	if f.onRecords != nil {
+		f.onRecords()
+	}
 	return f.records, nil
 }
 func (f *dnsFakeProvider) Apply(_ context.Context, _ string, r dnsPlanRecord, _ int32) error {
@@ -338,6 +342,23 @@ func TestDNSIntegration(t *testing.T) {
 	}
 	fake.fail = false
 	fake.writes = nil
+	reads := 0
+	fake.onRecords = func() {
+		reads++
+		if reads == 2 {
+			if _, err := db.Exec(ctx, "UPDATE latency_probes SET last_seen=now()-interval '1 hour' WHERE id=$1", probe); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The probe can disconnect during cloud reads or geolocation work.
+	if _, err = db.Exec(ctx, "UPDATE latency_probes SET last_seen=now() WHERE id=$1", probe); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.executeDNS(ctx, c, &report, fake); err != nil || len(fake.writes) != 0 || report.Warning != dnsMonitorUnavailable {
+		t.Fatalf("probe disconnected during sync: %+v, %v", report, err)
+	}
+	fake.onRecords = nil
 	if err = a.executeDNS(ctx, c, &report, fake); err != nil {
 		t.Fatal(err)
 	}

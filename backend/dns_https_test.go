@@ -71,10 +71,12 @@ func TestWebsiteHTTPSPlanIsolation(t *testing.T) {
 	for _, outage := range []bool{false, true} {
 		plan := dnsBuildPlan(c, items, remote, map[string]bool{"url.reiiv.com/A": true}, outage)
 		want := []string{"1.0.0.1", "1.1.1.1", "9.9.9.9"}
+		action := "update"
 		if outage {
-			want = []string{"1.1.1.1", "9.9.9.9"}
+			want = remote[0].Values
+			action = "hold"
 		}
-		if len(plan) != 1 || plan[0].Action != "update" || !slices.Equal(plan[0].Desired, want) {
+		if len(plan) != 1 || plan[0].Action != action || !slices.Equal(plan[0].Desired, want) {
 			t.Fatalf("outage=%v plan=%+v", outage, plan)
 		}
 	}

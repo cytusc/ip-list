@@ -17,6 +17,7 @@ import (
 )
 
 const dnsLockID int64 = 74281934
+const dnsMonitorUnavailable = "依据探针离线或缺少新鲜采样，暂停全部 DNS 同步并保留原解析"
 
 type dnsReport struct {
 	Mode       string          `json:"mode"`
@@ -271,6 +272,15 @@ func (a *app) dnsCandidates(ctx context.Context, c dnsConfig) ([]dnsCandidate, b
 	return a.dnsPoolCandidates(ctx, c, false)
 }
 
+func (a *app) dnsMonitorReady(ctx context.Context, c dnsConfig) (bool, error) {
+	var monitorReady bool
+	err := a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM latency_probes p WHERE `+probeOnlineSQL+`
+ AND ($1='' OR p.id::text=$1) AND EXISTS(SELECT 1 FROM latency_probe_results r
+ WHERE r.probe_id=p.id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
+ AND r.checked_at>now()-make_interval(secs=>LEAST(300,`+probeSampleWindowSQL+`*2))))`, c.ProbeID).Scan(&monitorReady)
+	return monitorReady, err
+}
+
 func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) ([]dnsCandidate, bool, error) {
 	poolSQL := "SELECT ip,protocol,available FROM shared_node_ip_pool"
 	if website {
@@ -278,13 +288,8 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 		c.Protocol = ""
 	}
 
-	// Require an online probe with recent results even when the available pool
-	// is empty; a monitoring outage must not delete every country's record.
-	var monitorReady bool
-	err := a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM latency_probes p WHERE `+probeOnlineSQL+`
- AND ($1='' OR p.id::text=$1) AND EXISTS(SELECT 1 FROM latency_probe_results r
- WHERE r.probe_id=p.id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
- AND r.checked_at>now()-make_interval(secs=>LEAST(300,`+probeSampleWindowSQL+`*2))))`, c.ProbeID).Scan(&monitorReady)
+	// An empty pool must not turn a monitoring outage into record deletions.
+	monitorReady, err := a.dnsMonitorReady(ctx, c)
 	if err != nil {
 		return nil, false, err
 	}
@@ -556,7 +561,7 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	report.Candidates = candidates
 	report.Records = dnsBuildPlan(c, candidates, remote, managed, uncertain)
 	if uncertain {
-		report.Warning = "探针整体不可用，暂停新增；网站记录仅清理经 HTTPS 复测确认失效的 IP"
+		report.Warning = dnsMonitorUnavailable
 	} else if locationIncomplete {
 		report.Warning = "部分 IP 定位查询不完整：仅保留这些 IP 的已有解析，不影响其他 IP 更新或失效清理"
 	}
@@ -577,6 +582,17 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 		if !dnsSameRemote(remote, latest, r.Name, r.Type) {
 			r.Action = "hold"
 			r.Reason = "云端解析在检查期间发生变化，下轮重新核对"
+			continue
+		}
+		ready, readyErr := a.dnsMonitorReady(ctx, c)
+		if readyErr != nil {
+			return fmt.Errorf("复查依据探针状态失败: %w", readyErr)
+		}
+		if !ready {
+			r.Action = "hold"
+			r.Desired = append([]string{}, r.Current...)
+			r.Reason = dnsMonitorUnavailable
+			report.Warning = dnsMonitorUnavailable
 			continue
 		}
 		if r.Action != "unchanged" {

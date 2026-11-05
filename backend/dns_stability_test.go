@@ -9,6 +9,53 @@ import (
 	"time"
 )
 
+func TestDNSSelectedProbeOutage(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	var selected string
+	err := a.db.QueryRow(ctx, `INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at)
+ VALUES('telecom','telecom',now(),now()) RETURNING id::text`).Scan(&selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.db.Exec(ctx, `
+ INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('other','other',now(),now());
+ INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at) VALUES('103.26.8.38',true,65,200,now());
+ INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
+ SELECT p.id,ip::inet,p.name='other' OR ip='1.1.1.1',65,now()-make_interval(secs=>age)
+ FROM latency_probes p CROSS JOIN unnest(ARRAY['103.26.8.38','1.1.1.1']) ip CROSS JOIN generate_series(1,601,20) age`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := dnsTestConfig()
+	c.ProbeID = selected
+	check := func(want string, outage bool) {
+		t.Helper()
+		items, uncertain, err := a.dnsPoolCandidates(ctx, c, true)
+		if err != nil || uncertain != outage || len(items) != 1 || items[0].State != want {
+			t.Fatalf("items=%+v uncertain=%v err=%v", items, uncertain, err)
+		}
+	}
+	// Other probes' successes must not override the selected probe's failures.
+	check("failed", false)
+	for _, change := range []string{
+		"UPDATE latency_probes SET last_seen=now()-interval '1 hour' WHERE id=$1",
+		"UPDATE latency_probes SET last_seen=now(),enabled=false WHERE id=$1",
+		`WITH p AS (UPDATE latency_probes SET enabled=true WHERE id=$1 RETURNING id)
+ UPDATE latency_probe_results SET checked_at=checked_at-interval '1 hour' WHERE probe_id IN (SELECT id FROM p)`,
+	} {
+		if _, err = a.db.Exec(ctx, change, selected); err != nil {
+			t.Fatal(err)
+		}
+		check("unknown", true)
+	}
+	if _, err = a.db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
+ SELECT $1::uuid,'103.26.8.38',true,65,now()-make_interval(secs=>age) FROM generate_series(1,601,20) age`, selected); err != nil {
+		t.Fatal(err)
+	}
+	check("healthy", false)
+}
+
 func TestDNSStabilityProbeAggregation(t *testing.T) {
 	a := paginationApp(t)
 	ctx := context.Background()
