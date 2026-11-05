@@ -560,6 +560,23 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	dnsStabilizeCandidates(c, candidates, remote)
 	report.Candidates = candidates
 	report.Records = dnsBuildPlan(c, candidates, remote, managed, uncertain)
+	// A common probe/route failure must not erase the last published records.
+	hasDesired, hasDelete := false, false
+	for _, r := range report.Records {
+		hasDesired = hasDesired || len(r.Desired) > 0
+		hasDelete = hasDelete || r.Action == "delete"
+	}
+	if hasDelete && !hasDesired {
+		report.Warning = "全部解析均将被删除，疑似探针或线路整体异常：保留现有解析，等待恢复或人工核查"
+		for i := range report.Records {
+			r := &report.Records[i]
+			if r.Action == "delete" {
+				r.Action = "hold"
+				r.Desired = append([]string{}, r.Current...)
+				r.Reason = report.Warning
+			}
+		}
+	}
 	if uncertain {
 		report.Warning = dnsMonitorUnavailable
 	} else if locationIncomplete {
