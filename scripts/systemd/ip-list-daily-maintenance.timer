@@ -1,0 +1,11 @@
+[Unit]
+Description=Maintain IP Guard database daily at 05:00 Beijing time
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 Asia/Shanghai
+AccuracySec=1s
+Persistent=true
+Unit=ip-list-daily-maintenance.service
+
+[Install]
+WantedBy=timers.target

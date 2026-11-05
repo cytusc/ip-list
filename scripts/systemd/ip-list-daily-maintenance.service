@@ -1,0 +1,15 @@
+[Unit]
+Description=Clean IP Guard history and reclaim database space
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+Environment=PGDATABASE=ipguard
+ExecStart=/usr/local/sbin/ip-list-daily-maintenance
+TimeoutStartSec=15min
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

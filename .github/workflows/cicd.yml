@@ -48,6 +48,10 @@ jobs:
           node --experimental-strip-types --test scripts/tests/probe-history.test.mjs
       - name: Check deployment retention
         run: python3 -m unittest discover -s scripts/tests -p 'test_cleanup_deployments.py'
+      - name: Check daily database maintenance
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable
+        run: python3 -m unittest discover -s scripts/tests -p 'test_daily_maintenance.py'
       - name: Check backend
         run: |
           go -C backend test ./...
