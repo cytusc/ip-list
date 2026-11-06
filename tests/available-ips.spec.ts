@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展示", async ({
+test("可用 IP 列展示、排序、搜索筛选、刷新失败恢复与移动端展示", async ({
   page,
 }, testInfo) => {
   await page.goto("/login");
@@ -18,19 +18,20 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
     page.getByRole("heading", { name: "可用 IP", exact: true }),
   ).toBeVisible();
   const checked_at = new Date().toISOString();
-  await page.route("**/api/available-ips/location?*", async (route) => {
-    const ip = new URL(route.request().url()).searchParams.get("ip");
-    await route.fulfill({
-      json: ip === "192.0.2.25"
-        ? { country: "HK", region: "Hong Kong", city: "Hong Kong" }
-        : { country: "", region: "", city: "" },
-    });
+  await page.route("**/api/available-ips/locations?*", async (route) => {
+    const ips = new URL(route.request().url()).searchParams.getAll("ip");
+    await route.fulfill({ json: ips.map(ip => ({ ip, location: ip === "192.0.2.25"
+      ? { country: "HK", region: "Hong Kong", city: "Hong Kong" }
+      : { country: "", region: "", city: "" } })) });
   });
   const fixtures = [
     {
       ip: "192.0.2.25",
       asn: "AS13335",
       provider: "Cloudflare",
+      probe_delays: [{ probe_id: "probe-1", name: "测试探针", online: true, fresh: true, window_end: checked_at,
+        samples: Array.from({ length: 20 }, (_, id) => ({ id, ip: "192.0.2.25", checked_at, success: true, delay_ms: id === 19 ? 1000 : 42 })),
+      }],
       checks: [
         {
           protocol: "vless/httpupgrade",
@@ -69,27 +70,40 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
     },
   ];
   let fail = false;
-  await page.route("**/api/available-ips", async (route) => {
+  await page.route("**/api/lists/available-ips?*", async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    let items = fixtures.filter(item => (!query.get("search") || item.ip.includes(query.get("search")!))
+      && (!query.get("protocol") || query.get("protocol") === "all" || item.checks.some(check => check.protocol === query.get("protocol"))));
+    if (query.get("direction") === "desc") items = items.toReversed();
     await route.fulfill({
       status: fail ? 503 : 200,
-      json: fail ? { error: "测试服务暂时不可用" } : fixtures,
+      json: fail ? { error: "测试服务暂时不可用" } : { items, total: items.length, page: 1, pageSize: 20, allTotal: fixtures.length },
     });
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   const row = page.getByRole("row").filter({ hasText: "192.0.2.25" });
   await expect(row).toHaveCount(1);
-  await expect(row).toContainText("HTTPUpgrade");
+  await expect(row).toContainText("42.00 ms");
+  await expect(page.getByRole("columnheader", { name: "P95 平均延迟" })).toBeVisible();
   await expect(row).toContainText("AS13335");
   await expect(row).toContainText("Cloudflare");
   await expect(row.getByRole("img", { name: /香港.*国旗/ })).toBeVisible();
   await expect(row).toContainText("Hong Kong");
   await expect(page.getByRole("table")).toContainText("未知归属地");
-  await expect(row).toContainText("42 ms");
-  await expect(row).toContainText("68 ms");
-  await expect(
-    row.getByText("同协议与传输方式的所有节点共用").first(),
-  ).toBeVisible();
-  await expect(row.locator('[data-slot="badge"]')).toHaveCount(2);
+  await expect(page.getByRole("columnheader", { name: "支持的协议" })).toHaveCount(0);
+  for (const [name, sort] of [["探针延迟", "probe_delay"], ["最近测通", "checked_at"]]) {
+    for (const direction of ["asc", "desc"]) {
+      const request = page.waitForRequest(request => {
+        const url = new URL(request.url());
+        return url.pathname === "/api/lists/available-ips" && url.searchParams.get("sort") === sort
+          && url.searchParams.get("direction") === direction && url.searchParams.get("page") === "1";
+      });
+      await page.getByRole("button", { name, exact: true }).click();
+      await request;
+      await expect(page.getByRole("columnheader", { name })).toHaveAttribute("aria-sort", direction === "asc" ? "ascending" : "descending");
+      await expect(page.locator("tbody tr").first()).toContainText(direction === "asc" ? fixtures[0].ip : fixtures[1].ip);
+    }
+  }
   await page.getByLabel("协议筛选", { exact: true }).click();
   await page.getByRole("option", { name: "VLESS · gRPC", exact: true }).click();
   await expect(row).toHaveCount(0);
@@ -99,6 +113,7 @@ test("可用 IP 合并协议、搜索筛选、刷新失败恢复与移动端展�
   await page.getByLabel("搜索 IP、节点、ASN 或服务商").fill("");
   await page.getByLabel("协议筛选", { exact: true }).click();
   await page.getByRole("option", { name: "全部协议", exact: true }).click();
+  await expect(row).toBeVisible();
   fail = true;
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await expect(

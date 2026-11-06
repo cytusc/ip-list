@@ -116,11 +116,35 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-List-Meta", base64.StdEncoding.EncodeToString(facets))
-	rows, err := a.db.Query(r.Context(), `
- `+availableIPCandidatesSQL+`, selected AS MATERIALIZED (SELECT * FROM filtered ORDER BY ip LIMIT $5 OFFSET $6)
+	order, ranking := "info.ip", ""
+	direction := "ASC"
+	if q.Get("direction") == "desc" {
+		direction = "DESC"
+	}
+	switch q.Get("sort") {
+	case "checked_at":
+		ranking = ` LEFT JOIN LATERAL (SELECT max(checked_at) AS value FROM shared_node_ip_pool WHERE ip=info.ip AND available) rank ON true`
+		order = "rank.value " + direction + " NULLS LAST, info.ip"
+	case "probe_delay":
+		ranking = ` LEFT JOIN LATERAL (
+ SELECT avg(latest.delay_ms) AS value FROM latency_probes p
+ CROSS JOIN LATERAL (
+  SELECT delay_ms,success,checked_at FROM latency_probe_results
+  WHERE probe_id=p.id AND ip=info.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
+  AND checked_at>now()-interval '30 days'
+  ORDER BY checked_at DESC,id DESC LIMIT 1
+ ) latest
+ WHERE ` + probeOnlineSQL + ` AND latest.success
+ AND latest.checked_at>now()-make_interval(secs=>(p.interval_seconds + CEIL((SELECT count(DISTINCT ip) FROM shared_node_ip_pool WHERE available)::numeric / p.concurrency)::integer * (CEIL(p.timeout_ms::numeric/1000)::integer+2) + 30)*2)
+) rank ON true`
+		order = "rank.value " + direction + " NULLS LAST, info.ip"
+	}
+	rows, err := a.db.Query(r.Context(), availableIPCandidatesSQL+`, selected AS MATERIALIZED (
+ SELECT info.*,row_number() OVER (ORDER BY `+order+`) AS position
+ FROM filtered info `+ranking+` ORDER BY `+order+` LIMIT $5 OFFSET $6)
  SELECT host(s.ip),s.protocol,s.delay_ms, '', '协议共用 IP 池',s.checked_at,COALESCE(info.asn,''),COALESCE(info.provider,'')
  FROM selected info JOIN shared_node_ip_pool s ON s.ip=info.ip AND s.available
- ORDER BY s.ip,s.protocol`, append(args, p.Size, p.Offset())...)
+ ORDER BY info.position,s.protocol`, append(args, p.Size, p.Offset())...)
 	if err != nil {
 		dbError(w, err)
 		return

@@ -375,3 +375,56 @@ func TestNetworkAvailableCountOrdering(t *testing.T) {
 		t.Fatalf("filtered rows=%+v err=%v", rows, err)
 	}
 }
+
+func TestAvailableIPSorting(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	for _, query := range []string{
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('sort','host',443,'vless://sample@host:443?type=grpc'),('sort-ws','host',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+ SELECT 'grpc',('198.18.0.'||i)::inet,true,20,now()-i*interval '1 minute',md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}'::jsonb FROM generate_series(1,26) i`,
+		`INSERT INTO latency_probes(name,token_hash,last_seen) VALUES('sort','sort',now()),('disabled','disabled',now()); UPDATE latency_probes SET enabled=false WHERE name='disabled'`,
+		`INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
+ SELECT p.id,('198.18.0.'||i)::inet,i*10,i<>25,now()-CASE WHEN i=24 THEN interval '1 day' ELSE interval '1 second' END
+ FROM latency_probes p CROSS JOIN generate_series(1,25) i`,
+		`INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
+ SELECT id,'198.18.0.1',999,true,now()-interval '10 seconds' FROM latency_probes WHERE name='sort'`,
+		`INSERT INTO latency_probe_results(probe_id,ip,mode,tcp_port,delay_ms,success,checked_at)
+ SELECT id,'198.18.0.23','tcp',80,1,true,now() FROM latency_probes WHERE name='sort'`,
+	} {
+		if _, err := a.db.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ sort, direction string }{{"probe_delay", "asc"}, {"probe_delay", "desc"}, {"checked_at", "asc"}, {"checked_at", "desc"}, {"invalid", "desc"}} {
+		t.Run(tc.sort+"_"+tc.direction, func(t *testing.T) {
+			var got []string
+			for page := 1; page <= 2; page++ {
+				w := pageRequest(t, a.availableIPs, fmt.Sprintf("/available-ips?sort=%s&direction=%s&page=%d", tc.sort, tc.direction, page), 200)
+				var items []availableIP
+				if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+					t.Fatal(err)
+				}
+				for _, item := range items {
+					if len(item.Checks) != 2 {
+						t.Fatalf("protocol checks split: %+v", item)
+					}
+					got = append(got, item.IP)
+				}
+			}
+			var want []string
+			for i := 1; i <= 26; i++ {
+				n := i
+				if tc.sort == "checked_at" && tc.direction == "asc" {
+					n = 27 - i
+				} else if tc.sort == "probe_delay" && tc.direction == "desc" && i <= 23 {
+					n = 24 - i
+				}
+				want = append(want, fmt.Sprintf("198.18.0.%d", n))
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("got %v; want %v", got, want)
+			}
+		})
+	}
+}

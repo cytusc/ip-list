@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeProbeHistory, classifyProbeSamples } from '../../src/lib/probe-history.ts';
+import { analyzeProbeHistory, classifyProbeSamples, p95TrimmedProbeAverage } from '../../src/lib/probe-history.ts';
 const now = Date.parse('2026-10-26T04:00:00Z');
 const sample = (id, secondsAgo, delay, success = true) => ({id, ip:'1.1.1.1', delay_ms:delay, success, checked_at:new Date(now-secondsAgo*1000).toISOString()});
 test('isolated timeouts are skipped while reporting gaps split lines', () => {
@@ -130,4 +130,16 @@ test('summaries reset raw failure evidence and missing buckets break the curve',
  assert.deepEqual(data.segments.map(s=>s.map(p=>p.id)),[[-2],[-1]]);
  assert.equal(data.unavailable.length,0);
  assert.equal(data.currentState,'pending');
+});
+
+test('P95 trimmed average pools successful samples within the visible sixteen minutes', () => {
+ const probe = samples => ({ window_end: new Date(now).toISOString(), samples });
+ const low = Array.from({length:19}, (_,id) => sample(id,30,10));
+ assert.equal(p95TrimmedProbeAverage([probe(low.slice(0,10)),probe([...low.slice(10),sample(20,30,1000)])]),10);
+ assert.equal(p95TrimmedProbeAverage([probe([sample(1,30,10),sample(2,30,20)])]),15);
+ assert.equal(p95TrimmedProbeAverage([probe([
+  sample(1,30,20),sample(2,30,0,false),sample(3,30,NaN),sample(4,30,-1),sample(5,961,500),sample(6,-1,500),
+ ])]),20);
+ assert.equal(p95TrimmedProbeAverage([probe([sample(1,30,0,false)])]),null);
+ assert.equal(p95TrimmedProbeAverage([]),null);
 });

@@ -4,9 +4,8 @@ import Link from "next/link";
 import { NodeLinksDialog } from "@/components/node-links-dialog";
 import { countryName, IPLocationCell } from "@/components/ip-location";
 import { useEffect, useRef, useState } from "react";
-import { Ban, Check, Copy, RefreshCw, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Ban, Check, Copy, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -27,18 +26,12 @@ import type { AvailableIP, IPLocation } from "@/lib/types";
 import { toast } from "sonner";
 import { addBlacklist } from "@/app/actions";
 
+import { p95TrimmedProbeAverage } from "@/lib/probe-history";
 import { ProbeLatencyStrip } from "@/components/probe-latency-strip";
 import { protocolLabels } from "@/lib/protocol";
 import type { PageResult } from "@/lib/pagination";
 import { usePagedList } from "@/components/use-paged-list";
 import { ListPagination } from "@/components/list-pagination";
-const protocolBadgeColors: Record<string, string> = {
-  "vless/httpupgrade": "border-blue-200 bg-blue-50 text-blue-800",
-  "vless/xhttp": "border-violet-200 bg-violet-50 text-violet-800",
-  "vless/grpc": "border-amber-200 bg-amber-50 text-amber-800",
-  "vless/ws": "border-cyan-200 bg-cyan-50 text-cyan-800",
-  "vless/tcp": "border-rose-200 bg-rose-50 text-rose-800",
-};
 const formatTime = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
 
@@ -52,7 +45,15 @@ export function AvailableIPList({
   const [protocol, setProtocol] = useState("all");
   const [region, setRegion] = useState("all");
   const [provider, setProvider] = useState("all");
-  const {data,setPage,refresh:reload,loading:refreshing,error}=usePagedList("available-ips",initialItems,{search:search.trim(),protocol,region,provider},10000);
+  const [sort, setSort] = useState("");
+  const [direction, setDirection] = useState("asc");
+  function toggleSort(column: string) {
+    setDirection(sort === column && direction === "asc" ? "desc" : "asc");
+    setSort(column);
+    setPage(1);
+  }
+  const SortIcon = direction === "asc" ? ArrowUp : ArrowDown;
+  const {data,setPage,refresh:reload,loading:refreshing,error}=usePagedList("available-ips",initialItems,{search:search.trim(),protocol,region,provider,sort,direction},10000);
   const items=data.items;
   const [locationVersion, setLocationVersion] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -292,19 +293,23 @@ export function AvailableIPList({
               <TableHead className="pl-5">IP 地址</TableHead>
               <TableHead>归属地</TableHead>
               <TableHead>ASN / 服务商</TableHead>
-              <TableHead>支持的协议</TableHead>
-              <TableHead>探针延迟</TableHead>
-              <TableHead className="hidden pr-5 md:table-cell">
-                最近测通
+              <TableHead aria-sort={sort === "probe_delay" ? (direction === "asc" ? "ascending" : "descending") : "none"}>
+                <Button variant="ghost" size="sm" onClick={() => toggleSort("probe_delay")} title="按在线探针最新有效延迟的平均值排序，无有效数据置后">
+                  探针延迟{sort === "probe_delay" ? <SortIcon /> : <ArrowUpDown />}
+                </Button>
+              </TableHead>
+              <TableHead title="最近 16 分钟所有探针的成功采样，按延迟升序保留前 95%（向上取整）后计算平均值">P95 平均延迟</TableHead>
+              <TableHead className="pr-5" aria-sort={sort === "checked_at" ? (direction === "asc" ? "ascending" : "descending") : "none"}>
+                <Button variant="ghost" size="sm" onClick={() => toggleSort("checked_at")}>
+                  最近测通{sort === "checked_at" ? <SortIcon /> : <ArrowUpDown />}
+                </Button>
               </TableHead>
               <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {visible.map((item) => {
-              const protocols = [
-                ...new Set(item.checks.map((c) => c.protocol)),
-              ];
+              const average = p95TrimmedProbeAverage(item.probe_delays || []);
               const latest = item.checks.reduce((a, b) =>
                 a.checked_at > b.checked_at ? a : b,
               );
@@ -334,24 +339,6 @@ export function AvailableIPList({
                       {item.provider || "未填写"}
                     </p>
                   </TableCell>
-                  <TableCell className="whitespace-normal">
-                    <div className="flex flex-wrap gap-2">
-                      {protocols.map((type) => {
-                        return (
-                          <Badge
-                            key={type}
-                            variant="outline"
-                            className={protocolBadgeColors[type] || ""}
-                          >
-                            {protocolLabels[type] || type}
-                          </Badge>
-                        );
-                      })}
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground md:hidden">
-                      {formatTime(latest.checked_at)}
-                    </p>
-                  </TableCell>
                   <TableCell className="min-w-36 align-top">
                     {item.probe_delays?.length ? (
                       <div className="flex flex-wrap gap-1.5">
@@ -363,7 +350,10 @@ export function AvailableIPList({
                       <span className="text-xs text-muted-foreground">尚未配置</span>
                     )}
                   </TableCell>
-                  <TableCell className="hidden pr-5 text-xs text-muted-foreground md:table-cell">
+                  <TableCell className="align-top text-sm tabular-nums">
+                    {average == null ? "—" : `${average.toFixed(2)} ms`}
+                  </TableCell>
+                  <TableCell className="pr-5 text-xs text-muted-foreground">
                     {formatTime(latest.checked_at)}
                   </TableCell>
                   <TableCell className="align-top">

@@ -1,4 +1,4 @@
-import type { LatencyProbeResult } from "./types";
+import type { LatencyProbeResult, ProbeIPDelay } from "./types";
 
 // Require both repeated failures and elapsed time. Missing reports never count as failures.
 export function classifyProbeSamples(items: LatencyProbeResult[], gapSeconds: number) {
@@ -87,4 +87,15 @@ export function aggregateProbeMinutes(items: LatencyProbeResult[], now: number, 
     }
   }
   return buckets;
+}
+
+export function p95TrimmedProbeAverage(probes: ProbeIPDelay[]) {
+  const values = probes.flatMap(probe => {
+    const end = Date.parse(probe.window_end || probe.checked_at || "1970-01-01T00:00:00Z");
+    const start = Math.floor(end / 60000) * 60000 - 15 * 60000;
+    return (probe.samples || []).filter(sample => sample.success && Number.isFinite(sample.delay_ms) && sample.delay_ms >= 0
+      && Date.parse(sample.checked_at) >= start && Date.parse(sample.checked_at) <= end).map(sample => sample.delay_ms);
+  }).sort((a, b) => a - b);
+  const retained = values.slice(0, Math.ceil(values.length * 0.95));
+  return retained.length ? retained.reduce((sum, value) => sum + value, 0) / retained.length : null;
 }
