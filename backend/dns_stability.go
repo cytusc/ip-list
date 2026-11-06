@@ -5,6 +5,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	"golang.org/x/text/language"
 )
 
 // dnsP95Mean removes successful samples above the interpolated 95th percentile.
@@ -37,37 +39,27 @@ func dnsP95Mean(samples []dnsSample) (float64, bool) {
 }
 
 func dnsAsiaPacific(country string) bool {
-	switch strings.ToUpper(country) {
-	case "AF", "AM", "AS", "AU", "AZ", "BD", "BN", "BT", "CC", "CK", "CN", "CX", "FJ", "FM", "GE", "GU", "HK", "ID", "IN", "IO", "JP", "KG", "KH", "KI", "KP", "KR", "KZ", "LA", "LK", "MH", "MM", "MN", "MO", "MP", "MV", "MY", "NC", "NF", "NP", "NR", "NU", "NZ", "PF", "PG", "PH", "PK", "PW", "SB", "SG", "TH", "TJ", "TK", "TL", "TM", "TO", "TV", "TW", "UZ", "VN", "VU", "WF", "WS":
-		return true
-	default:
-		return false
-	}
+	region, err := language.ParseRegion(country)
+	return err == nil && (language.MustParseRegion("142").Contains(region) || language.MustParseRegion("009").Contains(region))
 }
 
-// Compare IP averages against the fastest country's average in each pool.
+// Each country uses its fastest IP's trimmed mean, independently per pool.
 func dnsSelectLatency(candidates []dnsCandidate) {
 	type group struct{ pool, country string }
-	totals, counts := map[group]float64{}, map[group]int{}
+	baseline := map[group]float64{}
 	for _, item := range candidates {
 		if item.State != "healthy" || dnsCountry(item.Country) == "" || item.Delay < 0 || math.IsNaN(item.Delay) || math.IsInf(item.Delay, 0) {
 			continue
 		}
 		key := group{item.Pool, strings.ToUpper(item.Country)}
-		totals[key] += item.Delay
-		counts[key]++
-	}
-	baseline := map[string]float64{}
-	for key, total := range totals {
-		average := total / float64(counts[key])
-		current, ok := baseline[key.pool]
-		if !ok || average < current {
-			baseline[key.pool] = average
+		current, ok := baseline[key]
+		if !ok || item.Delay < current {
+			baseline[key] = item.Delay
 		}
 	}
 	for i := range candidates {
 		item := &candidates[i]
-		minimum, ok := baseline[item.Pool]
+		minimum, ok := baseline[group{item.Pool, strings.ToUpper(item.Country)}]
 		if item.State != "healthy" || !ok {
 			continue
 		}
@@ -75,9 +67,10 @@ func dnsSelectLatency(candidates []dnsCandidate) {
 		if dnsAsiaPacific(item.Country) {
 			margin = 10
 		}
+		item.Reason = fmt.Sprintf("P95 去峰平均延迟 %.1f ms，%s 地区最低 %.1f ms，上限 %.1f ms", item.Delay, strings.ToUpper(item.Country), minimum, minimum+margin)
 		if item.Delay > minimum+margin {
 			item.State = "pending"
-			item.Reason = fmt.Sprintf("平均延迟 %.1f ms，超过最低地区均值 %.1f ms + %.0f ms", item.Delay, minimum, margin)
+			item.Reason = "超过地区延迟门槛：" + item.Reason
 		}
 	}
 }

@@ -90,7 +90,6 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 			valid = append(valid, s)
 		}
 	}
-	sort.Slice(valid, func(i, j int) bool { return valid[i].At.Before(valid[j].At) })
 	if len(valid) < 2 || now.Sub(valid[len(valid)-1].At) > freshness || valid[len(valid)-1].At.Sub(valid[0].At) < time.Minute {
 		return "unknown", 0
 	}
@@ -101,7 +100,7 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 			if samples[i].At.After(latest.At) {
 				continue
 			}
-			if (samples[i].Success && samples[i].Delay >= 0 && !math.IsNaN(samples[i].Delay) && !math.IsInf(samples[i].Delay, 0)) || latest.At.Sub(samples[i].At) > freshness {
+			if (samples[i].Success && samples[i].Delay >= 0 && !math.IsNaN(samples[i].Delay) && !math.IsInf(samples[i].Delay, 0)) || failureStart.Sub(samples[i].At) > freshness {
 				break
 			}
 			failureStart = samples[i].At
