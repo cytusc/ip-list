@@ -6,7 +6,6 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestWebsiteHTTPSHealth(t *testing.T) {
@@ -89,29 +88,6 @@ func TestWebsiteHTTPSPlanIsolation(t *testing.T) {
 	remote = append(remote, remote[0])
 	if p := dnsBuildPlan(c, items, remote, nil, true); p[0].Action != "hold" {
 		t.Fatal(p)
-	}
-}
-
-func TestWebsiteHTTPSRecovery(t *testing.T) {
-	c := dnsTestConfig()
-	c.WebsiteEnabled, c.WebsiteURL = true, "https://api.example.com/"
-	now := time.Now()
-	item := dnsCandidate{IP: "1.1.1.1", Pool: "cf", State: "pending", Country: "HK", Delay: 20, HTTPSState: "healthy", HTTPSURL: c.WebsiteURL}
-	history := []dnsReport{}
-	for _, age := range []int{5, 10, 15} {
-		history = append(history, dnsReport{Mode: "sync", StartedAt: now.Add(-time.Duration(age) * time.Minute), Config: c, Candidates: []dnsCandidate{item}, Warning: "another IP location unavailable"})
-	}
-	if !dnsWebsiteStable(c, item, history, now) {
-		t.Fatal("unrelated lookup failure blocked healthy candidate")
-	}
-	history[1].Candidates[0].HTTPSState = "unknown"
-	if dnsWebsiteStable(c, item, history, now) {
-		t.Fatal("admitted intermittent HTTPS")
-	}
-	history[1].Candidates[0].HTTPSState = "healthy"
-	history[1].Config.WebsiteURL = "https://old.example/"
-	if dnsWebsiteStable(c, item, history, now) {
-		t.Fatal("reused another business domain's history")
 	}
 }
 

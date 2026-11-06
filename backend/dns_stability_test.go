@@ -1,247 +1,72 @@
 package main
 
 import (
-	"context"
 	"math"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestDNSSelectedProbeOutage(t *testing.T) {
-	a := paginationApp(t)
-	ctx := context.Background()
-	var selected string
-	err := a.db.QueryRow(ctx, `INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at)
- VALUES('telecom','telecom',now(),now()) RETURNING id::text`).Scan(&selected)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = a.db.Exec(ctx, `
- INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('other','other',now(),now());
- INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at) VALUES('103.26.8.38',true,65,200,now());
- INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
- SELECT p.id,ip::inet,p.name='other' OR ip='1.1.1.1',65,now()-make_interval(secs=>age)
- FROM latency_probes p CROSS JOIN unnest(ARRAY['103.26.8.38','1.1.1.1']) ip CROSS JOIN generate_series(1,601,20) age`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := dnsTestConfig()
-	c.ProbeID = selected
-	check := func(want string, outage bool) {
-		t.Helper()
-		items, uncertain, err := a.dnsPoolCandidates(ctx, c, true)
-		if err != nil || uncertain != outage || len(items) != 1 || items[0].State != want {
-			t.Fatalf("items=%+v uncertain=%v err=%v", items, uncertain, err)
-		}
-	}
-	// Other probes' successes must not override the selected probe's failures.
-	check("failed", false)
-	for _, change := range []string{
-		"UPDATE latency_probes SET last_seen=now()-interval '1 hour' WHERE id=$1",
-		"UPDATE latency_probes SET last_seen=now(),enabled=false WHERE id=$1",
-		`WITH p AS (UPDATE latency_probes SET enabled=true WHERE id=$1 RETURNING id)
- UPDATE latency_probe_results SET checked_at=checked_at-interval '1 hour' WHERE probe_id IN (SELECT id FROM p)`,
-	} {
-		if _, err = a.db.Exec(ctx, change, selected); err != nil {
-			t.Fatal(err)
-		}
-		check("unknown", true)
-	}
-	if _, err = a.db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
- SELECT $1::uuid,'103.26.8.38',true,65,now()-make_interval(secs=>age) FROM generate_series(1,601,20) age`, selected); err != nil {
-		t.Fatal(err)
-	}
-	check("healthy", false)
-}
-
-func TestDNSStabilityProbeAggregation(t *testing.T) {
-	a := paginationApp(t)
-	ctx := context.Background()
-	_, err := a.db.Exec(ctx, `
- INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at) VALUES('103.26.8.38',true,65,200,now());
- INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('stable','stable',now(),now()),('shaky','shaky',now(),now());
- INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
- SELECT p.id,'103.26.8.38',true,CASE WHEN p.name='shaky' AND age%60=0 THEN 600 ELSE 65 END,now()-make_interval(secs=>age)
- FROM latency_probes p CROSS JOIN generate_series(1,601,20) age;
- INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
- SELECT id,'1.1.1.1',true,20,now() FROM latency_probes;`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := dnsTestConfig()
-	c.MinSuccess = 0
-	check := func(want string, ready bool) {
-		t.Helper()
-		items, uncertain, err := a.dnsPoolCandidates(ctx, c, true)
-		if err != nil || uncertain || len(items) != 1 || items[0].State != want || items[0].StabilityReady != ready {
-			t.Fatalf("items=%+v uncertain=%v err=%v", items, uncertain, err)
-		}
-		if want == "failed" && !strings.Contains(items[0].Reason, "波动") {
-			t.Fatal(items)
-		}
-	}
-	check("healthy", true)
-	_, err = a.db.Exec(ctx, `WITH ordered AS (SELECT id,row_number() OVER(PARTITION BY probe_id ORDER BY checked_at) n FROM latency_probe_results WHERE ip='103.26.8.38') UPDATE latency_probe_results r SET delay_ms=CASE WHEN o.n%3=0 THEN 600 ELSE 65 END FROM ordered o WHERE r.id=o.id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	check("failed", false)
-	_, err = a.db.Exec(ctx, `DELETE FROM latency_probe_results WHERE ip='1.1.1.1'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	check("unknown", false)
-}
-
-func TestDNSProbeStability(t *testing.T) {
+func TestDNSP95MeanDropsLatencyPeaks(t *testing.T) {
 	now := time.Now()
-	base := []dnsSample{}
-	for age := 600; age >= 0; age -= 20 {
-		base = append(base, dnsSample{At: now.Add(-time.Duration(age) * time.Second), Success: true, Delay: 65})
+	samples := make([]dnsSample, 0, 20)
+	for i := 0; i < 19; i++ {
+		samples = append(samples, dnsSample{At: now, Success: true, Delay: 38})
 	}
-	for _, tc := range []struct {
-		name       string
-		mutate     func([]dnsSample) []dnsSample
-		bad, ready bool
+	samples = append(samples, dnsSample{At: now, Success: true, Delay: 1000})
+	got, ok := dnsP95Mean(samples)
+	if !ok || got != 38 {
+		t.Fatalf("mean=%v ok=%v", got, ok)
+	}
+}
+
+func TestDNSRegionalLatencyMargins(t *testing.T) {
+	candidates := []dnsCandidate{
+		{IP: "192.0.2.1", Pool: "node", Country: "HK", State: "healthy", Delay: 38},
+		{IP: "192.0.2.2", Pool: "node", Country: "HK", State: "healthy", Delay: 48},
+		{IP: "192.0.2.3", Pool: "node", Country: "JP", State: "healthy", Delay: 48},
+		{IP: "192.0.2.4", Pool: "node", Country: "US", State: "healthy", Delay: 63},
+		{IP: "192.0.2.5", Pool: "node", Country: "DE", State: "healthy", Delay: 63.01},
+		{IP: "192.0.2.6", Pool: "node", Country: "FR", State: "healthy", Delay: 63},
+		{IP: "192.0.2.7", Pool: "cf", Country: "HK", State: "healthy", Delay: 90},
+		{IP: "192.0.2.8", Pool: "cf", Country: "AU", State: "healthy", Delay: 100},
+	}
+	dnsSelectLatency(candidates)
+	for i, want := range []string{"healthy", "healthy", "healthy", "healthy", "pending", "healthy", "healthy", "healthy"} {
+		if candidates[i].State != want {
+			t.Fatalf("%s: state=%s want=%s", candidates[i].IP, candidates[i].State, want)
+		}
+	}
+	if !dnsAsiaPacific("NZ") || !dnsAsiaPacific("AU") || dnsAsiaPacific("US") {
+		t.Fatal("unexpected Asia-Pacific classification")
+	}
+}
+
+func TestDNSBriefLossAndContinuousFailure(t *testing.T) {
+	now := time.Now()
+	c := dnsTestConfig()
+	c.Window = 10
+	sample := func(seconds int, ok bool) dnsSample {
+		return dnsSample{At: now.Add(-time.Duration(seconds) * time.Second), Success: ok, Delay: 38}
+	}
+	cases := []struct {
+		name    string
+		samples []dnsSample
+		want    string
 	}{
-		{"stable", func(s []dnsSample) []dnsSample { return s }, false, true},
-		{"consistently slow is not jitter", func(s []dnsSample) []dnsSample {
-			for i := range s {
-				s[i].Delay = 400
-			}
-			return s
-		}, false, true},
-		{"large repeated spikes", func(s []dnsSample) []dnsSample {
-			for i := range s {
-				if i%3 == 0 {
-					s[i].Delay = 600
-				}
-			}
-			return s
-		}, true, false},
-		{"repeated loss", func(s []dnsSample) []dnsSample {
-			for i := range s {
-				if i%3 == 0 {
-					s[i].Success = false
-				}
-			}
-			return s
-		}, true, false},
-		{"single outlier tolerated", func(s []dnsSample) []dnsSample { s[25].Delay = 900; return s }, false, true},
-		{"not enough recovery time", func(s []dnsSample) []dnsSample { return s[16:] }, false, false},
-		{"stale", func(s []dnsSample) []dnsSample { return s[:20] }, false, false},
-		{"report gap", func(s []dnsSample) []dnsSample { return append(s[:10], s[17:]...) }, false, false},
-		{"invalid delays count as loss", func(s []dnsSample) []dnsSample {
-			for i := range s {
-				if i%3 == 0 {
-					s[i].Delay = math.NaN()
-				}
-			}
-			return s
-		}, true, false},
-		{"recovery requires lower jitter", func(s []dnsSample) []dnsSample {
-			for i := range s {
-				if i%3 == 0 {
-					s[i].Delay = 150
-				}
-			}
-			return s
-		}, false, false},
-		{"recently calmed still waiting", func(s []dnsSample) []dnsSample {
-			for i := 0; i < 15; i++ {
-				s[i].Delay = 600
-			}
-			return s
-		}, false, false},
-		{"unordered", func(s []dnsSample) []dnsSample { slices.Reverse(s); return s }, false, true},
-		{"future ignored", func(s []dnsSample) []dnsSample {
-			return append(s, dnsSample{At: now.Add(time.Minute), Success: true, Delay: 9000})
-		}, false, true},
-	} {
+		{"short outage remains eligible", []dnsSample{sample(100, true), sample(80, false), sample(60, true), sample(40, true), sample(20, false), sample(1, false)}, "healthy"},
+		{"less than five minutes failing", []dnsSample{sample(240, true), sample(180, false), sample(120, false), sample(60, false), sample(1, false)}, "healthy"},
+		{"five minutes continuously failing", []dnsSample{sample(360, true), sample(301, false), sample(240, false), sample(180, false), sample(120, false), sample(60, false), sample(1, false)}, "failed"},
+		{"missing reports break the failure streak", []dnsSample{sample(400, false), sample(1, false)}, "unknown"},
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, ready := dnsProbeStability(tc.mutate(slices.Clone(base)), now, 90*time.Second)
-			if (reason != "") != tc.bad || ready != tc.ready {
-				t.Fatalf("reason=%q ready=%v", reason, ready)
+			got, _ := dnsProbeHealth(tc.samples, now, 90*time.Second, c)
+			if got != tc.want {
+				t.Fatalf("got %s want %s", got, tc.want)
 			}
 		})
 	}
-}
-
-func TestDNSStabilityRemovalRecoveryAndFallback(t *testing.T) {
-	c := dnsTestConfig()
-	remote := []dnsRemoteRecord{{Name: "sg.reiiv.com", Type: "A", Line: "default_view", Values: []string{"103.26.8.38"}}}
-	candidates := []dnsCandidate{
-		{IP: "103.26.8.38", Country: "SG", State: "failed", Reason: "近期延迟波动过大"},
-		{IP: "47.75.118.189", Country: "HK", State: "healthy", Delay: 34, StabilityReady: true},
+	if _, ok := dnsP95Mean([]dnsSample{{Success: true, Delay: math.NaN()}}); ok {
+		t.Fatal("accepted invalid delay")
 	}
-	dnsStabilizeCandidates(c, candidates, remote)
-	plan := dnsBuildPlan(c, candidates, remote, nil, false)
-	if !slices.Equal(plan[len(plan)-1].Desired, []string{"47.75.118.189"}) {
-		t.Fatal(plan)
-	}
-	for _, ready := range []bool{false, true} {
-		candidates[0].State, candidates[0].StabilityReady = "healthy", ready
-		dnsStabilizeCandidates(c, candidates, nil)
-		want := "pending"
-		if ready {
-			want = "healthy"
-		}
-		if candidates[0].State != want {
-			t.Fatal(candidates)
-		}
-	}
-	candidates[0].State, candidates[0].StabilityReady = "healthy", false
-	dnsStabilizeCandidates(c, candidates, remote)
-	if candidates[0].State != "healthy" {
-		t.Fatal("published IP must use removal threshold")
-	}
-	// An unrelated/custom DNS line must not bypass stable admission.
-	remote[0].Line = "Dianxin"
-	dnsStabilizeCandidates(c, candidates, remote)
-	if candidates[0].State != "pending" {
-		t.Fatal(candidates)
-	}
-}
-
-// Control evidence must use the newest matching measurement, including ID ties;
-// a historical success or a success in another mode cannot confirm an IP fault.
-func TestDNSLatestControlEvidence(t *testing.T) {
-	a := paginationApp(t)
-	ctx := context.Background()
-	_, err := a.db.Exec(ctx, `
- INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at) VALUES('103.26.8.38',true,65,200,now());
- INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('control','control',now(),now());
- INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
- SELECT id,'103.26.8.38',false,0,now()-make_interval(secs=>age)
- FROM latency_probes CROSS JOIN generate_series(1,181,20) age;
- INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
- SELECT id,'1.1.1.1',true,20,now()-interval '10 seconds' FROM latency_probes;
- INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
- SELECT id,'1.1.1.1',false,0,now()-interval '10 seconds' FROM latency_probes;
- INSERT INTO latency_probe_results(probe_id,ip,mode,tcp_port,success,delay_ms,checked_at)
- SELECT id,'8.8.8.8','tcp',443,true,20,now() FROM latency_probes;`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	check := func(want string) {
-		t.Helper()
-		items, uncertain, err := a.dnsPoolCandidates(ctx, dnsTestConfig(), true)
-		if err != nil || uncertain || len(items) != 1 || items[0].State != want {
-			t.Fatalf("items=%+v uncertain=%v err=%v", items, uncertain, err)
-		}
-	}
-	check("unknown")
-	// A fresh success outside the publication pool is still valid control evidence.
-	_, err = a.db.Exec(ctx, `INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at) SELECT id,'9.9.9.9',true,20,now() FROM latency_probes`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	check("failed")
-	_, err = a.db.Exec(ctx, `UPDATE latency_probe_results SET checked_at=now()-interval '1 hour' WHERE ip='9.9.9.9'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	check("unknown")
 }

@@ -5,94 +5,79 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"time"
 )
 
-// Evaluate each path independently. A bad path must not veto a healthy path,
-// and missing observations must never count as evidence of recovery.
-func dnsProbeStability(samples []dnsSample, now time.Time, freshness time.Duration) (string, bool) {
-	recent := []dnsSample{}
-	recovery := []dnsSample{}
+// dnsP95Mean removes successful samples above the interpolated 95th percentile.
+func dnsP95Mean(samples []dnsSample) (float64, bool) {
+	delays := make([]float64, 0, len(samples))
 	for _, s := range samples {
-		if s.At.After(now) || s.At.Before(now.Add(-10*time.Minute)) {
-			continue
-		}
-		s.Success = s.Success && s.Delay >= 0 && !math.IsNaN(s.Delay) && !math.IsInf(s.Delay, 0)
-		recovery = append(recovery, s)
-		if !s.At.Before(now.Add(-5 * time.Minute)) {
-			recent = append(recent, s)
-		}
-	}
-	sort.Slice(recovery, func(i, j int) bool { return recovery[i].At.Before(recovery[j].At) })
-	sort.Slice(recent, func(i, j int) bool { return recent[i].At.Before(recent[j].At) })
-	if len(recent) >= 6 && recent[len(recent)-1].At.Sub(recent[0].At) >= time.Minute && now.Sub(recent[len(recent)-1].At) <= freshness {
-		loss, median, p95 := dnsStabilityStats(recent)
-		if loss > 20 {
-			return fmt.Sprintf("近期丢包过高：5 分钟丢包 %.1f%%，超过 20%%", loss), false
-		}
-		spikes := 0
-		for _, s := range recent {
-			if s.Success && s.Delay-median > math.Max(100, median) {
-				spikes++
-			}
-		}
-		if spikes >= 2 && p95-median > math.Max(100, median) {
-			return fmt.Sprintf("近期延迟波动过大：中位 %.1f ms，P95 %.1f ms", median, p95), false
-		}
-	}
-	if len(recovery) < 10 || recovery[0].At.After(now.Add(-10*time.Minute).Add(freshness)) || now.Sub(recovery[len(recovery)-1].At) > freshness || recovery[len(recovery)-1].At.Sub(recovery[0].At) < 9*time.Minute {
-		return "", false
-	}
-	for i := 1; i < len(recovery); i++ {
-		if recovery[i].At.Sub(recovery[i-1].At) > freshness {
-			return "", false
-		}
-	}
-	loss, median, p95 := dnsStabilityStats(recovery)
-	return "", loss <= 10 && p95-median <= math.Max(60, median*0.5)
-}
-
-func dnsStabilityStats(samples []dnsSample) (loss, median, p95 float64) {
-	delays := []float64{}
-	for _, s := range samples {
-		if s.Success {
+		if s.Success && s.Delay >= 0 && !math.IsNaN(s.Delay) && !math.IsInf(s.Delay, 0) {
 			delays = append(delays, s.Delay)
 		}
 	}
-	loss = 100 * float64(len(samples)-len(delays)) / float64(len(samples))
-	if len(delays) > 0 {
-		sort.Float64s(delays)
-		median = delays[(len(delays)-1)/2]
-		p95 = delays[int(math.Ceil(float64(len(delays))*0.95))-1]
+	if len(delays) == 0 {
+		return 0, false
 	}
-	return
+	sort.Float64s(delays)
+	cutoff := delays[len(delays)-1]
+	if len(delays) >= 5 {
+		position := 0.95 * float64(len(delays)-1)
+		lower := int(position)
+		cutoff = delays[lower] + (delays[lower+1]-delays[lower])*(position-float64(lower))
+	}
+	end := sort.Search(len(delays), func(i int) bool { return delays[i] > cutoff })
+	if end == 0 {
+		end = 1
+	}
+	total := 0.0
+	for _, delay := range delays[:end] {
+		total += delay
+	}
+	return total / float64(end), true
 }
 
-// Published addresses use the removal threshold; additions use the stricter
-// recovery threshold. This hysteresis is derived from raw samples and survives
-// process restarts without adding a database migration.
-func dnsStabilizeCandidates(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteRecord) {
-	published := map[string]bool{}
-	for _, r := range remote {
-		prefix, ok := strings.CutSuffix(r.Name, "."+c.Domain)
-		if !ok || r.Line != "default_view" || (r.Type != "A" && r.Type != "AAAA") {
+func dnsAsiaPacific(country string) bool {
+	switch strings.ToUpper(country) {
+	case "AF", "AM", "AS", "AU", "AZ", "BD", "BN", "BT", "CC", "CK", "CN", "CX", "FJ", "FM", "GE", "GU", "HK", "ID", "IN", "IO", "JP", "KG", "KH", "KI", "KP", "KR", "KZ", "LA", "LK", "MH", "MM", "MN", "MO", "MP", "MV", "MY", "NC", "NF", "NP", "NR", "NU", "NZ", "PF", "PG", "PH", "PK", "PW", "SB", "SG", "TH", "TJ", "TK", "TL", "TM", "TO", "TV", "TW", "UZ", "VN", "VU", "WF", "WS":
+		return true
+	default:
+		return false
+	}
+}
+
+// Compare IP averages against the fastest country's average in each pool.
+func dnsSelectLatency(candidates []dnsCandidate) {
+	type group struct{ pool, country string }
+	totals, counts := map[group]float64{}, map[group]int{}
+	for _, item := range candidates {
+		if item.State != "healthy" || dnsCountry(item.Country) == "" || item.Delay < 0 || math.IsNaN(item.Delay) || math.IsInf(item.Delay, 0) {
 			continue
 		}
-		pool := ""
-		if prefix == "url" && c.WebsiteEnabled {
-			pool = "cf"
-		} else if dnsCountry(prefix) == "" {
-			continue
-		}
-		for _, ip := range r.Values {
-			published[pool+"/"+ip] = true
+		key := group{item.Pool, strings.ToUpper(item.Country)}
+		totals[key] += item.Delay
+		counts[key]++
+	}
+	baseline := map[string]float64{}
+	for key, total := range totals {
+		average := total / float64(counts[key])
+		current, ok := baseline[key.pool]
+		if !ok || average < current {
+			baseline[key.pool] = average
 		}
 	}
 	for i := range candidates {
 		item := &candidates[i]
-		if item.State == "healthy" && !published[item.Pool+"/"+item.IP] && !item.StabilityReady {
+		minimum, ok := baseline[item.Pool]
+		if item.State != "healthy" || !ok {
+			continue
+		}
+		margin := 20.0
+		if dnsAsiaPacific(item.Country) {
+			margin = 10
+		}
+		if item.Delay > minimum+margin {
 			item.State = "pending"
-			item.Reason = "等待连续 10 分钟稳定采样：丢包 ≤10%，P95 与中位延迟差 ≤max(60 ms, 中位延迟的 50%)"
+			item.Reason = fmt.Sprintf("平均延迟 %.1f ms，超过最低地区均值 %.1f ms + %.0f ms", item.Delay, minimum, margin)
 		}
 	}
 }

@@ -68,6 +68,8 @@ type dnsSample struct {
 	Delay   float64
 }
 
+const dnsContinuousFailureWindow = 5 * time.Minute
+
 // Heartbeats do not prove that the probe's outbound network works. A failed
 // target is actionable only if the same probe can still reach another target.
 func dnsCorroborateFailure(state string, otherTargetOK bool) string {
@@ -77,10 +79,11 @@ func dnsCorroborateFailure(state string, otherTargetOK bool) string {
 	return state
 }
 
-// A probe must be online and have at least two fresh observations spanning
-// a minute. Missing or sparse data is unknown, never evidence of health.
+// Brief loss remains eligible; only five continuous minutes of failures remove an IP.
 func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration, c dnsConfig) (string, float64) {
 	cutoff := now.Add(-time.Duration(c.Window) * time.Minute)
+	samples = append([]dnsSample(nil), samples...)
+	sort.Slice(samples, func(i, j int) bool { return samples[i].At.Before(samples[j].At) })
 	valid := make([]dnsSample, 0, len(samples))
 	for _, s := range samples {
 		if !s.At.Before(cutoff) && !s.At.After(now) {
@@ -91,52 +94,40 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 	if len(valid) < 2 || now.Sub(valid[len(valid)-1].At) > freshness || valid[len(valid)-1].At.Sub(valid[0].At) < time.Minute {
 		return "unknown", 0
 	}
-	count := 0
-	total := 0.0
-	var lastSuccess time.Time
-	for _, s := range valid {
-		if s.Success && s.Delay >= 0 && !math.IsNaN(s.Delay) && !math.IsInf(s.Delay, 0) {
-			count++
-			total += s.Delay
-			lastSuccess = s.At
-		}
-	}
 	latest := valid[len(valid)-1]
-	if !latest.Success {
+	if !latest.Success || latest.Delay < 0 || math.IsNaN(latest.Delay) || math.IsInf(latest.Delay, 0) {
 		failureStart := latest.At
-		for i := len(valid) - 2; i >= 0; i-- {
-			if valid[i].Success || valid[i+1].At.Sub(valid[i].At) > freshness {
+		for i := len(samples) - 2; i >= 0; i-- {
+			if samples[i].At.After(latest.At) {
+				continue
+			}
+			if (samples[i].Success && samples[i].Delay >= 0 && !math.IsNaN(samples[i].Delay) && !math.IsInf(samples[i].Delay, 0)) || latest.At.Sub(samples[i].At) > freshness {
 				break
 			}
-			failureStart = valid[i].At
+			failureStart = samples[i].At
 		}
-		if latest.At.Sub(failureStart) >= time.Minute {
+		if latest.At.Sub(failureStart) >= dnsContinuousFailureWindow {
 			return "failed", 0
 		}
-		// In continuous-failure mode, a recent success tolerates brief loss.
-		// Missing reports are never evidence that an IP is still reachable.
-		if c.MinSuccess > 0 || lastSuccess.IsZero() || now.Sub(lastSuccess) >= time.Minute || now.Sub(lastSuccess) > freshness {
-			return "unknown", 0
-		}
 	}
-	if lastSuccess.IsZero() || count*100 < len(valid)*c.MinSuccess {
-		return "failed", 0
+	delay, ok := dnsP95Mean(valid)
+	if !ok {
+		return "unknown", 0
 	}
-	return "healthy", total / float64(count)
+	return "healthy", delay
 }
 
 type dnsCandidate struct {
-	HTTPSState     string  `json:"https_state,omitempty"`
-	HTTPSURL       string  `json:"https_url,omitempty"`
-	HTTPSReason    string  `json:"https_reason,omitempty"`
-	StabilityReady bool    `json:"stability_ready"`
-	Pool           string  `json:"pool,omitempty"`
-	IP             string  `json:"ip"`
-	Provider       string  `json:"provider"`
-	Country        string  `json:"country"`
-	State          string  `json:"state"`
-	Reason         string  `json:"reason"`
-	Delay          float64 `json:"delay_ms"`
+	HTTPSState  string  `json:"https_state,omitempty"`
+	HTTPSURL    string  `json:"https_url,omitempty"`
+	HTTPSReason string  `json:"https_reason,omitempty"`
+	Pool        string  `json:"pool,omitempty"`
+	IP          string  `json:"ip"`
+	Provider    string  `json:"provider"`
+	Country     string  `json:"country"`
+	State       string  `json:"state"`
+	Reason      string  `json:"reason"`
+	Delay       float64 `json:"delay_ms"`
 }
 
 type dnsPlanRecord struct {
@@ -172,7 +163,7 @@ func dnsDesired(c dnsConfig, candidates []dnsCandidate) map[string]dnsPlanRecord
 			if c.WebsiteURL != "" && (item.HTTPSState != "healthy" || item.HTTPSURL != c.WebsiteURL) {
 				continue
 			}
-			if !c.WebsiteEnabled || (country != "hk" && country != "jp" && country != "sg") || item.Delay < 0 || math.IsNaN(item.Delay) || math.IsInf(item.Delay, 0) || (country != "hk" && item.Delay > 80) {
+			if !c.WebsiteEnabled || (country != "hk" && country != "jp" && country != "sg") || item.Delay < 0 || math.IsNaN(item.Delay) || math.IsInf(item.Delay, 0) {
 				continue
 			}
 			name = "url." + c.Domain

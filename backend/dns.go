@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"net/netip"
 	"sort"
@@ -340,9 +339,6 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 	}
 	now := time.Now()
 	states := map[string][]string{}
-	totals := map[string]float64{}
-	counts := map[string]int{}
-	instability := map[string]string{}
 	for rows.Next() {
 		var ip string
 		var fresh int
@@ -356,26 +352,6 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 			break
 		}
 		state, delay := dnsProbeHealth(samples, now, time.Duration(fresh)*time.Second, c)
-		reason, ready := dnsProbeStability(samples, now, time.Duration(fresh)*time.Second)
-		if state != "failed" && reason != "" {
-			state = "failed"
-			if otherTargetOK {
-				instability[ip] = reason
-			}
-		}
-		if state == "healthy" && ready {
-			if i, ok := index[ip]; ok {
-				items[i].StabilityReady = true
-			}
-		}
-		if website && state == "healthy" {
-			for _, sample := range samples {
-				if sample.Success && sample.Delay >= 0 && !math.IsNaN(sample.Delay) && !math.IsInf(sample.Delay, 0) && !sample.At.Before(now.Add(-time.Duration(c.Window)*time.Minute)) && !sample.At.After(now) {
-					totals[ip] += sample.Delay
-					counts[ip]++
-				}
-			}
-		}
 		uncorroborated := state == "failed" && !otherTargetOK
 		state = dnsCorroborateFailure(state, otherTargetOK)
 		states[ip] = append(states[ip], state)
@@ -389,10 +365,7 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 		if state == "healthy" && (items[i].State != "healthy" || delay < items[i].Delay) {
 			items[i].State = "healthy"
 			items[i].Delay = delay
-			items[i].Reason = "近期采样成功率达标且最新采样成功"
-			if c.MinSuccess == 0 {
-				items[i].Reason = "近期有成功采样，未连续失败满 60 秒"
-			}
+			items[i].Reason = "平均延迟按成功样本 P95 剔除峰值后计算"
 		}
 	}
 	if err == nil {
@@ -405,9 +378,6 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 	for i := range items {
 		if website {
 			items[i].Pool = "cf"
-			if counts[items[i].IP] > 0 {
-				items[i].Delay = totals[items[i].IP] / float64(counts[items[i].IP])
-			}
 		}
 		if items[i].State == "healthy" {
 			continue
@@ -422,13 +392,7 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 			}
 			if failed {
 				items[i].State = "failed"
-				items[i].Reason = "连续失败至少 60 秒，或观察窗口成功率不足"
-				if c.MinSuccess == 0 {
-					items[i].Reason = "连续失败至少 60 秒，或观察窗口内没有成功采样"
-				}
-			}
-			if failed && instability[items[i].IP] != "" {
-				items[i].Reason = instability[items[i].IP]
+				items[i].Reason = "连续失败至少 5 分钟"
 			}
 		}
 	}
@@ -550,14 +514,7 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	if err != nil {
 		return err
 	}
-	if c.WebsiteEnabled {
-		history, historyErr := a.dnsWebsiteHistory(ctx, c)
-		if historyErr != nil {
-			return historyErr
-		}
-		dnsStabilizeWebsite(c, candidates, remote, history, report.StartedAt)
-	}
-	dnsStabilizeCandidates(c, candidates, remote)
+	dnsSelectLatency(candidates)
 	report.Candidates = candidates
 	report.Records = dnsBuildPlan(c, candidates, remote, managed, uncertain)
 	// A common probe/route failure must not erase the last published records.

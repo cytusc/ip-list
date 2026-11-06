@@ -159,7 +159,7 @@ func TestIPLocationManualOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Conflict must preserve the published address without holding unrelated work.
-	plan := dnsBuildPlan(dnsTestConfig(), []dnsCandidate{{IP: ip, State: "unknown"}, {IP: "1.1.1.1", Country: "HK", State: "healthy", StabilityReady: true}}, []dnsRemoteRecord{{Name: "us.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", Values: []string{ip}}}, nil, false)
+	plan := dnsBuildPlan(dnsTestConfig(), []dnsCandidate{{IP: ip, State: "unknown"}, {IP: "1.1.1.1", Country: "HK", State: "healthy"}}, []dnsRemoteRecord{{Name: "us.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", Values: []string{ip}}}, nil, false)
 	for _, record := range plan {
 		if record.Action == "hold" {
 			t.Fatal(plan)

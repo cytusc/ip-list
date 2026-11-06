@@ -58,9 +58,9 @@ func TestDNSHealth(t *testing.T) {
 		want    string
 	}{
 		{"stable", []dnsSample{sample(80, true), sample(40, true), sample(1, true)}, "healthy"},
-		{"persistent failure", []dnsSample{sample(120, false), sample(60, false), sample(1, false)}, "failed"},
-		{"short loss", []dnsSample{sample(90, true), sample(40, true), sample(1, false)}, "unknown"},
-		{"poor success ratio", []dnsSample{sample(90, false), sample(40, false), sample(1, true)}, "failed"},
+		{"brief total outage remains unconfirmed", []dnsSample{sample(120, false), sample(60, false), sample(1, false)}, "unknown"},
+		{"short loss", []dnsSample{sample(120, true), sample(40, true), sample(1, false)}, "healthy"},
+		{"poor success ratio with latest success", []dnsSample{sample(90, false), sample(40, false), sample(1, true)}, "healthy"},
 		{"stale", []dnsSample{sample(240, true), sample(180, true)}, "unknown"},
 		{"sparse", []dnsSample{sample(40, true), sample(1, true)}, "unknown"},
 		{"future ignored", []dnsSample{sample(-30, true), sample(1, true)}, "unknown"},
@@ -127,10 +127,10 @@ func TestDNSContinuousFailurePolicy(t *testing.T) {
 	}{
 		{"intermittent loss below 80 percent", []dnsSample{sample(120, true), sample(100, false), sample(80, false), sample(60, true), sample(40, false), sample(20, true), sample(1, true)}, "healthy"},
 		{"brief latest timeout", []dnsSample{sample(100, true), sample(80, false), sample(60, true), sample(40, true), sample(20, false), sample(1, false)}, "healthy"},
-		{"continuous failure 60 seconds", []dnsSample{sample(100, true), sample(61, false), sample(41, false), sample(21, false), sample(1, false)}, "failed"},
-		{"never reached", []dnsSample{sample(81, false), sample(61, false), sample(41, false), sample(21, false), sample(1, false)}, "failed"},
+		{"continuous failure under five minutes", []dnsSample{sample(100, true), sample(61, false), sample(41, false), sample(21, false), sample(1, false)}, "healthy"},
+		{"never reached briefly", []dnsSample{sample(81, false), sample(61, false), sample(41, false), sample(21, false), sample(1, false)}, "unknown"},
 		{"missing reports interrupt failure streak", []dnsSample{sample(200, false), sample(1, false)}, "unknown"},
-		{"old success cannot justify recent timeout", []dnsSample{sample(100, true), sample(20, false), sample(1, false)}, "unknown"},
+		{"old success and brief recent timeout stays eligible", []dnsSample{sample(100, true), sample(20, false), sample(1, false)}, "healthy"},
 		{"stale samples", []dnsSample{sample(240, true), sample(180, true)}, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
