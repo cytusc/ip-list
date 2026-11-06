@@ -23,7 +23,7 @@ func TestWebsiteDNSUsesSharedLatencySelection(t *testing.T) {
 	}
 	dnsSelectLatency(candidates)
 	got := dnsDesired(c, candidates)["url.reiiv.com/A"].Desired
-	want := []string{"1.0.0.1", "8.8.4.4", "8.8.8.8", "9.9.9.9", "208.67.222.222"}
+	want := []string{"208.67.222.222", "1.0.0.1", "8.8.4.4", "8.8.8.8", "9.9.9.9"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
