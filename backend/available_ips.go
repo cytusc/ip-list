@@ -241,12 +241,28 @@ ORDER BY t.ip,p.created_at`
 
 // Filter unique addresses before applying LIMIT, then fetch protocol checks and
 // probe samples only for those addresses. Region filters use the shared cache.
-const availableIPCandidatesSQL = `WITH candidates AS MATERIALIZED (
+const availableIPCandidatesSQL = `WITH dns_selection AS MATERIALIZED (
+ SELECT run.report FROM dns_settings d CROSS JOIN LATERAL (
+  SELECT report FROM dns_sync_runs
+  WHERE report->>'mode'='sync' AND COALESCE(report->>'error','')=''
+  AND report->>'domain'=d.config->>'domain'
+  ORDER BY started_at DESC,id DESC LIMIT 1
+ ) run WHERE (d.config->>'enabled')::boolean
+), candidates AS MATERIALIZED (
  SELECT s.ip,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider,COALESCE(o.country,l.country,'') AS country
  FROM (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available) s ` + networkInfoJoin + `
  LEFT JOIN dns_ip_locations l ON l.ip=s.ip AND l.policy_version=3
  LEFT JOIN ip_location_overrides o ON o.ip=s.ip
  WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
+ AND (NOT EXISTS(SELECT 1 FROM dns_settings WHERE (config->>'enabled')::boolean) OR EXISTS (
+  SELECT 1 FROM dns_selection d
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(d.report->'records','[]')) r
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(d.report->'candidates','[]')) c
+  WHERE r->>'applied'='true' AND r->>'action' IN ('create','update','unchanged')
+  AND r->>'type' IN ('A','AAAA') AND r->>'name'<>('url.'||(d.report->>'domain'))
+  AND r->'desired' @> to_jsonb(host(s.ip))
+  AND c->>'ip'=host(s.ip) AND COALESCE(c->>'pool','')<>'cf' AND c->>'state'='healthy'
+ ))
 ), filtered AS (
  SELECT c.* FROM candidates c WHERE
  ($1='' OR position(lower($1) in lower(host(c.ip)||' '||c.asn||' '||c.provider||' 协议共用 IP 池'))>0)

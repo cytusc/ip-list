@@ -33,7 +33,7 @@ func (a *app) generateIPLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var available bool
-	if err = a.db.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM current_node_ip_pool WHERE protocol=$2 AND ip=$1::inet AND available)", ip.String(), connectivityProtocol).Scan(&available); err != nil {
+	if err = a.db.QueryRow(r.Context(), availableIPCandidatesSQL+" SELECT EXISTS(SELECT 1 FROM candidates WHERE ip=$5::inet)", "", "", "", "", ip.String()).Scan(&available); err != nil {
 		dbError(w, err)
 		return
 	}

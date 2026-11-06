@@ -176,7 +176,7 @@ export function AvailableIPList({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">可用 IP</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            仅显示通过代理请求检测的 IP；TLS 节点还必须通过 3 次入口证书校验。证书异常地址已隔离，历史数据会自动补检。每轮结束后更新，页面每 10 秒自动刷新。
+            仅显示当前节点检测有效的 IP；启用 DNS 优选时，还须通过探针和地区延迟筛选，并已成功同步到地区域名。页面每 10 秒自动刷新。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -383,7 +383,7 @@ export function AvailableIPList({
                   <p className="mt-2 text-sm text-muted-foreground">
                     {data.allTotal
                       ? "调整搜索词、地区、服务商或协议筛选后重试。"
-                      : "先完成连通性测试，检测通过的 IP 会显示在这里；TLS 节点还需通过 3 次入口证书校验。"}
+                      : "完成节点检测后，等待 DNS 优选同步；启用 DNS 优选时，仅显示已成功同步且当前检测仍有效的 IP。"}
                   </p>
                   {filtersActive && <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>清除筛选</Button>}
                 </TableCell>
