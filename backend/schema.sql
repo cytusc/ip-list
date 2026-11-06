@@ -72,7 +72,20 @@ CREATE INDEX IF NOT EXISTS node_ip_pool_ip_range_idx ON node_ip_pool USING gist(
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_invalid_idx ON node_ip_pool(ip,(certificate->>'server_name')) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_page_idx ON node_ip_pool(checked_at DESC,ip,protocol) INCLUDE(config_hash) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri))) WHERE enabled;
-CREATE OR REPLACE VIEW current_node_ip_pool AS
+CREATE OR REPLACE VIEW node_grpc_samples AS
+ SELECT DISTINCT share_uri,md5(share_uri) AS config_hash FROM nodes
+ WHERE enabled AND share_uri ~ '^(vless|trojan)://'
+ AND substring(share_uri FROM '[?&]type=([^&#]+)')='grpc';
+
+CREATE TABLE IF NOT EXISTS node_ip_health (
+ ip inet PRIMARY KEY,
+ samples_hash varchar(32) NOT NULL,
+ status text NOT NULL CHECK (status IN ('passed','failed','unknown')),
+ checked_at timestamptz NOT NULL,
+ reason text NOT NULL DEFAULT ''
+);
+
+CREATE OR REPLACE VIEW node_ip_evidence AS
  SELECT p.* FROM node_ip_pool p WHERE (NOT p.available OR p.certificate->>'status' IN ('passed','not_required')) AND NOT EXISTS (
   SELECT 1 FROM node_ip_pool bad WHERE bad.ip=p.ip AND bad.certificate->>'status'='invalid'
   AND (p.protocol<>'grpc' OR bad.protocol='grpc')
@@ -80,6 +93,15 @@ CREATE OR REPLACE VIEW current_node_ip_pool AS
   AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=bad.config_hash)
  ) AND EXISTS (
   SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash
+ );
+
+-- Raw scan evidence remains available for retries; only fresh, complete checks
+-- may advertise a shared gRPC IP as currently usable.
+CREATE OR REPLACE VIEW current_node_ip_pool AS
+ SELECT p.* FROM node_ip_evidence p WHERE p.protocol<>'grpc' OR NOT p.available OR EXISTS (
+  SELECT 1 FROM node_ip_health h WHERE h.ip=p.ip AND h.status='passed'
+  AND h.checked_at>now()-interval '15 minutes'
+  AND h.samples_hash=(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_grpc_samples)
  );
 
 -- Named client probes report direct ICMP latency for currently available IPs.
@@ -372,7 +394,7 @@ BEGIN
   ON CONFLICT DO NOTHING;
   DELETE FROM protocol_networks WHERE protocol<>'grpc';
   DELETE FROM protocol_networks w WHERE w.protocol='grpc' AND EXISTS(
-   SELECT 1 FROM current_node_ip_pool p WHERE p.protocol='grpc' AND p.available
+   SELECT 1 FROM node_ip_evidence p WHERE p.protocol='grpc' AND p.available
    AND p.ip <<= w.cidr AND p.checked_at>=w.checked_at);
 
   INSERT INTO node_scan_schedules(protocol,job_id,job,enabled,updated_at)

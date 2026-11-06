@@ -133,6 +133,7 @@ func TestIPListPagination(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	verifyPoolFixture(t, a.db)
 	for _, entry := range []struct {
 		name    string
 		handler http.HandlerFunc
@@ -337,6 +338,7 @@ func TestNetworkAvailableCountOrdering(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	verifyPoolFixture(t, a.db)
 	handler := func(w http.ResponseWriter, r *http.Request) { a.list(w, r, "networks") }
 	type entry struct {
 		ID    string `json:"id"`
@@ -396,6 +398,7 @@ func TestAvailableIPSorting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	verifyPoolFixture(t, a.db)
 	for _, tc := range []struct{ sort, direction string }{{"probe_delay", "asc"}, {"probe_delay", "desc"}, {"checked_at", "asc"}, {"checked_at", "desc"}, {"invalid", "desc"}} {
 		t.Run(tc.sort+"_"+tc.direction, func(t *testing.T) {
 			var got []string

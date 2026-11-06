@@ -97,6 +97,7 @@ func TestSharedGRPCConnectivity(t *testing.T) {
 	count("SELECT count(*) FROM network_auto_scans WHERE protocol<>'grpc'", 0)
 	count("SELECT count(*) FROM node_scan_schedules WHERE enabled AND protocol='grpc'", 1)
 	count("SELECT count(*) FROM node_scan_schedules WHERE enabled AND protocol<>'grpc'", 0)
+	verifyPoolFixture(t, db)
 	count("SELECT count(*) FROM shared_node_ip_pool WHERE available", 3)
 	a := &app{db: db}
 	input, sample, _, _, err := a.automaticScanSample(ctx, connectivityProtocol)

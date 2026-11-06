@@ -123,6 +123,7 @@ func main() {
 	go a.maintainConnectivityData(ctx)
 	go a.maintainProbeSamples(ctx)
 	go a.revalidateLegacyCertificates(ctx)
+	go a.maintainNodeHealth(ctx)
 	go a.resumeNodeSchedules(ctx)
 	go a.maintainAutomaticScans(ctx)
 	go a.maintainNetworkMetadata(ctx)

@@ -281,7 +281,11 @@ func (a *app) dnsMonitorReady(ctx context.Context, c dnsConfig) (bool, error) {
 }
 
 func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) ([]dnsCandidate, bool, error) {
-	poolSQL := "SELECT ip,protocol,available FROM shared_node_ip_pool"
+	// Expired proofs must be rechecked, not silently treated as absent/failed.
+	poolSQL := `SELECT p.ip,n.protocol,p.available FROM node_ip_evidence p CROSS JOIN (
+ SELECT DISTINCT split_part(share_uri,'://',1)||'/'||COALESCE(substring(share_uri FROM '[?&]type=([^&#]+)'),'tcp') AS protocol
+ FROM nodes WHERE enabled AND share_uri ~ '^(vless|trojan)://'
+ ) n WHERE p.protocol='grpc'`
 	if website {
 		poolSQL = "SELECT ip,''::text AS protocol,available FROM cf_ip_pool"
 		c.Protocol = ""
@@ -418,6 +422,10 @@ func (a *app) dnsLocation(ctx context.Context, ip string) (string, error) {
 }
 
 func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, provider dnsProvider) error {
+	return a.executeDNSWithNodeCheck(ctx, c, report, provider, a.dnsCheckNodes)
+}
+
+func (a *app) executeDNSWithNodeCheck(ctx context.Context, c dnsConfig, report *dnsReport, provider dnsProvider, checkNodes func(context.Context, []dnsCandidate) error) error {
 	report.Warning = ""
 	var err error
 	if provider == nil {
@@ -450,6 +458,9 @@ func (a *app) executeDNS(ctx context.Context, c dnsConfig, report *dnsReport, pr
 	}
 	if c.WebsiteEnabled {
 		dnsCheckWebsiteHTTPS(ctx, c, candidates)
+	}
+	if err := checkNodes(ctx, candidates); err != nil {
+		return fmt.Errorf("DNS 发布前节点复查失败: %w", err)
 	}
 	// Resolve each IP once even when it belongs to both pools. A lookup failure
 	// affects this IP only: retain it if published, and block new grouping.

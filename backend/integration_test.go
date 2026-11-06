@@ -186,13 +186,13 @@ func TestIntegration(t *testing.T) {
 	}
 	network["cidr"] = "127.0.0.1/32"
 	request("PUT", "/networks/"+networkID, network, 200)
-	// Waiting on a slow proxy should renew the lease without rewriting results.
+	// Waiting on a slow proxy should refresh its heartbeat without changing results.
 	initial := request("POST", "/scans", scanInput, 202)
 	idleID := initial["id"].(string)
 	time.Sleep(2200 * time.Millisecond)
 	idle := request("GET", "/scans/"+idleID, nil, 200)
-	if idle["status"] != "running" || idle["updated_at"] != initial["updated_at"] {
-		t.Fatal("idle scan rewrote its snapshot", idle)
+	if idle["status"] != "running" || idle["completed"] != initial["completed"] || idle["success"] != initial["success"] || len(idle["results"].([]any)) != 0 || idle["updated_at"] == initial["updated_at"] {
+		t.Fatal("idle scan changed results or lost heartbeat", idle)
 	}
 	if rdb.Get(ctx, scanLock+":grpc").Val() != idleID {
 		t.Fatal("idle scan lost lease")

@@ -298,12 +298,16 @@ func TestDNSIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := &app{db: db}
+	// Cloud plan tests supply node health separately from live network checks.
+	execute := func(ctx context.Context, c dnsConfig, report *dnsReport, provider dnsProvider) error {
+		return a.executeDNSWithNodeCheck(ctx, c, report, provider, func(context.Context, []dnsCandidate) error { return nil })
+	}
 	c := dnsTestConfig()
 	c.Protocol = "vless/grpc"
 	c.ProbeID = probe
 	fake := &dnsFakeProvider{records: []dnsRemoteRecord{{ID: "hk", Name: "hk.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"191.222.220.126", "103.135.251.114"}}}}
 	report := dnsReport{Mode: "preview"}
-	if err = a.executeDNS(ctx, c, &report, fake); err != nil {
+	if err = execute(ctx, c, &report, fake); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.writes) != 0 || len(report.Records) != 3 || report.Records[0].Action != "update" || len(report.Records[0].Desired) != 1 {
@@ -315,7 +319,7 @@ func TestDNSIntegration(t *testing.T) {
 		}
 	}
 	report.Mode = "sync"
-	if err = a.executeDNS(ctx, c, &report, fake); err != nil {
+	if err = execute(ctx, c, &report, fake); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.writes) != 3 || !report.Records[0].Applied {
@@ -326,14 +330,14 @@ func TestDNSIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.writes = nil
-	if err = a.executeDNS(ctx, c, &report, fake); err != nil || len(fake.writes) != 0 || !slices.Contains(report.Records[0].Desired, "103.135.251.114") {
+	if err = execute(ctx, c, &report, fake); err != nil || len(fake.writes) != 0 || !slices.Contains(report.Records[0].Desired, "103.135.251.114") {
 		t.Fatalf("network outage removed record: %+v, %v", report, err)
 	}
 	if _, err = db.Exec(ctx, "UPDATE latency_probe_results SET success=true WHERE probe_id=$1 AND ip='191.222.220.126'", probe); err != nil {
 		t.Fatal(err)
 	}
 	fake.fail = true
-	if err = a.executeDNS(ctx, c, &report, fake); err == nil || report.Records[0].Applied {
+	if err = execute(ctx, c, &report, fake); err == nil || report.Records[0].Applied {
 		t.Fatal("cloud error not reported", report)
 	}
 	_, err = db.Exec(ctx, "UPDATE latency_probes SET last_seen=now()-interval '1 hour' WHERE id=$1", probe)
@@ -355,11 +359,11 @@ func TestDNSIntegration(t *testing.T) {
 	if _, err = db.Exec(ctx, "UPDATE latency_probes SET last_seen=now() WHERE id=$1", probe); err != nil {
 		t.Fatal(err)
 	}
-	if err = a.executeDNS(ctx, c, &report, fake); err != nil || len(fake.writes) != 0 || report.Warning != dnsMonitorUnavailable {
+	if err = execute(ctx, c, &report, fake); err != nil || len(fake.writes) != 0 || report.Warning != dnsMonitorUnavailable {
 		t.Fatalf("probe disconnected during sync: %+v, %v", report, err)
 	}
 	fake.onRecords = nil
-	if err = a.executeDNS(ctx, c, &report, fake); err != nil {
+	if err = execute(ctx, c, &report, fake); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.writes) != 0 || report.Records[0].Action != "hold" {

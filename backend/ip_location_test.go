@@ -98,6 +98,7 @@ func TestIPLocationManualOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	verifyPoolFixture(t, a.db)
 	checkFilter := func(want string) {
 		t.Helper()
 		var country string

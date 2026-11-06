@@ -107,6 +107,7 @@ func TestProtocolPoolAndEmptyRanges(t *testing.T) {
 	if disabled(job.Protocol) {
 		t.Fatal("range with success disabled")
 	}
+	verifyPoolFixture(t, db)
 	links := func(want int) {
 		t.Helper()
 		w := httptest.NewRecorder()

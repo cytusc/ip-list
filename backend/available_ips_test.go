@@ -66,6 +66,7 @@ func TestAvailableIPLifecycle(t *testing.T) {
 		if err := a.saveIPResults(ctx, j); err != nil {
 			t.Fatal(err)
 		}
+		verifyPoolFixture(t, db)
 	}
 	list := func() []availableIP {
 		t.Helper()
@@ -205,6 +206,19 @@ func attachPoolConfig(t *testing.T, db *pgxpool.Pool, protocols ...string) {
  ON CONFLICT(protocol,ip) DO UPDATE SET available=excluded.available,delay_ms=excluded.delay_ms,checked_at=excluded.checked_at,config_hash=excluded.config_hash,certificate=excluded.certificate`, protocols); err != nil {
 		t.Fatal(err)
 	}
+	verifyPoolFixture(t, db)
+}
+
+// These fixtures model completed checks of every enabled gRPC sample.
+func verifyPoolFixture(t *testing.T, db *pgxpool.Pool) {
+	t.Helper()
+	_, err := db.Exec(context.Background(), `INSERT INTO node_ip_health(ip,samples_hash,status,checked_at)
+ SELECT ip,(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_grpc_samples),'passed',now()
+ FROM node_ip_evidence WHERE protocol='grpc' AND available
+ ON CONFLICT(ip) DO UPDATE SET samples_hash=excluded.samples_hash,status=excluded.status,checked_at=excluded.checked_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPoolRejectsReplacedConfiguration(t *testing.T) {
@@ -241,6 +255,7 @@ func TestPoolRejectsReplacedConfiguration(t *testing.T) {
 		if err := a.saveIPResults(ctx, job); err != nil {
 			t.Fatal(err)
 		}
+		verifyPoolFixture(t, db)
 	}
 	visible := func(want bool) {
 		t.Helper()
