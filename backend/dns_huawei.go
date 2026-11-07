@@ -170,16 +170,16 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 			}
 			sort.Strings(r.Current)
 		}
-		// Preserve uncertain addresses already published, without allowing them
-		// to block removal of confirmed failures from the same country's record.
+		// Keep uncertain addresses only when this record has no healthy replacement.
+		hasHealthy := len(r.Desired) > 0
 		for _, ip := range r.Current {
 			pool := ""
 			if r.Name == "url."+c.Domain {
 				pool = "cf"
 			}
-			if unknown[pool+"/"+ip] && !slices.Contains(r.Desired, ip) {
+			if !hasHealthy && unknown[pool+"/"+ip] && !slices.Contains(r.Desired, ip) {
 				r.Desired = append(r.Desired, ip)
-				r.Reason = "保留已发布但采样待确认的 IP，待下一轮验证"
+				r.Reason = "本记录暂无健康替代 IP，暂留待确认的旧解析，尚未验证可用"
 			}
 		}
 		sort.Strings(r.Desired)

@@ -189,9 +189,13 @@ func TestDNSPlans(t *testing.T) {
 			}
 		})
 	}
-	preserved := dnsBuildPlan(c, append(healthy, dnsCandidate{IP: "103.135.251.114", Country: "HK", State: "unknown"}), []dnsRemoteRecord{hk}, nil, false)
-	if !slices.Contains(preserved[0].Desired, "103.135.251.114") {
-		t.Fatal("lost uncertain published IP", preserved)
+	filtered := dnsBuildPlan(c, append(healthy, dnsCandidate{IP: "103.135.251.114", Country: "HK", State: "unknown"}), []dnsRemoteRecord{hk}, nil, false)
+	if !slices.Equal(filtered[0].Desired, []string{"191.222.220.126"}) {
+		t.Fatal("uncertain published IP survived healthy replacement", filtered)
+	}
+	preserved := dnsBuildPlan(c, []dnsCandidate{{IP: "103.135.251.114", Country: "HK", State: "unknown"}, {IP: "191.222.220.126", Country: "HK", State: "failed"}, {IP: "8.8.8.8", Country: "US", State: "healthy"}}, []dnsRemoteRecord{hk}, nil, false)
+	if !slices.Equal(preserved[0].Desired, []string{"103.135.251.114"}) {
+		t.Fatal("lost uncertain IP without a healthy replacement in its own record", preserved)
 	}
 	other := hk
 	other.Line = "Dianxin"

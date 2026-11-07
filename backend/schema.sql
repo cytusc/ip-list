@@ -77,10 +77,18 @@ CREATE OR REPLACE VIEW node_grpc_samples AS
  WHERE enabled AND share_uri ~ '^(vless|trojan)://'
  AND substring(share_uri FROM '[?&]type=([^&#]+)')='grpc';
 
--- Publish checks cover all imported accelerated TLS transports, independently of scan kernel.
+-- Dedicated samples override business TLS samples for publishing checks.
+CREATE TABLE IF NOT EXISTS node_test_samples (
+ name text PRIMARY KEY, share_uri text NOT NULL, enabled boolean NOT NULL DEFAULT true
+);
 CREATE OR REPLACE VIEW node_proxy_samples AS
- SELECT DISTINCT share_uri,md5(share_uri) AS config_hash FROM nodes
- WHERE enabled AND share_uri ~ '^(vless|trojan)://'
+ WITH samples AS (
+  SELECT share_uri FROM node_test_samples WHERE enabled
+  UNION ALL
+  SELECT share_uri FROM nodes WHERE enabled AND NOT EXISTS(SELECT 1 FROM node_test_samples WHERE enabled)
+ )
+ SELECT DISTINCT share_uri,md5(share_uri) AS config_hash FROM samples
+ WHERE share_uri ~ '^(vless|trojan)://'
  AND substring(share_uri FROM '[?&]type=([^&#]+)') IN ('grpc','ws','xhttp','httpupgrade')
  AND (share_uri LIKE 'trojan://%' OR substring(share_uri FROM '[?&]security=([^&#]+)')='tls');
 

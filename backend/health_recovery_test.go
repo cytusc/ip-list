@@ -137,6 +137,29 @@ func TestProxySampleCoverageAndPolicyMigration(t *testing.T) {
 	}
 }
 
+func TestDedicatedNodeSamplesOverrideBusinessNodes(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	if _, err := a.db.Exec(ctx, `INSERT INTO nodes(name,address,share_uri) VALUES
+ ('business','gb.example','vless://business@gb.example:443?security=tls&type=grpc');
+ INSERT INTO node_test_samples(name,share_uri) VALUES
+ ('test-grpc','vless://test@2.26.205.98:443?security=tls&type=grpc&sni=oc-hk2.062101.xyz'),
+ ('test-ws','trojan://test@2.26.205.98:443?security=tls&type=ws&sni=oc-hk2.062101.xyz')`); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var dedicated bool
+	if err := a.db.QueryRow(ctx, `SELECT count(*),bool_and(share_uri LIKE '%sni=oc-hk2.062101.xyz') FROM node_proxy_samples`).Scan(&count, &dedicated); err != nil || count != 2 || !dedicated {
+		t.Fatal("business samples mixed with dedicated samples", count, dedicated, err)
+	}
+	if _, err := a.db.Exec(ctx, `UPDATE node_test_samples SET enabled=false`); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(ctx, `SELECT count(*),bool_and(share_uri LIKE '%gb.example%') FROM node_proxy_samples`).Scan(&count, &dedicated); err != nil || count != 1 || !dedicated {
+		t.Fatal("legacy sample fallback failed", count, dedicated, err)
+	}
+}
+
 func TestHealthFlappingDoesNotResetUnknownLimit(t *testing.T) {
 	at := time.Now()
 	h := healthRecovery{}

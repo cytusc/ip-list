@@ -60,6 +60,22 @@ func TestDNSNodeRecheck(t *testing.T) {
 	}
 }
 
+func TestDNSNodeChecksPrioritizeUnfinishedIPs(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	if _, err := a.db.Exec(ctx, `INSERT INTO node_ip_health(ip,samples_hash,status,checked_at) VALUES
+ ('1.1.1.1','','passed',now()),('8.8.8.8','','passed',now()-interval '10 minutes')`); err != nil {
+		t.Fatal(err)
+	}
+	items := []dnsCandidate{{IP: "1.1.1.1", State: "healthy"}, {IP: "8.8.8.8", State: "healthy"}, {IP: "9.9.9.9", State: "healthy"}}
+	if err := a.dnsCheckNodes(ctx, items); err != nil {
+		t.Fatal(err)
+	}
+	if items[0].IP != "9.9.9.9" || items[1].IP != "8.8.8.8" || items[2].IP != "1.1.1.1" {
+		t.Fatal("completed IPs starved unfinished checks", items)
+	}
+}
+
 func TestDNSNodesRequireEachSample(t *testing.T) {
 	// HK2 success cannot corroborate a failed EUGame probe.
 	templates := []map[string]any{{"servername": "hk.example"}, {"servername": "gb.example"}}

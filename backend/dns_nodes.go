@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,28 @@ func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) erro
 	if err != nil {
 		return err
 	}
+	// Rotate unfinished IPs to the front so the phase deadline cannot starve later addresses.
+	checked := map[string]time.Time{}
+	history, err := a.db.Query(ctx, `SELECT host(ip),checked_at FROM node_ip_health WHERE samples_hash=$1`, samplesHash)
+	if err != nil {
+		return err
+	}
+	for history.Next() {
+		var ip string
+		var at time.Time
+		if err = history.Scan(&ip, &at); err != nil {
+			break
+		}
+		checked[ip] = at
+	}
+	if err == nil {
+		err = history.Err()
+	}
+	history.Close()
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return checked[candidates[i].IP].Before(checked[candidates[j].IP]) })
 	check := func(ctx context.Context, template map[string]any, ip netip.Addr) (*certificateCheck, error) {
 		certificate, err := checkCertificate(ctx, template, ip)
 		if err == nil {
@@ -167,7 +190,10 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 				states[i] = "unknown"
 			}
 			if item.State != "pending" {
-				item.State, item.Reason = "unknown", "DNS 发布前复查：未通过全部已启用加速节点的两次检测，保留已有解析并暂停新增"
+				item.State, item.Reason = "unknown", "DNS 发布前复查：未通过全部测试样本的两次检测，暂停入选"
+				if len(item.HealthAttempts) == 0 && len(templates) > 0 {
+					item.Reason = "本轮检测预算耗尽，尚未执行检测，等待后续轮次优先复查"
+				}
 			}
 		default:
 			states[i] = "passed"
