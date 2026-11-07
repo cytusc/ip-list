@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -126,9 +127,9 @@ func TestDNSNodePublishGate(t *testing.T) {
 	a := paginationApp(t)
 	ctx := context.Background()
 	_, err := a.db.Exec(ctx, `
- INSERT INTO nodes(name,address,port,share_uri) VALUES('grpc-sample','sample.invalid',443,'vless://test@sample.invalid:443?type=grpc');
+ INSERT INTO nodes(name,address,port,share_uri) VALUES('grpc-sample','sample.invalid',443,'vless://test@sample.invalid:443?type=grpc&security=tls');
  INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
- SELECT 'grpc',ip::inet,true,40,now(),md5('vless://test@sample.invalid:443?type=grpc'),'{"status":"passed"}'::jsonb
+ SELECT 'grpc',ip::inet,true,40,now(),md5('vless://test@sample.invalid:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb
  FROM unnest(ARRAY['38.59.225.75','38.59.225.138']) ip;
  INSERT INTO dns_ip_locations(ip,country,policy_version) SELECT ip::inet,'GB',3 FROM unnest(ARRAY['38.59.225.75','38.59.225.138']) ip;
  INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('selected','selected',now(),now());
@@ -167,5 +168,24 @@ func TestDNSNodePublishGate(t *testing.T) {
 	err = a.dnsCheckNodes(ctx, []dnsCandidate{{IP: "38.59.225.75", State: "healthy"}})
 	if err == nil {
 		t.Fatal("accepted invalid gRPC sample")
+	}
+}
+
+func TestDNSUnknownProxyCannotRestoreRejectedProbeIP(t *testing.T) {
+	items := []dnsCandidate{{IP: "1.1.1.1", State: "pending", Reason: "success ratio too low"}}
+	template := map[string]any{"type": "vless", "network": "ws", "uuid": "private-uuid", "password": "private-password", "ws-opts": map[string]any{"v2ray-http-upgrade": true}}
+	dnsCheckNodesWith(context.Background(), []map[string]any{template}, items, func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error) {
+		return nil, errors.New("proxy failure private-uuid private-password")
+	})
+	if items[0].State != "pending" {
+		t.Fatal("unknown check preserved rejected IP", items)
+	}
+	if len(items[0].HealthAttempts) != 2 {
+		t.Fatal("attempt history missing", items)
+	}
+	for _, attempt := range items[0].HealthAttempts {
+		if strings.Contains(attempt.Error, "private-") || attempt.Protocol != "vless/httpupgrade" {
+			t.Fatal("diagnostics leaked credentials or lost transport", attempt)
+		}
 	}
 }

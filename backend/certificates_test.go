@@ -88,6 +88,9 @@ func TestCertificateChecks(t *testing.T) {
 			if result.Status != tc.want || result.Attempts != tc.attempts || (e == nil) != (tc.want == "passed") {
 				t.Fatalf("result=%+v err=%v", result, e)
 			}
+			if len(result.Fingerprint) != 64 {
+				t.Fatalf("missing certificate fingerprint: %+v", result)
+			}
 			if tc.want == "invalid" && (result.Subject == "" || result.Error == "") {
 				t.Fatalf("missing certificate diagnostic: %+v", result)
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,8 +19,8 @@ func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) erro
 	}
 	started := time.Now().UTC()
 	rows, err := a.db.Query(ctx, `SELECT share_uri,
- (SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_grpc_samples)
- FROM node_grpc_samples ORDER BY config_hash`)
+ (SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_proxy_samples)
+ FROM node_proxy_samples ORDER BY config_hash`)
 	if err != nil {
 		return err
 	}
@@ -33,7 +34,7 @@ func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) erro
 		template, _, parseErr := parseShare(raw)
 		if parseErr != nil {
 			rows.Close()
-			return fmt.Errorf("已启用的 gRPC 节点配置无效，请检查节点设置")
+			return fmt.Errorf("已启用的加速节点配置无效，请检查节点设置")
 		}
 		templates = append(templates, template)
 	}
@@ -45,15 +46,9 @@ func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) erro
 		return err
 	}
 	check := func(ctx context.Context, template map[string]any, ip netip.Addr) (*certificateCheck, error) {
-		if env("PROBE_KERNEL", "mihomo") == "xray" {
-			if !acquireXrayScanSlot(ctx) {
-				return nil, ctx.Err()
-			}
-			defer func() { <-xrayScanSlots }()
-		}
 		certificate, err := checkCertificate(ctx, template, ip)
 		if err == nil {
-			_, err = probeIP(ctx, template, ip, "https://www.gstatic.com/generate_204")
+			_, err = probeMihomo(ctx, template, ip, "https://www.gstatic.com/generate_204")
 		}
 		return certificate, err
 	}
@@ -61,7 +56,7 @@ func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) erro
 	return a.saveNodeHealth(ctx, samplesHash, started, candidates, states)
 }
 
-// Shared DNS entrances must work for every enabled gRPC sample, with its own SNI.
+// Shared DNS entrances must work for every enabled accelerated TLS sample, with its own SNI.
 // Old scan evidence and ICMP success cannot establish current TLS/proxy health.
 func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidates []dnsCandidate, check func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error)) []string {
 	phase, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -69,6 +64,7 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 	type result struct {
 		attempted, passed int
 		invalid           bool
+		details           []nodeHealthAttempt
 	}
 	type job struct{ candidate, node int }
 	results := make([][]result, len(candidates))
@@ -88,6 +84,23 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 					attemptCtx, stop := context.WithTimeout(phase, 8*time.Second)
 					certificate, err := check(attemptCtx, templates[j.node], ip)
 					stop()
+					network := fmt.Sprint(templates[j.node]["network"])
+					if opts, ok := templates[j.node]["ws-opts"].(map[string]any); ok && opts["v2ray-http-upgrade"] == true {
+						network = "httpupgrade"
+					}
+					detail := nodeHealthAttempt{Protocol: fmt.Sprint(templates[j.node]["type"]) + "/" + network, Certificate: certificate}
+					if err != nil {
+						detail.Error = err.Error()
+						for _, key := range []string{"uuid", "password"} {
+							if secret, ok := templates[j.node][key].(string); ok && secret != "" {
+								detail.Error = strings.ReplaceAll(detail.Error, secret, "[redacted]")
+							}
+						}
+						if certificate != nil && certificate.Error != "" {
+							detail.Error = certificate.Error
+						}
+					}
+					r.details = append(r.details, detail)
 					if certificate != nil && certificate.Status == "invalid" {
 						r.invalid = true
 						break
@@ -132,7 +145,10 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 		passed := len(templates) > 0
 		attempted := false
 		failed, invalid := false, false
+		item.HealthControl = len(templates) > 0
 		for node, r := range results[i] {
+			item.HealthControl = item.HealthControl && controls[node]
+			item.HealthAttempts = append(item.HealthAttempts, r.details...)
 			attempted = attempted || r.attempted > 0 || r.invalid
 			passed = passed && r.passed == 2
 			invalid = invalid || r.invalid
@@ -144,13 +160,15 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 			item.State, item.Reason = "failed", "DNS 发布前复查：节点 SNI 证书验证失败"
 		case failed:
 			states[i] = "failed"
-			item.State, item.Reason = "failed", "DNS 发布前复查：同一 gRPC 节点有健康对照 IP，本 IP 连续两次连接失败"
+			item.State, item.Reason = "failed", "DNS 发布前复查：同一加速节点有健康对照 IP，本 IP 连续两次连接失败"
 		case !passed:
 			// Leave unstarted work at the front of the next background recheck.
 			if attempted {
 				states[i] = "unknown"
 			}
-			item.State, item.Reason = "unknown", "DNS 发布前复查：未通过全部已启用 gRPC 节点的两次检测，保留已有解析并暂停新增"
+			if item.State != "pending" {
+				item.State, item.Reason = "unknown", "DNS 发布前复查：未通过全部已启用加速节点的两次检测，保留已有解析并暂停新增"
+			}
 		default:
 			states[i] = "passed"
 		}

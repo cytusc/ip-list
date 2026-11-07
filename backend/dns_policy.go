@@ -39,7 +39,7 @@ func (c *dnsConfig) validate() error {
 	if len(c.Domain) > 253 || !regexp.MustCompile(`^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`).MatchString(c.Domain) {
 		return fmt.Errorf("请输入有效的托管域名，例如 reiiv.com")
 	}
-	if c.Interval < 60 || c.Interval > 86400 || c.TTL < 60 || c.TTL > 86400 || c.MaxIPs < 1 || c.MaxIPs > 50 || c.Window < 2 || c.Window > 60 || c.MinSuccess < 0 || c.MinSuccess > 100 {
+	if c.Interval < 60 || c.Interval > 86400 || c.TTL < 60 || c.TTL > 86400 || c.MaxIPs < 1 || c.MaxIPs > 50 || c.Window < 2 || c.Window > 60 || c.MinSuccess < 1 || c.MinSuccess > 100 {
 		return fmt.Errorf("更新间隔和 TTL 需为 60–86400 秒，每组 1–50 个 IP，观察窗口 2–60 分钟，成功率 1–100%%")
 	}
 	if c.ProbeID != "" && validate.Var(c.ProbeID, "uuid") != nil {
@@ -73,13 +73,13 @@ const dnsContinuousFailureWindow = 5 * time.Minute
 // Heartbeats do not prove that the probe's outbound network works. A failed
 // target is actionable only if the same probe can still reach another target.
 func dnsCorroborateFailure(state string, otherTargetOK bool) string {
-	if state == "failed" && !otherTargetOK {
+	if (state == "failed" || state == "pending") && !otherTargetOK {
 		return "unknown"
 	}
 	return state
 }
 
-// Brief loss remains eligible; only five continuous minutes of failures remove an IP.
+// Loss counts before latency trimming; continuous failures remain a stronger signal.
 func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration, c dnsConfig) (string, float64) {
 	cutoff := now.Add(-time.Duration(c.Window) * time.Minute)
 	samples = append([]dnsSample(nil), samples...)
@@ -109,6 +109,20 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 			return "failed", 0
 		}
 	}
+	for i := 1; i < len(valid); i++ {
+		if valid[i].At.Sub(valid[i-1].At) > freshness {
+			return "unknown", 0
+		}
+	}
+	successes := 0
+	for _, sample := range valid {
+		if sample.Success && sample.Delay >= 0 && !math.IsNaN(sample.Delay) && !math.IsInf(sample.Delay, 0) {
+			successes++
+		}
+	}
+	if successes*100 < max(c.MinSuccess, 1)*len(valid) {
+		return "pending", 0
+	}
 	delay, ok := dnsP95Mean(valid)
 	if !ok {
 		return "unknown", 0
@@ -116,17 +130,26 @@ func dnsProbeHealth(samples []dnsSample, now time.Time, freshness time.Duration,
 	return "healthy", delay
 }
 
+type nodeHealthAttempt struct {
+	Protocol    string            `json:"protocol"`
+	Certificate *certificateCheck `json:"certificate,omitempty"`
+	Error       string            `json:"error,omitempty"`
+}
+
 type dnsCandidate struct {
-	HTTPSState  string  `json:"https_state,omitempty"`
-	HTTPSURL    string  `json:"https_url,omitempty"`
-	HTTPSReason string  `json:"https_reason,omitempty"`
-	Pool        string  `json:"pool,omitempty"`
-	IP          string  `json:"ip"`
-	Provider    string  `json:"provider"`
-	Country     string  `json:"country"`
-	State       string  `json:"state"`
-	Reason      string  `json:"reason"`
-	Delay       float64 `json:"delay_ms"`
+	HealthAttempts []nodeHealthAttempt `json:"health_attempts,omitempty"`
+	HealthControl  bool                `json:"-"`
+	HTTPSAttempts  []string            `json:"https_attempts,omitempty"`
+	HTTPSState     string              `json:"https_state,omitempty"`
+	HTTPSURL       string              `json:"https_url,omitempty"`
+	HTTPSReason    string              `json:"https_reason,omitempty"`
+	Pool           string              `json:"pool,omitempty"`
+	IP             string              `json:"ip"`
+	Provider       string              `json:"provider"`
+	Country        string              `json:"country"`
+	State          string              `json:"state"`
+	Reason         string              `json:"reason"`
+	Delay          float64             `json:"delay_ms"`
 }
 
 type dnsPlanRecord struct {

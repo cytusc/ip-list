@@ -26,7 +26,7 @@ func TestNodeHealthRequiresFreshCompleteEvidence(t *testing.T) {
 	hash := func() string {
 		t.Helper()
 		var h string
-		if err := a.db.QueryRow(ctx, `SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_grpc_samples`).Scan(&h); err != nil {
+		if err := a.db.QueryRow(ctx, `SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_proxy_samples`).Scan(&h); err != nil {
 			t.Fatal(err)
 		}
 		return h
@@ -57,39 +57,55 @@ func TestNodeHealthRequiresFreshCompleteEvidence(t *testing.T) {
 			t.Fatalf("lost DNS recheck candidate: %+v %v", candidates, err)
 		}
 	}
-	save := func(status string, at time.Time) {
+
+	at := time.Now().Add(-26 * time.Minute)
+	save := func(status string) {
 		t.Helper()
+		items[0].State, items[0].Reason, items[0].HealthControl = "healthy", "", true
 		if err := a.saveNodeHealth(ctx, hash(), at, items, []string{status}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	check(false) // A successful old scan alone proves nothing about current availability.
-	save("passed", time.Now().Add(-16*time.Minute))
+	recover := func() {
+		t.Helper()
+		save("passed")
+		check(false)
+		at = at.Add(5 * time.Minute)
+		save("passed")
+		check(false)
+		at = at.Add(5 * time.Minute)
+		save("passed")
+		check(true)
+	}
+	check(false) // An old scan alone proves nothing about current availability.
+	save("passed")
 	check(false)
-	save("passed", time.Now())
-	check(true)
-	save("unknown", time.Now())
+	at = at.Add(16 * time.Minute) // A gap expires the first round.
+	recover()
+	at = at.Add(time.Second)
+	save("unknown")
 	check(false)
-	save("failed", time.Now())
+	at = at.Add(time.Second)
+	save("failed")
 	check(false)
-	if err := a.saveNodeHealth(ctx, hash(), time.Now().Add(-time.Minute), items, []string{"passed"}); err == nil {
+	if err := a.saveNodeHealth(ctx, hash(), at.Add(-time.Minute), items, []string{"passed"}); err == nil {
 		t.Fatal("older success accepted after newer failure")
 	}
 	check(false)
-	save("passed", time.Now())
-	check(true)
+	at = at.Add(time.Second)
+	recover()
 	oldHash := hash()
 	exec(`INSERT INTO nodes(name,address,port,share_uri) VALUES('HK2','hk.example',443,'vless://11111111-1111-4111-8111-111111111111@hk.example:443?type=grpc&security=tls')`)
 	check(false)
-	if err := a.saveNodeHealth(ctx, oldHash, time.Now(), items, []string{"passed"}); err == nil {
+	at = at.Add(time.Second)
+	if err := a.saveNodeHealth(ctx, oldHash, at, items, []string{"passed"}); err == nil {
 		t.Fatal("old sample set published after configuration change")
 	}
-	save("passed", time.Now())
-	check(true)
+	recover()
 	exec(`UPDATE nodes SET share_uri=share_uri||'&serviceName=changed' WHERE name='HK2'`)
 	check(false)
-	save("passed", time.Now())
-	check(true)
+	at = at.Add(time.Second)
+	recover()
 	exec(`UPDATE nodes SET enabled=false WHERE name='HK2'`)
 	check(false)
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -19,15 +20,16 @@ import (
 const certificateAttempts = 3
 
 type certificateCheck struct {
-	Status     string     `json:"status"`
-	ServerName string     `json:"server_name"`
-	Subject    string     `json:"subject,omitempty"`
-	Issuer     string     `json:"issuer,omitempty"`
-	DNSNames   []string   `json:"dns_names,omitempty"`
-	NotAfter   *time.Time `json:"not_after,omitempty"`
-	CheckedAt  time.Time  `json:"checked_at"`
-	Attempts   int        `json:"attempts"`
-	Error      string     `json:"error,omitempty"`
+	Fingerprint string     `json:"sha256,omitempty"`
+	Status      string     `json:"status"`
+	ServerName  string     `json:"server_name"`
+	Subject     string     `json:"subject,omitempty"`
+	Issuer      string     `json:"issuer,omitempty"`
+	DNSNames    []string   `json:"dns_names,omitempty"`
+	NotAfter    *time.Time `json:"not_after,omitempty"`
+	CheckedAt   time.Time  `json:"checked_at"`
+	Attempts    int        `json:"attempts"`
+	Error       string     `json:"error,omitempty"`
 }
 
 // Each attempt opens a new direct connection to the candidate IP, retaining the
@@ -86,6 +88,7 @@ func checkCertificateWithRoots(ctx context.Context, template map[string]any, ip 
 		}
 		if len(certs) > 0 {
 			cert := certs[0]
+			result.Fingerprint = fmt.Sprintf("%x", sha256.Sum256(cert.Raw))
 			result.Subject = cert.Subject.String()
 			result.Issuer = cert.Issuer.String()
 			result.DNSNames = cert.DNSNames

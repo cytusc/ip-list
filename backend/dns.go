@@ -356,7 +356,7 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 			break
 		}
 		state, delay := dnsProbeHealth(samples, now, time.Duration(fresh)*time.Second, c)
-		uncorroborated := state == "failed" && !otherTargetOK
+		uncorroborated := (state == "failed" || state == "pending") && !otherTargetOK
 		state = dnsCorroborateFailure(state, otherTargetOK)
 		states[ip] = append(states[ip], state)
 		i, ok := index[ip]
@@ -389,7 +389,11 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 		s := states[items[i].IP]
 		if len(s) > 0 {
 			failed := true
+			pending := true
 			for _, v := range s {
+				if v != "failed" && v != "pending" {
+					pending = false
+				}
 				if v != "failed" {
 					failed = false
 				}
@@ -397,6 +401,8 @@ func (a *app) dnsPoolCandidates(ctx context.Context, c dnsConfig, website bool) 
 			if failed {
 				items[i].State = "failed"
 				items[i].Reason = "连续失败至少 5 分钟"
+			} else if pending {
+				items[i].State, items[i].Reason = "pending", "观察窗口成功率低于策略门槛"
 			}
 		}
 	}
@@ -457,7 +463,9 @@ func (a *app) executeDNSWithNodeCheck(ctx context.Context, c dnsConfig, report *
 		uncertain = uncertain || websiteUncertain
 	}
 	if c.WebsiteEnabled {
-		dnsCheckWebsiteHTTPS(ctx, c, candidates)
+		if err := a.dnsCheckWebsiteHealth(ctx, c, candidates); err != nil {
+			return fmt.Errorf("DNS 发布前网站复查失败: %w", err)
+		}
 	}
 	if err := checkNodes(ctx, candidates); err != nil {
 		return fmt.Errorf("DNS 发布前节点复查失败: %w", err)
@@ -468,7 +476,7 @@ func (a *app) executeDNSWithNodeCheck(ctx context.Context, c dnsConfig, report *
 	defer stopGeo()
 	byIP := map[string][]int{}
 	for i := range candidates {
-		if candidates[i].State != "failed" {
+		if candidates[i].State != "failed" && candidates[i].State != "pending" {
 			byIP[candidates[i].IP] = append(byIP[candidates[i].IP], i)
 		}
 	}

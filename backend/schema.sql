@@ -77,6 +77,25 @@ CREATE OR REPLACE VIEW node_grpc_samples AS
  WHERE enabled AND share_uri ~ '^(vless|trojan)://'
  AND substring(share_uri FROM '[?&]type=([^&#]+)')='grpc';
 
+-- Publish checks cover all imported accelerated TLS transports, independently of scan kernel.
+CREATE OR REPLACE VIEW node_proxy_samples AS
+ SELECT DISTINCT share_uri,md5(share_uri) AS config_hash FROM nodes
+ WHERE enabled AND share_uri ~ '^(vless|trojan)://'
+ AND substring(share_uri FROM '[?&]type=([^&#]+)') IN ('grpc','ws','xhttp','httpupgrade')
+ AND (share_uri LIKE 'trojan://%' OR substring(share_uri FROM '[?&]security=([^&#]+)')='tls');
+
+CREATE TABLE IF NOT EXISTS ip_health_recovery (
+ pool text NOT NULL, ip inet NOT NULL, samples_hash text NOT NULL,
+ checked_at timestamptz NOT NULL, ready boolean NOT NULL, state jsonb NOT NULL,
+ PRIMARY KEY(pool,ip)
+);
+CREATE TABLE IF NOT EXISTS ip_health_checks (
+ pool text NOT NULL, ip inet NOT NULL, checked_at timestamptz NOT NULL,
+ samples_hash text NOT NULL, status text NOT NULL, details jsonb NOT NULL,
+ PRIMARY KEY(pool,ip,checked_at)
+);
+CREATE INDEX IF NOT EXISTS ip_health_checks_time_idx ON ip_health_checks(checked_at);
+
 CREATE TABLE IF NOT EXISTS node_ip_health (
  ip inet PRIMARY KEY,
  samples_hash varchar(32) NOT NULL,
@@ -101,7 +120,9 @@ CREATE OR REPLACE VIEW current_node_ip_pool AS
  SELECT p.* FROM node_ip_evidence p WHERE p.protocol<>'grpc' OR NOT p.available OR EXISTS (
   SELECT 1 FROM node_ip_health h WHERE h.ip=p.ip AND h.status='passed'
   AND h.checked_at>now()-interval '15 minutes'
-  AND h.samples_hash=(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_grpc_samples)
+  AND h.samples_hash=(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_proxy_samples)
+  AND EXISTS(SELECT 1 FROM ip_health_recovery r WHERE r.pool='node' AND r.ip=p.ip
+   AND r.samples_hash=h.samples_hash AND r.ready AND r.checked_at=h.checked_at)
  );
 
 -- Named client probes report direct ICMP latency for currently available IPs.
@@ -145,13 +166,16 @@ INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash)
 -- One DNS policy; ownership and history survive restarts and domain changes.
 CREATE TABLE IF NOT EXISTS dns_settings (
  id boolean PRIMARY KEY DEFAULT true CHECK(id),
- config jsonb NOT NULL DEFAULT '{"domain":"reiiv.com","enabled":false,"interval_seconds":300,"ttl":300,"max_ips":10,"window_minutes":5,"min_success_percent":0,"probe_id":"","protocol":""}',
+ config jsonb NOT NULL DEFAULT '{"domain":"reiiv.com","enabled":false,"interval_seconds":300,"ttl":300,"max_ips":10,"window_minutes":5,"min_success_percent":90,"probe_id":"","protocol":""}',
  requested text NOT NULL DEFAULT '',
  running boolean NOT NULL DEFAULT false,
  next_run_at timestamptz NOT NULL DEFAULT now(),
  report jsonb NOT NULL DEFAULT '{}'
 );
 INSERT INTO dns_settings(id) VALUES(true) ON CONFLICT DO NOTHING;
+ALTER TABLE dns_settings ALTER COLUMN config SET DEFAULT '{"domain":"reiiv.com","enabled":false,"interval_seconds":300,"ttl":300,"max_ips":10,"window_minutes":5,"min_success_percent":90,"probe_id":"","protocol":""}';
+UPDATE dns_settings SET config=jsonb_set(config,'{min_success_percent}','90')
+ WHERE COALESCE((config->>'min_success_percent')::int,0)=0;
 CREATE TABLE IF NOT EXISTS dns_managed_records (
   zone_id text NOT NULL,
  domain text NOT NULL,

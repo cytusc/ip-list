@@ -213,9 +213,12 @@ func attachPoolConfig(t *testing.T, db *pgxpool.Pool, protocols ...string) {
 func verifyPoolFixture(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	_, err := db.Exec(context.Background(), `INSERT INTO node_ip_health(ip,samples_hash,status,checked_at)
- SELECT ip,(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_grpc_samples),'passed',now()
+ SELECT ip,(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_proxy_samples),'passed',now()
  FROM node_ip_evidence WHERE protocol='grpc' AND available
- ON CONFLICT(ip) DO UPDATE SET samples_hash=excluded.samples_hash,status=excluded.status,checked_at=excluded.checked_at`)
+ ON CONFLICT(ip) DO UPDATE SET samples_hash=excluded.samples_hash,status=excluded.status,checked_at=excluded.checked_at;
+ INSERT INTO ip_health_recovery(pool,ip,samples_hash,checked_at,ready,state)
+ SELECT 'node',ip,samples_hash,checked_at,true,'{"rounds":3}' FROM node_ip_health
+ ON CONFLICT(pool,ip) DO UPDATE SET samples_hash=excluded.samples_hash,checked_at=excluded.checked_at,ready=true,state=excluded.state`)
 	if err != nil {
 		t.Fatal(err)
 	}

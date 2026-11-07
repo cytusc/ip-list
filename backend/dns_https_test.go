@@ -105,3 +105,16 @@ func TestWebsiteHTTPSConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWebsiteUnknownCannotRestoreRejectedProbeIP(t *testing.T) {
+	c := dnsTestConfig()
+	c.WebsiteURL = "https://business.example/"
+	items := []dnsCandidate{{IP: "1.1.1.1", Pool: "cf", State: "pending"}, {IP: "8.8.8.8", Pool: "cf", State: "failed"}}
+	dnsCheckWebsiteWith(context.Background(), c, items, func(context.Context, string, string) error { return errors.New("connection timeout") })
+	if items[0].State != "pending" || items[1].State != "failed" {
+		t.Fatal("unknown check restored rejected IP", items)
+	}
+	if len(items[0].HTTPSAttempts) != 2 {
+		t.Fatal("website attempt history missing", items)
+	}
+}

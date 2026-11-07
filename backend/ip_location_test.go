@@ -93,8 +93,8 @@ func TestIPLocationManualOverride(t *testing.T) {
 	ctx := context.Background()
 	ip := "178.94.15.179"
 	a.cacheListCountry(ctx, ip, ipLocation{Country: "SG", City: "Singapore", Status: "consensus", Source: "MaxMind"})
-	_, err := a.db.Exec(ctx, `INSERT INTO nodes(name,address,port,share_uri) VALUES('location','host',443,'vless://location@host:443?type=grpc');
- INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) VALUES('grpc','178.94.15.179',true,65,now(),md5('vless://location@host:443?type=grpc'),'{"status":"passed"}');`)
+	_, err := a.db.Exec(ctx, `INSERT INTO nodes(name,address,port,share_uri) VALUES('location','host',443,'vless://location@host:443?type=grpc&security=tls');
+ INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) VALUES('grpc','178.94.15.179',true,65,now(),md5('vless://location@host:443?type=grpc&security=tls'),'{"status":"passed"}');`)
 	if err != nil {
 		t.Fatal(err)
 	}

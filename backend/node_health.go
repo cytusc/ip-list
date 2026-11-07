@@ -27,9 +27,17 @@ func (a *app) saveNodeHealth(ctx context.Context, samplesHash string, started ti
 	if err != nil {
 		return err
 	}
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7021081)`); err != nil {
+		return err
+	}
 	var current bool
-	err = a.db.QueryRow(ctx, `WITH sample_set AS MATERIALIZED (
- SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) AS hash FROM node_grpc_samples
+	err = tx.QueryRow(ctx, `WITH sample_set AS MATERIALIZED (
+ SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) AS hash FROM node_proxy_samples
  ), saved AS (INSERT INTO node_ip_health(ip,samples_hash,status,checked_at,reason)
  SELECT r.ip::inet,$2::text,r.status,$3::timestamptz,r.reason FROM jsonb_to_recordset($1::jsonb) r(ip text,status text,reason text)
  WHERE $2::text=(SELECT hash FROM sample_set)
@@ -38,9 +46,15 @@ func (a *app) saveNodeHealth(ctx context.Context, samplesHash string, started ti
  SELECT COALESCE(hash=$2::text,false) AND (SELECT count(*) FROM saved)=jsonb_array_length($1::jsonb)
  FROM sample_set`, string(raw), samplesHash, started).Scan(&current)
 	if err == nil && !current {
-		return fmt.Errorf("检测期间 gRPC 样本或检测结果已更新，暂停发布并等待重新验证")
+		return fmt.Errorf("检测期间加速节点样本或检测结果已更新，暂停发布并等待重新验证")
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if err = saveHealthRecovery(ctx, tx, "node", samplesHash, started, candidates, states); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Recheck even when DNS sync is disabled. Unknown results expire without
@@ -51,6 +65,9 @@ func (a *app) maintainNodeHealth(ctx context.Context) {
 	for ctx.Err() == nil {
 		if err := a.recheckNodeHealth(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("节点可用池复查失败: %v", err)
+		}
+		if err := a.recheckWebsiteHealth(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("网站可用池复查失败: %v", err)
 		}
 		select {
 		case <-ctx.Done():

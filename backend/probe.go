@@ -172,6 +172,13 @@ func probeIP(ctx context.Context, template map[string]any, ip netip.Addr, target
 	if env("PROBE_KERNEL", "mihomo") == "xray" {
 		return probeXray(ctx, template, ip, target)
 	}
+	return probeMihomo(ctx, template, ip, target)
+}
+
+func probeMihomo(ctx context.Context, template map[string]any, ip netip.Addr, target string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	proxy, err := newProbe(template, ip)
 	if err != nil {
 		return 0, errors.New("节点配置加载失败")

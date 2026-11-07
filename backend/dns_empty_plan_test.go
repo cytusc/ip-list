@@ -14,9 +14,9 @@ func TestDNSRefusesCompleteDeletionWithLiveControl(t *testing.T) {
  INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('selected','selected',now(),now());
  INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
  SELECT id,'1.1.1.1',true,20,now() FROM latency_probes;
- INSERT INTO nodes(name,address,port,share_uri) VALUES('incident-fixture','sample.invalid',443,'vless://test@sample.invalid:443?type=grpc');
+ INSERT INTO nodes(name,address,port,share_uri) VALUES('incident-fixture','sample.invalid',443,'vless://test@sample.invalid:443?type=grpc&security=tls');
  INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
- SELECT 'grpc',ip::inet,true,40,now(),md5('vless://test@sample.invalid:443?type=grpc'),'{"status":"passed"}'::jsonb
+ SELECT 'grpc',ip::inet,true,40,now(),md5('vless://test@sample.invalid:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb
  FROM unnest(ARRAY['47.243.238.144','23.129.140.165']) ip;
  INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
  SELECT id,ip::inet,false,0,now()-make_interval(secs=>age) FROM latency_probes

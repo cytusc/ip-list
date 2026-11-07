@@ -29,6 +29,7 @@ func dnsCheckWebsiteWith(ctx context.Context, c dnsConfig, candidates []dnsCandi
 	type result struct {
 		passed, attempted int
 		reason            string
+		details           []string
 	}
 	results := make([]result, len(candidates))
 	jobs := make(chan int, len(candidates))
@@ -54,8 +55,10 @@ func dnsCheckWebsiteWith(ctx context.Context, c dnsConfig, candidates []dnsCandi
 					results[i].attempted++
 					if err == nil {
 						results[i].passed++
+						results[i].details = append(results[i].details, "passed")
 					} else {
 						results[i].reason = err.Error()
+						results[i].details = append(results[i].details, err.Error())
 					}
 				}
 			}
@@ -74,6 +77,8 @@ func dnsCheckWebsiteWith(ctx context.Context, c dnsConfig, candidates []dnsCandi
 			continue
 		}
 		r := results[i]
+		item.HealthControl = controlOK
+		item.HTTPSAttempts = r.details
 		item.HTTPSURL = c.WebsiteURL
 		switch {
 		case r.passed == 2:
@@ -86,7 +91,9 @@ func dnsCheckWebsiteWith(ctx context.Context, c dnsConfig, candidates []dnsCandi
 		default:
 			item.HTTPSState = "unknown"
 			item.HTTPSReason = "HTTPS 检测未连续通过，或没有健康对照 IP，保留已有解析并暂停新增"
-			item.State, item.Reason = "unknown", item.HTTPSReason
+			if item.State != "failed" && item.State != "pending" {
+				item.State, item.Reason = "unknown", item.HTTPSReason
+			}
 		}
 	}
 }

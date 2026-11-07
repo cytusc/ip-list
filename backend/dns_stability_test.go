@@ -77,8 +77,8 @@ func TestDNSBriefLossAndContinuousFailure(t *testing.T) {
 		samples []dnsSample
 		want    string
 	}{
-		{"short outage remains eligible", []dnsSample{sample(100, true), sample(80, false), sample(60, true), sample(40, true), sample(20, false), sample(1, false)}, "healthy"},
-		{"less than five minutes failing", []dnsSample{sample(240, true), sample(180, false), sample(120, false), sample(60, false), sample(1, false)}, "healthy"},
+		{"short outage falls below success threshold", []dnsSample{sample(100, true), sample(80, false), sample(60, true), sample(40, true), sample(20, false), sample(1, false)}, "pending"},
+		{"less than five minutes failing", []dnsSample{sample(240, true), sample(180, false), sample(120, false), sample(60, false), sample(1, false)}, "pending"},
 		{"five minutes continuously failing", []dnsSample{sample(360, true), sample(301, false), sample(240, false), sample(180, false), sample(120, false), sample(60, false), sample(1, false)}, "failed"},
 		{"missing reports break the failure streak", []dnsSample{sample(400, false), sample(1, false)}, "unknown"},
 	}

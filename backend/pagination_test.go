@@ -121,8 +121,8 @@ func TestIPListPagination(t *testing.T) {
 	a := paginationApp(t)
 	ctx := context.Background()
 	statements := []string{
-		`INSERT INTO nodes(name,address,port,share_uri) VALUES('pagination','host',443,'vless://sample@host:443?type=grpc'),('pagination-ws','host',443,'vless://sample@host:443?type=ws')`,
-		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) SELECT p,('198.18.0.'||i)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}'::jsonb FROM generate_series(1,45) i CROSS JOIN unnest(ARRAY['grpc']) p`,
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('pagination','host',443,'vless://sample@host:443?type=grpc&security=tls'),('pagination-ws','host',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) SELECT p,('198.18.0.'||i)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb FROM generate_series(1,45) i CROSS JOIN unnest(ARRAY['grpc']) p`,
 		`INSERT INTO networks(name,cidr,asn,provider) VALUES('pagination','198.18.0.0/24','AS13335','Example')`,
 		`INSERT INTO dns_ip_locations(ip,country,checked_at,policy_version) SELECT ('198.18.0.'||i)::inet,'JP',now(),3 FROM generate_series(1,45) i`,
 		`INSERT INTO ip_blacklist(ip) VALUES('198.18.0.1')`,
@@ -322,16 +322,16 @@ func TestNetworkAvailableCountOrdering(t *testing.T) {
 	a := paginationApp(t)
 	ctx := context.Background()
 	statements := []string{
-		`INSERT INTO nodes(name,address,port,share_uri) VALUES('grpc','sample',443,'vless://sample@host:443?type=grpc'),('ws','sample',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('grpc','sample',443,'vless://sample@host:443?type=grpc&security=tls'),('ws','sample',443,'vless://sample@host:443?type=ws')`,
 		`INSERT INTO networks(name,cidr,created_at) SELECT 'rank-'||i,('198.19.'||i||'.0/24')::cidr,'2026-01-01'::timestamptz FROM generate_series(0,55) i`,
 		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
-   SELECT 'grpc',('198.19.'||i||'.'||j)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}'::jsonb
+   SELECT 'grpc',('198.19.'||i||'.'||j)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb
    FROM generate_series(1,55) i CROSS JOIN LATERAL generate_series(1,i) j`,
 		`INSERT INTO ip_blacklist(ip) VALUES('198.19.55.1')`,
 		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) VALUES
-   ('grpc','198.19.55.250',true,20,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"invalid"}'),
+   ('grpc','198.19.55.250',true,20,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"invalid"}'),
    ('grpc','198.19.55.251',true,20,now(),'outdated','{"status":"passed"}'),
-   ('grpc','198.19.55.252',false,0,now(),md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}')`,
+   ('grpc','198.19.55.252',false,0,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}')`,
 	}
 	for _, query := range statements {
 		if _, err := a.db.Exec(ctx, query); err != nil {
@@ -382,9 +382,9 @@ func TestAvailableIPSorting(t *testing.T) {
 	a := paginationApp(t)
 	ctx := context.Background()
 	for _, query := range []string{
-		`INSERT INTO nodes(name,address,port,share_uri) VALUES('sort','host',443,'vless://sample@host:443?type=grpc'),('sort-ws','host',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('sort','host',443,'vless://sample@host:443?type=grpc&security=tls'),('sort-ws','host',443,'vless://sample@host:443?type=ws')`,
 		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
- SELECT 'grpc',('198.18.0.'||i)::inet,true,20,now()-i*interval '1 minute',md5('vless://sample@host:443?type=grpc'),'{"status":"passed"}'::jsonb FROM generate_series(1,26) i`,
+ SELECT 'grpc',('198.18.0.'||i)::inet,true,20,now()-i*interval '1 minute',md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb FROM generate_series(1,26) i`,
 		`INSERT INTO latency_probes(name,token_hash,last_seen) VALUES('sort','sort',now()),('disabled','disabled',now()); UPDATE latency_probes SET enabled=false WHERE name='disabled'`,
 		`INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
  SELECT p.id,('198.18.0.'||i)::inet,i*10,i<>25,now()-CASE WHEN i=24 THEN interval '1 day' ELSE interval '1 second' END

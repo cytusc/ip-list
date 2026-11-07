@@ -33,6 +33,9 @@ func (a *app) pruneConnectivityData(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	removed += tag.RowsAffected()
+	if _, err = tx.Exec(ctx, `DELETE FROM ip_health_checks WHERE checked_at<now()-interval '7 days'`); err != nil {
+		return 0, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return 0, err
 	}

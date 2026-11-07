@@ -149,7 +149,7 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
         <div className="space-y-2"><Label htmlFor="dns-domain">托管域名</Label><Input id="dns-domain" value={config.domain} required placeholder="reiiv.com" onChange={e => update("domain", e.target.value)} /></div>
         {([
           ["interval_seconds", "更新间隔（秒）", 60, 86400], ["ttl", "TTL（秒）", 60, 86400],
-          ["max_ips", "每个地区每种记录最多 IP 数", 1, 50], ["window_minutes", "探针观察窗口（分钟）", 2, 60],
+          ["max_ips", "每个地区每种记录最多 IP 数", 1, 50], ["min_success_percent", "最低采样成功率（%）", 1, 100], ["window_minutes", "探针观察窗口（分钟）", 2, 60],
         ] as const).map(([key, label, min, max]) => <div key={key} className="space-y-2"><Label htmlFor={`dns-${key}`}>{label}</Label><Input id={`dns-${key}`} type="number" required min={min} max={max} value={config[key]} onChange={e => update(key, Number(e.target.value))} /></div>)}
         <div className="space-y-2"><Label htmlFor="dns-probe">依据探针</Label>
           <Select value={config.probe_id || "any"} onValueChange={v => update("probe_id", v === "any" ? "" : v)} disabled={pending || busy}>
@@ -174,7 +174,7 @@ export function DNSManager({ initialStatus }: { initialStatus: DNSStatus }) {
         {config.website_enabled && <div className="space-y-2"><Label htmlFor="dns-website-url">实际业务 HTTPS 检测地址</Label><Input id="dns-website-url" type="url" required value={config.website_url || ""} placeholder="https://api.example.com/" onChange={e => update("website_url", e.target.value)} /><p className="text-xs leading-5 text-muted-foreground">填写 SaaS 已绑定的业务域名及可访问路径。每轮同步保留该域名的 Host/SNI，指定 IP 验证证书与 HTTP 200–399 响应，不跟随重定向。HTTP 80 端口不在此策略的保障范围内。</p></div>}
         <p className="text-xs leading-5 text-muted-foreground">HTTPS 连续两次失败且存在健康对照 IP 时移出；短暂失败或所有地址同时检测失败时保留已有解析、暂停新增。</p>
       </fieldset>
-      <p className="text-xs leading-6 text-muted-foreground">仅发布当前可用池中未屏蔽、通过证书检查的 IP。用成功采样的延迟按 P95 去除峰值后计算平均值，每个国家或地区独立以本地区最快 IP 的平均值为基准：亚太允许本地区基准 +10 ms，其他地区允许本地区基准 +20 ms。例如香港最低 38 ms，则香港选取 ≤48 ms；美国最低 140 ms，则美国选取 ≤160 ms。代理池与 CF 池分别筛选。只有连续失败满 5 分钟才判定 IP 不可用；短暂丢包仍可参与筛选。超出延迟门槛或连续不可用的 IP 不会同步。</p>
+      <p className="text-xs leading-6 text-muted-foreground">仅发布当前可用池中未屏蔽、通过证书检查的 IP。用成功采样的延迟按 P95 去除峰值后计算平均值，每个国家或地区独立以本地区最快 IP 的平均值为基准：亚太允许本地区基准 +10 ms，其他地区允许本地区基准 +20 ms。例如香港最低 38 ms，则香港选取 ≤48 ms；美国最低 140 ms，则美国选取 ≤160 ms。代理池与 CF 池分别筛选。观察窗口成功率必须达到策略门槛，失败样本不参与延迟计算但计入成功率。连续失败满 5 分钟且探针有健康对照时移出。节点发布前使用 Mihomo 复查已导入的 TLS WS、gRPC、XHTTP、HTTPUpgrade 节点。节点和网站入口均需连续通过 3 轮、每轮间隔至少 5 分钟、覆盖至少 10 分钟才可新增或恢复；存在健康对照时，入口复查持续待确认超过 30 分钟会移出。</p>
       <p className="text-xs leading-6 text-muted-foreground">接管对应国家或地区的「全网默认」A / AAAA 记录，保留其他线路和其他子域名。已接管记录没有合格 IP 时会移除；单个 IP 采样或定位待确认时，仅保留它的已有解析，不阻止其他地址更新。指定依据探针后，仅使用该探针的数据；该探针离线或缺少新鲜采样时，暂停全部 DNS 同步，包括网站解析，保留当前解析。关闭定时同步会保留当前解析。</p>
       <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{dirty ? "配置有修改，请先保存再预览或同步。" : config.enabled ? `下次同步：${timeText(status.next_run_at)}` : "定时同步已关闭，可手动预览或同步。"}</span>
         <Button type="submit" disabled={pending || busy || !dirty}>{pending && <Loader2 className="animate-spin" />}保存策略</Button>
