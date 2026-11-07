@@ -75,8 +75,50 @@ func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) erro
 		}
 		return certificate, err
 	}
+	eligible := map[string]bool{}
+	for _, item := range candidates {
+		if item.Pool != "cf" && item.State == "healthy" {
+			eligible[item.IP] = true
+		}
+	}
 	states := dnsCheckNodesWith(ctx, templates, candidates, check)
-	return a.saveNodeHealth(ctx, samplesHash, started, candidates, states)
+	if err := a.saveNodeHealth(ctx, samplesHash, started, candidates, states); err != nil {
+		return err
+	}
+	return a.reuseUnfinishedNodeHealth(ctx, samplesHash, candidates, states, eligible)
+}
+
+// Budget exhaustion cannot invalidate a still-fresh complete check or refresh its age.
+func (a *app) reuseUnfinishedNodeHealth(ctx context.Context, hash string, items []dnsCandidate, states []string, eligible map[string]bool) error {
+	if hash == "" {
+		return nil
+	}
+	rows, err := a.db.Query(ctx, `SELECT host(h.ip) FROM node_ip_health h
+ JOIN ip_health_recovery r ON r.pool='node' AND r.ip=h.ip AND r.samples_hash=h.samples_hash
+ AND r.checked_at=h.checked_at AND r.ready
+ WHERE h.samples_hash=$1 AND h.samples_hash=(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_proxy_samples)
+ AND h.status='passed' AND h.checked_at>now()-interval '15 minutes'`, hash)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	usable := map[string]bool{}
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return err
+		}
+		usable[ip] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range items {
+		if states[i] == "" && eligible[items[i].IP] && usable[items[i].IP] && items[i].State == "unknown" {
+			items[i].State, items[i].Reason = "healthy", "本轮检测未完成，沿用 15 分钟内完整通过且已完成恢复观察的结果"
+		}
+	}
+	return nil
 }
 
 // Shared DNS entrances must work for every enabled accelerated TLS sample, with its own SNI.
@@ -168,6 +210,7 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 			continue
 		}
 		passed := len(templates) > 0
+		complete, observedFailure := len(templates) > 0, false
 		attempted := false
 		failed, invalid := false, false
 		item.HealthControl = len(templates) > 0
@@ -176,6 +219,8 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 			item.HealthAttempts = append(item.HealthAttempts, r.details...)
 			attempted = attempted || r.attempted > 0 || r.invalid
 			passed = passed && r.passed == 2
+			complete = complete && r.attempted == 2
+			observedFailure = observedFailure || r.attempted > r.passed
 			invalid = invalid || r.invalid
 			failed = failed || (r.attempted == 2 && r.passed == 0 && controls[node])
 		}
@@ -188,7 +233,7 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 			item.State, item.Reason = "failed", "DNS 发布前复查：同一加速节点有健康对照 IP，本 IP 连续两次连接失败"
 		case !passed:
 			// Leave unstarted work at the front of the next background recheck.
-			if attempted {
+			if attempted && (complete || observedFailure) {
 				states[i] = "unknown"
 			}
 			if item.State != "pending" {

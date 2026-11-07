@@ -470,6 +470,9 @@ func (a *app) executeDNSWithNodeCheck(ctx context.Context, c dnsConfig, report *
 	if err := checkNodes(ctx, candidates); err != nil {
 		return fmt.Errorf("DNS 发布前节点复查失败: %w", err)
 	}
+	if err := a.filterDNSAvailableNodes(ctx, candidates); err != nil {
+		return fmt.Errorf("读取可用 IP 池失败: %w", err)
+	}
 	// Resolve each IP once even when it belongs to both pools. A lookup failure
 	// affects this IP only: retain it if published, and block new grouping.
 	geoCtx, stopGeo := context.WithTimeout(ctx, 60*time.Second)
@@ -605,5 +608,31 @@ func (a *app) executeDNSWithNodeCheck(ctx context.Context, c dnsConfig, report *
 		}
 	}
 	sort.Slice(report.Candidates, func(i, j int) bool { return report.Candidates[i].IP < report.Candidates[j].IP })
+	return nil
+}
+
+// DNS may narrow the available pool, but cannot publish a new node IP outside it.
+func (a *app) filterDNSAvailableNodes(ctx context.Context, items []dnsCandidate) error {
+	rows, err := a.db.Query(ctx, availableIPCandidatesSQL+` SELECT host(ip) FROM candidates`, "", "", "", "")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	available := map[string]bool{}
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return err
+		}
+		available[ip] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range items {
+		if items[i].Pool != "cf" && items[i].State == "healthy" && !available[items[i].IP] {
+			items[i].State, items[i].Reason = "unknown", "尚未进入可用 IP 池，暂停 DNS 入选"
+		}
+	}
 	return nil
 }

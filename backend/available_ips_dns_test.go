@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestAvailableIPsFollowSuccessfulDNSSelection(t *testing.T) {
+func TestAvailableIPsIndependentOfDNSSync(t *testing.T) {
 	a := paginationApp(t)
 	ctx := context.Background()
 	exec := func(sql string, args ...any) {
@@ -36,7 +36,7 @@ func TestAvailableIPsFollowSuccessfulDNSSelection(t *testing.T) {
 		if len(items) != count || w.Header().Get("X-Total-Count") != total {
 			t.Fatalf("%s: total=%s items=%d", query, w.Header().Get("X-Total-Count"), len(items))
 		}
-		if total == "22" {
+		if total == "28" {
 			raw, err := base64.StdEncoding.DecodeString(w.Header().Get("X-List-Meta"))
 			if err != nil {
 				t.Fatal(err)
@@ -45,12 +45,12 @@ func TestAvailableIPsFollowSuccessfulDNSSelection(t *testing.T) {
 				AllTotal  int      `json:"allTotal"`
 				Countries []string `json:"countries"`
 			}
-			if err := json.Unmarshal(raw, &meta); err != nil || meta.AllTotal != 22 || len(meta.Countries) != 1 || meta.Countries[0] != "JP" {
+			if err := json.Unmarshal(raw, &meta); err != nil || meta.AllTotal != 28 || len(meta.Countries) != 2 {
 				t.Fatalf("unfiltered facets: %s %v", raw, err)
 			}
 		}
 	}
-	checkPage("", "0", 0) // No successful sync yet.
+	checkPage("", "30", 20) // No successful sync yet.
 	report := dnsReport{Mode: "sync", Domain: "reiiv.com"}
 	r := dnsPlanRecord{Name: "jp.reiiv.com", Type: "A", Action: "update", Applied: true}
 	for i := 1; i <= 30; i++ {
@@ -81,19 +81,36 @@ func TestAvailableIPsFollowSuccessfulDNSSelection(t *testing.T) {
 	}
 	now := time.Now()
 	saveReport(report, now)
-	// Newer previews, failures and a previous domain must not replace this selection.
+	// DNS snapshots cannot change the upstream available pool.
 	report.Mode, report.Records = "preview", nil
 	saveReport(report, now.Add(time.Second))
 	report.Mode, report.Error = "sync", "provider unavailable"
 	saveReport(report, now.Add(2*time.Second))
 	report.Error, report.Domain = "", "old.example"
 	saveReport(report, now.Add(3*time.Second))
-	checkPage("page=1", "22", 20)
-	checkPage("page=2", "22", 2)
-	checkPage("region=US", "0", 0)
-	checkPage("search=8.8.4.29", "0", 0)
+	checkPage("page=1", "28", 20)
+	checkPage("page=2", "28", 8)
+	checkPage("region=US", "6", 6)
+	checkPage("search=8.8.4.29", "1", 1)
 	pageRequest(t, a.generateIPLinks, "/available-ips/links?ip=8.8.4.1", 200)
-	pageRequest(t, a.generateIPLinks, "/available-ips/links?ip=8.8.4.29", 409)
+	pageRequest(t, a.generateIPLinks, "/available-ips/links?ip=8.8.4.29", 200)
+	pageRequest(t, a.generateIPLinks, "/available-ips/links?ip=8.8.4.26", 409)
+	// DNS can narrow this pool, while website checks and existing failures stay separate.
+	items := []dnsCandidate{
+		{IP: "8.8.4.29", State: "healthy"},
+		{IP: "8.8.4.26", State: "healthy"},
+		{IP: "8.8.4.27", State: "healthy"},
+		{IP: "8.8.4.26", Pool: "cf", State: "healthy"},
+		{IP: "8.8.4.1", State: "failed"},
+	}
+	if err := a.filterDNSAvailableNodes(ctx, items); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"healthy", "unknown", "unknown", "healthy", "failed"} {
+		if items[i].State != want {
+			t.Fatalf("DNS gate item %d: %+v, want %s", i, items[i], want)
+		}
+	}
 	// The full probe target pool must remain available to requalify unselected IPs.
 	var targets int
 	if err := a.db.QueryRow(ctx, "SELECT count(DISTINCT ip) FROM shared_node_ip_pool WHERE available").Scan(&targets); err != nil || targets != 29 {
