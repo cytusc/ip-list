@@ -84,6 +84,7 @@ func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) erro
 func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidates []dnsCandidate, check func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error)) []string {
 	phase, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	deadline, _ := phase.Deadline()
 	type result struct {
 		attempted, passed int
 		invalid           bool
@@ -103,7 +104,7 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 				if err != nil || !publicMetadataPrefix(netip.PrefixFrom(ip, ip.BitLen())) {
 					continue
 				}
-				for attempt := 0; attempt < 2 && phase.Err() == nil; attempt++ {
+				for attempt := 0; attempt < 2 && phase.Err() == nil && time.Now().Before(deadline); attempt++ {
 					attemptCtx, stop := context.WithTimeout(phase, 8*time.Second)
 					certificate, err := check(attemptCtx, templates[j.node], ip)
 					stop()
@@ -128,7 +129,8 @@ func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidat
 						r.invalid = true
 						break
 					}
-					if phase.Err() != nil {
+					// Timer cancellation can lag behind its deadline; exhausted work is not IP failure.
+					if phase.Err() != nil || !time.Now().Before(deadline) {
 						break
 					}
 					r.attempted++

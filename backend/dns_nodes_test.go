@@ -8,7 +8,36 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+// A deadline can pass before the cancellation timer gets CPU time.
+type delayedDeadlineContext struct {
+	context.Context
+	at time.Time
+}
+
+func (c delayedDeadlineContext) Deadline() (time.Time, bool) { return c.at, true }
+
+func TestDNSNodeDeadlineBeforeCancellation(t *testing.T) {
+	ctx := delayedDeadlineContext{context.Background(), time.Now().Add(30 * time.Millisecond)}
+	items := []dnsCandidate{{IP: "1.1.1.1", State: "healthy"}, {IP: "8.8.8.8", State: "healthy"}}
+	control := make(chan struct{})
+	var once sync.Once
+	states := dnsCheckNodesWith(ctx, []map[string]any{{"type": "vless", "network": "grpc"}}, items,
+		func(_ context.Context, _ map[string]any, ip netip.Addr) (*certificateCheck, error) {
+			if ip.String() == "1.1.1.1" {
+				once.Do(func() { close(control) })
+				return &certificateCheck{Status: "passed"}, nil
+			}
+			<-control
+			time.Sleep(time.Until(ctx.at) + time.Millisecond)
+			return &certificateCheck{Status: "error"}, context.DeadlineExceeded
+		})
+	if states[0] != "passed" || states[1] != "" || items[1].State != "unknown" {
+		t.Fatal("checker deadline became an IP failure", states, items)
+	}
+}
 
 func TestDNSNodeRecheck(t *testing.T) {
 	for _, tc := range []struct {
