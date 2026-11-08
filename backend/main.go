@@ -121,6 +121,7 @@ func main() {
 	}
 	a.scanContext = ctx
 	go a.maintainConnectivityData(ctx)
+	go a.maintainAvailableIPSpeedTests(ctx)
 	go a.maintainProbeSamples(ctx)
 	go a.revalidateLegacyCertificates(ctx)
 	go a.maintainNodeHealth(ctx)
@@ -228,6 +229,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /cf-pool", a.protected(http.HandlerFunc(a.cfIPPool)))
 	mux.Handle("POST /nodes/import", a.protected(http.HandlerFunc(a.importNodes)))
 	mux.Handle("GET /available-ips/links", a.protected(http.HandlerFunc(a.generateIPLinks)))
+	mux.Handle("POST /available-ips/speed-test", a.protected(http.HandlerFunc(a.speedTestAvailableIP)))
 	mux.Handle("GET /available-ips/location", a.protected(http.HandlerFunc(a.availableIPLocation)))
 	mux.Handle("PUT /available-ips/location", a.protected(http.HandlerFunc(a.saveIPLocationOverride)))
 	mux.Handle("DELETE /available-ips/location", a.protected(http.HandlerFunc(a.deleteIPLocationOverride)))

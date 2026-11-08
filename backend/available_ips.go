@@ -17,11 +17,12 @@ type ipCheck struct {
 }
 
 type availableIP struct {
-	ASN         string         `json:"asn"`
-	Provider    string         `json:"provider"`
-	IP          string         `json:"ip"`
-	Checks      []ipCheck      `json:"checks"`
-	ProbeDelays []probeIPDelay `json:"probe_delays"`
+	ASN         string                `json:"asn"`
+	Provider    string                `json:"provider"`
+	IP          string                `json:"ip"`
+	Checks      []ipCheck             `json:"checks"`
+	ProbeDelays []probeIPDelay        `json:"probe_delays"`
+	SpeedTest   *availableIPSpeedTest `json:"speed_test"`
 }
 
 type probeIPDelay struct {
@@ -204,6 +205,28 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err = probeRows.Err(); err != nil {
+		dbError(w, err)
+		return
+	}
+	speedRows, err := a.db.Query(r.Context(), `SELECT host(ip),duration_ms,speed_mib_s,checked_at,success
+ FROM available_ip_speed_tests WHERE ip=ANY($1::inet[])`, ips)
+	if err != nil {
+		dbError(w, err)
+		return
+	}
+	defer speedRows.Close()
+	for speedRows.Next() {
+		var ip string
+		var result availableIPSpeedTest
+		if err = speedRows.Scan(&ip, &result.Duration, &result.SpeedMiBs, &result.CheckedAt, &result.Success); err != nil {
+			dbError(w, err)
+			return
+		}
+		if item := itemsByIP[ip]; item != nil {
+			item.SpeedTest = &result
+		}
+	}
+	if err = speedRows.Err(); err != nil {
 		dbError(w, err)
 		return
 	}

@@ -71,6 +71,13 @@ CREATE INDEX IF NOT EXISTS node_ip_pool_available_idx ON node_ip_pool(ip) WHERE 
 CREATE INDEX IF NOT EXISTS node_ip_pool_ip_range_idx ON node_ip_pool USING gist(ip inet_ops);
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_invalid_idx ON node_ip_pool(ip,(certificate->>'server_name')) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_page_idx ON node_ip_pool(checked_at DESC,ip,protocol) INCLUDE(config_hash) WHERE certificate->>'status'='invalid';
+CREATE TABLE IF NOT EXISTS available_ip_speed_tests (
+ ip inet PRIMARY KEY,
+ duration_ms bigint NOT NULL DEFAULT 0,
+ speed_mib_s double precision NOT NULL DEFAULT 0,
+ checked_at timestamptz NOT NULL,
+ success boolean NOT NULL
+);
 CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri))) WHERE enabled;
 CREATE OR REPLACE VIEW node_grpc_samples AS
  SELECT DISTINCT share_uri,md5(share_uri) AS config_hash FROM nodes

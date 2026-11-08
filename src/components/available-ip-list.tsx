@@ -4,7 +4,7 @@ import Link from "next/link";
 import { NodeLinksDialog } from "@/components/node-links-dialog";
 import { countryName, IPLocationCell } from "@/components/ip-location";
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, Ban, Check, Copy, RefreshCw, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Ban, Check, Copy, Download, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { AvailableIP, IPLocation } from "@/lib/types";
+import type { AvailableIP, AvailableIPSpeedResult, IPLocation } from "@/lib/types";
 import { toast } from "sonner";
 import { addBlacklist } from "@/app/actions";
 
@@ -58,6 +58,7 @@ export function AvailableIPList({
   const [locationVersion, setLocationVersion] = useState(0);
   const [copied, setCopied] = useState(false);
   const [locations, setLocations] = useState<Record<string, IPLocation | null>>({});
+  const [speedTests, setSpeedTests] = useState<Record<string, { result?: AvailableIPSpeedResult; error?: string; loading?: boolean }>>({});
   const locationCache = useRef<Record<string, IPLocation | null>>({});
   const locationIPs = items.map(item => item.ip).join(",");
 
@@ -150,6 +151,22 @@ export function AvailableIPList({
       toast.success(`已复制 ${ip}`);
     } catch {
       toast.error("复制失败，请手动选择 IP 复制");
+    }
+  }
+
+  async function speedTest(ip: string) {
+    setSpeedTests(current => ({ ...current, [ip]: { loading: true } }));
+    try {
+      const response = await fetch("/api/available-ips/speed-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "测速失败");
+      setSpeedTests(current => ({ ...current, [ip]: { result: data } }));
+    } catch (error) {
+      setSpeedTests(current => ({ ...current, [ip]: { error: error instanceof Error ? error.message : "测速失败" } }));
     }
   }
 
@@ -304,6 +321,7 @@ export function AvailableIPList({
                   最近测通{sort === "checked_at" ? <SortIcon /> : <ArrowUpDown />}
                 </Button>
               </TableHead>
+              <TableHead title="每小时通过 HK2-gRPC 下载 100 MiB 自动测速">下载速度</TableHead>
               <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -313,6 +331,7 @@ export function AvailableIPList({
               const latest = item.checks.reduce((a, b) =>
                 a.checked_at > b.checked_at ? a : b,
               );
+              const speedTestState = speedTests[item.ip];
               return (
                 <TableRow key={item.ip}>
                   <TableCell className="max-w-44 break-all whitespace-normal pl-5 align-top font-mono text-sm">
@@ -357,6 +376,20 @@ export function AvailableIPList({
                     {formatTime(latest.checked_at)}
                   </TableCell>
                   <TableCell className="align-top">
+                    <div className="space-y-1">
+                      <Button variant="outline" size="sm" disabled={speedTestState?.loading} onClick={() => speedTest(item.ip)} aria-label={`测速 ${item.ip}`}>
+                        {speedTestState?.loading ? <LoaderCircle className="animate-spin" /> : <Download />}
+                        {speedTestState?.loading ? "测速中" : "测速"}
+                      </Button>
+                      {item.speed_test && <>
+                        <p className="text-xs tabular-nums">{item.speed_test.success ? `${item.speed_test.speed_mib_s.toFixed(2)} MiB/s · ${(item.speed_test.duration_ms / 1000).toFixed(2)}s` : "最近自动测速失败"}</p>
+                        <p className="text-xs text-muted-foreground">自动 · {formatTime(item.speed_test.checked_at)}</p>
+                      </>}
+                      {speedTestState?.result && <p className="text-xs tabular-nums">手动：{speedTestState.result.speed_mib_s.toFixed(2)} MiB/s · {(speedTestState.result.duration_ms / 1000).toFixed(2)}s</p>}
+                      {speedTestState?.error && <p className="max-w-36 text-xs text-destructive" title={speedTestState.error}>失败</p>}
+                    </div>
+                  </TableCell>
+                  <TableCell className="align-top">
                     <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"
@@ -376,7 +409,7 @@ export function AvailableIPList({
             })}
             {!visible.length && (
               <TableRow>
-                <TableCell colSpan={7} className="h-44 text-center">
+                <TableCell colSpan={8} className="h-44 text-center">
                   <p className="font-medium">
                     {data.allTotal ? "没有匹配的 IP" : "暂无可用 IP"}
                   </p>

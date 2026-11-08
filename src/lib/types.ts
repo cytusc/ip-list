@@ -125,6 +125,15 @@ export type AvailableIP = {
   provider?: string;
   checks: IPCheck[];
   probe_delays: ProbeIPDelay[];
+  speed_test?: AvailableIPSpeedTest | null;
+};
+export type AvailableIPSpeedTest = AvailableIPSpeedResult & {
+  checked_at: string;
+  success: boolean;
+};
+export type AvailableIPSpeedResult = {
+  duration_ms: number;
+  speed_mib_s: number;
 };
 export type LatencyProbe = {
   id: string;
