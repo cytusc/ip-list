@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"sync"
 	"time"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -194,36 +193,26 @@ func (a *app) runAvailableIPSpeedTests(ctx context.Context) {
 		a.saveAvailableIPSpeedFailures(ctx, ips)
 		return
 	}
-	jobs := make(chan netip.Addr)
-	var workers sync.WaitGroup
-	for range 4 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for ip := range jobs {
-				testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-				result, testErr := downloadSpeedIP(testCtx, template, ip, availableIPAutomaticSpeedTestBytes)
-				cancel()
-				if saveErr := a.saveAvailableIPSpeedResult(ctx, ip, result, testErr == nil); saveErr != nil && ctx.Err() == nil {
-					log.Printf("保存 IP 测速结果失败 ip=%s: %v", ip, saveErr)
-				}
-				if testErr != nil && ctx.Err() == nil {
-					log.Printf("IP 下载测速失败 ip=%s: %v", ip, testErr)
-				}
+	for i, ip := range ips {
+		testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		result, testErr := downloadSpeedIP(testCtx, template, ip, availableIPAutomaticSpeedTestBytes)
+		cancel()
+		if saveErr := a.saveAvailableIPSpeedResult(ctx, ip, result, testErr == nil); saveErr != nil && ctx.Err() == nil {
+			log.Printf("保存 IP 测速结果失败 ip=%s: %v", ip, saveErr)
+		}
+		if testErr != nil && ctx.Err() == nil {
+			log.Printf("IP 下载测速失败 ip=%s: %v", ip, testErr)
+		}
+		if i < len(ips)-1 {
+			timer := time.NewTimer(3 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
 			}
-		}()
-	}
-	for _, ip := range ips {
-		select {
-		case jobs <- ip:
-		case <-ctx.Done():
-			close(jobs)
-			workers.Wait()
-			return
 		}
 	}
-	close(jobs)
-	workers.Wait()
 }
 
 func (a *app) saveAvailableIPSpeedFailures(ctx context.Context, ips []netip.Addr) {
