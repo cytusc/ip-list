@@ -17,8 +17,8 @@ import (
 
 const availableIPSpeedTestBytes = 5 << 20
 const availableIPAutomaticSpeedTestBytes = 100_000_000
-const availableIPSpeedTestChunkBytes = 50_000_000
-const availableIPSpeedTestURL = "https://speed.cloudflare.com/__down"
+const availableIPSpeedTestChunkBytes = 100_000_000
+const availableIPSpeedTestURL = "https://proof.ovh.net/files/100Mb.dat"
 
 type availableIPSpeedResult struct {
 	Duration  int64   `json:"duration_ms"`
@@ -98,10 +98,6 @@ func downloadSpeedIP(ctx context.Context, template map[string]any, ip netip.Addr
 	client := &http.Client{Transport: transport}
 	var downloaded int64
 	for downloaded < bytes {
-		chunk := min(availableIPSpeedTestChunkBytes, bytes-downloaded)
-		query := target.Query()
-		query.Set("bytes", fmt.Sprint(chunk))
-		target.RawQuery = query.Encode()
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 		if err != nil {
 			return availableIPSpeedResult{}, err
@@ -114,6 +110,7 @@ func downloadSpeedIP(ctx context.Context, template map[string]any, ip netip.Addr
 			_ = response.Body.Close()
 			return availableIPSpeedResult{}, fmt.Errorf("download server returned HTTP %d", response.StatusCode)
 		}
+		chunk := min(availableIPSpeedTestChunkBytes, bytes-downloaded)
 		count, copyErr := io.CopyN(io.Discard, response.Body, chunk)
 		_ = response.Body.Close()
 		if copyErr != nil {
