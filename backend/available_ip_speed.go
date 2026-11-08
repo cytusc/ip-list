@@ -15,7 +15,6 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 )
 
-const availableIPSpeedTestBytes = 5 << 20
 const availableIPAutomaticSpeedTestBytes = 100_000_000
 const availableIPSpeedTestChunkBytes = 100_000_000
 const availableIPSpeedTestURL = "https://proof.ovh.net/files/100Mb.dat"
@@ -63,7 +62,13 @@ func (a *app) speedTestAvailableIP(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 503, "HK2-gRPC 节点配置无效", nil)
 		return
 	}
-	result, err := downloadSpeedIP(r.Context(), template, ip, availableIPSpeedTestBytes)
+	testCtx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	result, err := downloadSpeedIP(testCtx, template, ip, availableIPAutomaticSpeedTestBytes)
+	cancel()
+	if saveErr := a.saveAvailableIPSpeedResult(r.Context(), ip, result, err == nil); saveErr != nil {
+		dbError(w, saveErr)
+		return
+	}
 	if err != nil {
 		apiError(w, 502, "测速失败：HK2-gRPC 入口无法完成下载", nil)
 		return

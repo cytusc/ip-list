@@ -123,6 +123,9 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		direction = "DESC"
 	}
 	switch q.Get("sort") {
+	case "speed_test":
+		ranking = ` LEFT JOIN available_ip_speed_tests rank ON rank.ip=info.ip AND rank.success`
+		order = "rank.speed_mib_s " + direction + " NULLS LAST, info.ip"
 	case "checked_at":
 		ranking = ` LEFT JOIN LATERAL (SELECT max(checked_at) AS value FROM shared_node_ip_pool WHERE ip=info.ip AND available) rank ON true`
 		order = "rank.value " + direction + " NULLS LAST, info.ip"

@@ -22,7 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { AvailableIP, AvailableIPSpeedResult, IPLocation } from "@/lib/types";
+import type { AvailableIP, IPLocation } from "@/lib/types";
 import { toast } from "sonner";
 import { addBlacklist } from "@/app/actions";
 
@@ -48,7 +48,7 @@ export function AvailableIPList({
   const [sort, setSort] = useState("");
   const [direction, setDirection] = useState("asc");
   function toggleSort(column: string) {
-    setDirection(sort === column && direction === "asc" ? "desc" : "asc");
+    setDirection(sort === column ? (direction === "asc" ? "desc" : "asc") : column === "speed_test" ? "desc" : "asc");
     setSort(column);
     setPage(1);
   }
@@ -58,7 +58,7 @@ export function AvailableIPList({
   const [locationVersion, setLocationVersion] = useState(0);
   const [copied, setCopied] = useState(false);
   const [locations, setLocations] = useState<Record<string, IPLocation | null>>({});
-  const [speedTests, setSpeedTests] = useState<Record<string, { result?: AvailableIPSpeedResult; error?: string; loading?: boolean }>>({});
+  const [speedTests, setSpeedTests] = useState<Record<string, { error?: string; loading?: boolean }>>({});
   const locationCache = useRef<Record<string, IPLocation | null>>({});
   const locationIPs = items.map(item => item.ip).join(",");
 
@@ -164,9 +164,11 @@ export function AvailableIPList({
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "测速失败");
-      setSpeedTests(current => ({ ...current, [ip]: { result: data } }));
+      setSpeedTests(current => ({ ...current, [ip]: {} }));
+      reload();
     } catch (error) {
       setSpeedTests(current => ({ ...current, [ip]: { error: error instanceof Error ? error.message : "测速失败" } }));
+      reload();
     }
   }
 
@@ -321,7 +323,11 @@ export function AvailableIPList({
                   最近测通{sort === "checked_at" ? <SortIcon /> : <ArrowUpDown />}
                 </Button>
               </TableHead>
-              <TableHead title="每 4 小时通过 HK2-gRPC 下载 100 MB 自动测速">下载速度</TableHead>
+              <TableHead aria-sort={sort === "speed_test" ? (direction === "asc" ? "ascending" : "descending") : "none"} title="手动和自动测速都通过 HK2-gRPC 下载 100 MB；自动测速每 4 小时一次">
+                <Button variant="ghost" size="sm" onClick={() => toggleSort("speed_test")} title="按最新成功测速速度排序；无结果或失败的 IP 排在最后">
+                  下载速度{sort === "speed_test" ? <SortIcon /> : <ArrowUpDown />}
+                </Button>
+              </TableHead>
               <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -382,10 +388,10 @@ export function AvailableIPList({
                         {speedTestState?.loading ? "测速中" : "测速"}
                       </Button>
                       {item.speed_test && <>
-                        <p className="text-xs tabular-nums">{item.speed_test.success ? `${item.speed_test.speed_mib_s.toFixed(2)} MiB/s · ${(item.speed_test.duration_ms / 1000).toFixed(2)}s` : "最近自动测速失败"}</p>
-                        <p className="text-xs text-muted-foreground">自动 · {formatTime(item.speed_test.checked_at)}</p>
+                        <p className="text-xs tabular-nums">{item.speed_test.success ? `${item.speed_test.speed_mib_s.toFixed(2)} MiB/s · ${(item.speed_test.duration_ms / 1000).toFixed(2)}s` : "最近测速失败"}</p>
+                        <p className="text-xs text-muted-foreground">{formatTime(item.speed_test.checked_at)}</p>
                       </>}
-                      {speedTestState?.result && <p className="text-xs tabular-nums">手动：{speedTestState.result.speed_mib_s.toFixed(2)} MiB/s · {(speedTestState.result.duration_ms / 1000).toFixed(2)}s</p>}
+                      {!item.speed_test && <p className="text-xs text-muted-foreground">尚无测速结果</p>}
                       {speedTestState?.error && <p className="max-w-36 text-xs text-destructive" title={speedTestState.error}>失败</p>}
                     </div>
                   </TableCell>
