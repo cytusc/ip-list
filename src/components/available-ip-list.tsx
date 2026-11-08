@@ -321,7 +321,7 @@ export function AvailableIPList({
                   最近测通{sort === "checked_at" ? <SortIcon /> : <ArrowUpDown />}
                 </Button>
               </TableHead>
-              <TableHead title="每小时通过 HK2-gRPC 下载 100 MiB 自动测速">下载速度</TableHead>
+              <TableHead title="每 4 小时通过 HK2-gRPC 下载 100 MB 自动测速">下载速度</TableHead>
               <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>

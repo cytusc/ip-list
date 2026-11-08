@@ -17,7 +17,8 @@ import (
 )
 
 const availableIPSpeedTestBytes = 5 << 20
-const availableIPAutomaticSpeedTestBytes = 100 << 20
+const availableIPAutomaticSpeedTestBytes = 100_000_000
+const availableIPSpeedTestChunkBytes = 50_000_000
 const availableIPSpeedTestURL = "https://speed.cloudflare.com/__down"
 
 type availableIPSpeedResult struct {
@@ -94,25 +95,32 @@ func downloadSpeedIP(ctx context.Context, template map[string]any, ip netip.Addr
 	if err != nil {
 		return availableIPSpeedResult{}, err
 	}
-	query := target.Query()
-	query.Set("bytes", fmt.Sprint(bytes))
-	target.RawQuery = query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-	if err != nil {
-		return availableIPSpeedResult{}, err
-	}
 	started := time.Now()
-	response, err := (&http.Client{Transport: transport}).Do(request)
-	if err != nil {
-		return availableIPSpeedResult{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return availableIPSpeedResult{}, fmt.Errorf("download server returned HTTP %d", response.StatusCode)
-	}
-	downloaded, err := io.CopyN(io.Discard, response.Body, bytes)
-	if err != nil {
-		return availableIPSpeedResult{}, err
+	client := &http.Client{Transport: transport}
+	var downloaded int64
+	for downloaded < bytes {
+		chunk := min(availableIPSpeedTestChunkBytes, bytes-downloaded)
+		query := target.Query()
+		query.Set("bytes", fmt.Sprint(chunk))
+		target.RawQuery = query.Encode()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+		if err != nil {
+			return availableIPSpeedResult{}, err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			return availableIPSpeedResult{}, err
+		}
+		if response.StatusCode != http.StatusOK {
+			_ = response.Body.Close()
+			return availableIPSpeedResult{}, fmt.Errorf("download server returned HTTP %d", response.StatusCode)
+		}
+		count, copyErr := io.CopyN(io.Discard, response.Body, chunk)
+		_ = response.Body.Close()
+		if copyErr != nil {
+			return availableIPSpeedResult{}, copyErr
+		}
+		downloaded += count
 	}
 	duration := time.Since(started)
 	if duration < time.Millisecond {
