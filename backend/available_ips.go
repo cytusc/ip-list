@@ -23,6 +23,8 @@ type availableIP struct {
 	Checks      []ipCheck             `json:"checks"`
 	ProbeDelays []probeIPDelay        `json:"probe_delays"`
 	SpeedTest   *availableIPSpeedTest `json:"speed_test"`
+	NodeDNS     string                `json:"node_dns_status"`
+	URLDNS      string                `json:"url_dns_status"`
 }
 
 type probeIPDelay struct {
@@ -230,6 +232,10 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err = speedRows.Err(); err != nil {
+		dbError(w, err)
+		return
+	}
+	if err = a.availableIPDNSSyncStatus(r.Context(), items); err != nil {
 		dbError(w, err)
 		return
 	}

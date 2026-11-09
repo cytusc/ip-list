@@ -34,6 +34,12 @@ import { usePagedList } from "@/components/use-paged-list";
 import { ListPagination } from "@/components/list-pagination";
 const formatTime = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
+const dnsStatusLabel = (status: string) => ({
+  synced: "已同步",
+  not_synced: "未同步",
+  disabled: "未启用",
+  unknown: "未知",
+}[status] || "未知");
 
 export function AvailableIPList({
   initialItems,
@@ -328,6 +334,7 @@ export function AvailableIPList({
                   下载速度{sort === "speed_test" ? <SortIcon /> : <ArrowUpDown />}
                 </Button>
               </TableHead>
+              <TableHead title="按最近一次节点 DNS 同步结果显示；未知表示配置变化或任务未能确认">节点 DNS / URL DNS</TableHead>
               <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -395,6 +402,10 @@ export function AvailableIPList({
                       {speedTestState?.error && <p className="max-w-36 text-xs text-destructive" title={speedTestState.error}>失败</p>}
                     </div>
                   </TableCell>
+                  <TableCell className="align-top text-xs">
+                    <p>节点 DNS：{dnsStatusLabel(item.node_dns_status)}</p>
+                    <p className="mt-1 text-muted-foreground">URL DNS：{dnsStatusLabel(item.url_dns_status)}</p>
+                  </TableCell>
                   <TableCell className="align-top">
                     <div className="flex flex-wrap gap-2">
                     <Button
@@ -415,7 +426,7 @@ export function AvailableIPList({
             })}
             {!visible.length && (
               <TableRow>
-                <TableCell colSpan={8} className="h-44 text-center">
+                <TableCell colSpan={9} className="h-44 text-center">
                   <p className="font-medium">
                     {data.allTotal ? "没有匹配的 IP" : "暂无可用 IP"}
                   </p>

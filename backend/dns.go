@@ -518,6 +518,9 @@ func (a *app) executeDNSWithNodeCheck(ctx context.Context, c dnsConfig, report *
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if err := a.filterDNSSlowIPs(ctx, candidates); err != nil {
+		return fmt.Errorf("读取下载测速结果失败: %w", err)
+	}
 	managed := map[string]bool{}
 	rows, err := a.db.Query(ctx, "SELECT name,type FROM dns_managed_records WHERE domain=$1 AND zone_id=$2", c.Domain, zone)
 	if err != nil {

@@ -126,6 +126,8 @@ export type AvailableIP = {
   checks: IPCheck[];
   probe_delays: ProbeIPDelay[];
   speed_test?: AvailableIPSpeedTest | null;
+  node_dns_status: "synced" | "not_synced" | "disabled" | "unknown";
+  url_dns_status: "synced" | "not_synced" | "disabled" | "unknown";
 };
 export type AvailableIPSpeedTest = AvailableIPSpeedResult & {
   checked_at: string;
