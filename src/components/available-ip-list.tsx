@@ -34,6 +34,15 @@ import { usePagedList } from "@/components/use-paged-list";
 import { ListPagination } from "@/components/list-pagination";
 const formatTime = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
+function StatusLight({ status, label }: { status: string; label: string }) {
+  const color = status === "synced" || status === "passed"
+    ? "bg-emerald-500"
+    : status === "not_synced" || status === "failed"
+      ? "bg-rose-500"
+      : "bg-slate-300";
+  return <span className="inline-flex items-center gap-1.5 whitespace-nowrap"><i className={`size-2 rounded-full ${color}`} aria-hidden="true" />{label}</span>;
+}
+
 const dnsStatusLabel = (status: string) => ({
   synced: "已同步",
   not_synced: "未同步",
@@ -334,7 +343,8 @@ export function AvailableIPList({
                   下载速度{sort === "speed_test" ? <SortIcon /> : <ArrowUpDown />}
                 </Button>
               </TableHead>
-              <TableHead title="按最近一次节点 DNS 同步结果显示；未知表示配置变化或任务未能确认">节点 DNS / URL DNS</TableHead>
+              <TableHead title="依据最近一次节点 DNS 同步结果">节点 DNS</TableHead>
+              <TableHead title="依据最近一次 URL DNS 同步结果">URL DNS</TableHead>
               <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -395,17 +405,18 @@ export function AvailableIPList({
                         {speedTestState?.loading ? "测速中" : "测速"}
                       </Button>
                       {item.speed_test && <>
-                        <p className="text-xs tabular-nums">{item.speed_test.success ? `${item.speed_test.speed_mib_s.toFixed(2)} MiB/s · ${(item.speed_test.duration_ms / 1000).toFixed(2)}s` : "最近测速失败"}</p>
+                        <p className={`inline-flex items-center gap-1.5 text-xs tabular-nums ${item.speed_passed ? "text-emerald-700" : "text-rose-700"}`}>
+                          <i className={`size-2 rounded-full ${item.speed_passed ? "bg-emerald-500" : "bg-rose-500"}`} aria-hidden="true" />
+                          {item.speed_test.success ? `${item.speed_test.speed_mib_s.toFixed(2)} MiB/s · ${(item.speed_test.duration_ms / 1000).toFixed(2)}s` : "最近测速失败 / 未达标"}
+                        </p>
                         <p className="text-xs text-muted-foreground">{formatTime(item.speed_test.checked_at)}</p>
                       </>}
-                      {!item.speed_test && <p className="text-xs text-muted-foreground">尚无测速结果</p>}
+                      {!item.speed_test && <p className="inline-flex items-center gap-1.5 text-xs text-rose-700"><i className="size-2 rounded-full bg-rose-500" aria-hidden="true" />尚无测速结果</p>}
                       {speedTestState?.error && <p className="max-w-36 text-xs text-destructive" title={speedTestState.error}>失败</p>}
                     </div>
                   </TableCell>
-                  <TableCell className="align-top text-xs">
-                    <p>节点 DNS：{dnsStatusLabel(item.node_dns_status)}</p>
-                    <p className="mt-1 text-muted-foreground">URL DNS：{dnsStatusLabel(item.url_dns_status)}</p>
-                  </TableCell>
+                  <TableCell className="align-top text-xs"><StatusLight status={item.node_dns_status} label={dnsStatusLabel(item.node_dns_status)} /></TableCell>
+                  <TableCell className="align-top text-xs"><StatusLight status={item.url_dns_status} label={dnsStatusLabel(item.url_dns_status)} /></TableCell>
                   <TableCell className="align-top">
                     <div className="flex flex-wrap gap-2">
                     <Button
@@ -426,7 +437,7 @@ export function AvailableIPList({
             })}
             {!visible.length && (
               <TableRow>
-                <TableCell colSpan={9} className="h-44 text-center">
+                <TableCell colSpan={10} className="h-44 text-center">
                   <p className="font-medium">
                     {data.allTotal ? "没有匹配的 IP" : "暂无可用 IP"}
                   </p>
