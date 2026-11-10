@@ -17,7 +17,7 @@ import (
 
 const availableIPAutomaticSpeedTestBytes = 100_000_000
 const availableIPSpeedTestChunkBytes = 100_000_000
-const availableIPSpeedTestURL = "https://proof.ovh.net/files/100Mb.dat"
+const availableIPSpeedTestURL = "https://hkg.download.datapacket.com/100mb.bin"
 
 type availableIPSpeedResult struct {
 	Duration  int64   `json:"duration_ms"`
