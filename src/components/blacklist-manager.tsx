@@ -14,10 +14,11 @@ import { Input } from "@/components/ui/input";
 
 export function BlacklistManager({ initialItems }: { initialItems: PageResult<BlacklistedIP> }) {
   const [search,setSearch]=useState("");
-  const {data,setPage,refresh,loading,error}=usePagedList("blacklist",initialItems,{search});
+  const {data,setData,setPage,refresh,loading,error}=usePagedList("blacklist",initialItems,{search});
   const items=data.items;
   const [value, setValue] = useState("");
   const [pending, startTransition] = useTransition();
+  const [removingIP, setRemovingIP] = useState<string | null>(null);
 
   function submit() {
     const ips = value.split(/[\s,，;；]+/).map((ip) => ip.trim()).filter(Boolean);
@@ -38,14 +39,26 @@ export function BlacklistManager({ initialItems }: { initialItems: PageResult<Bl
   }
 
   function remove(ip: string) {
+    setRemovingIP(ip);
     startTransition(async () => {
-      const result = await removeBlacklist(ip);
-      if (!result.ok) {
-        toast.error(result.error);
-        return;
+      try {
+        const result = await removeBlacklist(ip);
+        if (!result.ok) {
+          toast.error(result.error);
+          return;
+        }
+        setData((prev) => ({
+          ...prev,
+          items: prev.items.filter((item) => item.ip !== ip),
+          total: Math.max(0, prev.total - 1),
+        }));
+        refresh();
+        toast.success(`已从黑名单移除 ${ip}`);
+      } catch {
+        toast.error("移除失败，请重试");
+      } finally {
+        setRemovingIP(null);
       }
-      refresh();
-      toast.success(`已从黑名单移除 ${ip}`);
     });
   }
 
@@ -88,8 +101,9 @@ export function BlacklistManager({ initialItems }: { initialItems: PageResult<Bl
                 <code className="text-sm">{item.ip}</code>
                 <div className="flex items-center gap-3">
                   <time className="hidden text-xs text-muted-foreground sm:block">{new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</time>
-                  <Button variant="ghost" size="sm" disabled={pending} onClick={() => remove(item.ip)}>
-                    <Trash2 />移除
+                  <Button variant="ghost" size="sm" disabled={pending || removingIP === item.ip} onClick={() => remove(item.ip)}>
+                    {removingIP === item.ip ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                    {removingIP === item.ip ? "移除中" : "移除"}
                   </Button>
                 </div>
               </li>

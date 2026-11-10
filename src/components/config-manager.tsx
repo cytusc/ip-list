@@ -64,7 +64,7 @@ export function ConfigManager({
   const label = isNode ? "节点" : "网段";
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
-  const {data,setPage,loading,error}=usePagedList(kind,initial,{search,status});
+  const {data,setData,setPage,loading,error}=usePagedList(kind,initial,{search,status});
   const items=data.items;
   const [editor, setEditor] = useState<{ item: Node | Network | null } | null>(
     null,
@@ -453,6 +453,16 @@ export function ConfigManager({
                     const result = await deleteConfig(kind, deleting.id);
                     if (result.ok) {
                       toast.success(`${label}已删除`);
+                      const removedId = deleting.id;
+                      setData((prev) => ({
+                        ...prev,
+                        items: prev.items.filter((item) => item.id !== removedId),
+                        total: Math.max(0, prev.total - 1),
+                        allTotal:
+                          typeof prev.allTotal === "number"
+                            ? Math.max(0, prev.allTotal - 1)
+                            : undefined,
+                      }));
                       setDeleting(null);
                     } else setDeleteError(result.error);
                   } catch {

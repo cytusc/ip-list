@@ -67,7 +67,6 @@ export function ConsoleShell({
               <Link
                 key={href}
                 href={href}
-                prefetch={false}
                 aria-current={
                   pathname === href || pathname.startsWith(href + "/")
                     ? "page"
@@ -149,7 +148,6 @@ export function ConsoleShell({
             <Link
               key={href}
               href={href}
-              prefetch={false}
               aria-current={
                 pathname === href || pathname.startsWith(href + "/")
                   ? "page"

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { aggregateProbeMinutes } from "@/lib/probe-history";
-import { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Tooltip } from "radix-ui";
 import { latencyQuality, latencyThresholds } from "@/lib/latency-quality";
 import type { IPLocation, LatencyProbeResult, ProbeIPDelay } from "@/lib/types";
@@ -11,14 +11,34 @@ const styles = { green: "bg-emerald-500", yellow: "bg-amber-400", red: "bg-rose-
 const qualityNames = { green: "低延迟", yellow: "中等延迟", red: "高延迟", unknown: "暂无采样" };
 const formatTime = (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false });
 
-export function ProbeLatencyStrip({ probe, ip, location }: { probe: ProbeIPDelay; ip: string; location?: IPLocation | null }) {
+export const ProbeLatencyStrip = React.memo(function ProbeLatencyStrip({
+  probe,
+  ip,
+  location,
+}: {
+  probe: ProbeIPDelay;
+  ip: string;
+  location?: IPLocation | null;
+}) {
   const [hovered, setHovered] = useState<number | null>(null);
   const measurement = probe.mode === "tcp" ? `TCP :${probe.tcp_port}` : "ICMP";
-  const thresholds = latencyThresholds(location?.country, location?.region, location?.city);
-  const samples: LatencyProbeResult[] = probe.samples ?? (probe.checked_at && probe.success != null ? [{
-    id: 0, ip, delay_ms: probe.delay_ms ?? 0, success: probe.success, checked_at: probe.checked_at,
-  }] : []);
-  const cells = aggregateProbeMinutes(samples, Date.parse(probe.window_end || probe.checked_at || "1970-01-01T00:00:00Z"), (probe.sample_window_seconds || 53) * 2);
+
+  const thresholds = useMemo(
+    () => latencyThresholds(location?.country, location?.region, location?.city),
+    [location?.country, location?.region, location?.city]
+  );
+
+  const cells = useMemo(() => {
+    const samples: LatencyProbeResult[] = probe.samples ?? (probe.checked_at && probe.success != null ? [{
+      id: 0, ip, delay_ms: probe.delay_ms ?? 0, success: probe.success, checked_at: probe.checked_at,
+    }] : []);
+    return aggregateProbeMinutes(
+      samples,
+      Date.parse(probe.window_end || probe.checked_at || "1970-01-01T00:00:00Z"),
+      (probe.sample_window_seconds || 53) * 2
+    );
+  }, [probe, ip]);
+
   type Cell = typeof cells[number];
   const cellQuality = (cell: Cell) => cell.delay_ms != null
     ? latencyQuality(cell.delay_ms, true, location?.country, location?.region, location?.city)
@@ -37,9 +57,9 @@ export function ProbeLatencyStrip({ probe, ip, location }: { probe: ProbeIPDelay
           <span className="max-w-20 truncate font-medium">{probe.name}</span>
           <span className="flex shrink-0 gap-0.5" aria-hidden="true">
             {cells.map((cell, index) => {
-              const quality = cellQuality(cell);
-              return <span key={index} data-quality={quality} onPointerEnter={() => setHovered(index)}
-                className={`h-5 w-1.5 rounded-[2px] ${styles[quality]} ${cell.unavailable && cell.delay_ms == null ? "bg-[repeating-linear-gradient(135deg,transparent,transparent_2px,rgba(0,0,0,0.15)_2px,rgba(0,0,0,0.15)_4px)]" : ""} ${hovered === index ? "ring-1 ring-slate-500 ring-offset-1" : ""}`} />;
+              const q = cellQuality(cell);
+              return <span key={index} data-quality={q} onPointerEnter={() => setHovered(index)}
+                className={`h-5 w-1.5 rounded-[2px] ${styles[q]} ${cell.unavailable && cell.delay_ms == null ? "bg-[repeating-linear-gradient(135deg,transparent,transparent_2px,rgba(0,0,0,0.15)_2px,rgba(0,0,0,0.15)_4px)]" : ""} ${hovered === index ? "ring-1 ring-slate-500 ring-offset-1" : ""}`} />;
             })}
           </span>
         </Link>
@@ -54,4 +74,4 @@ export function ProbeLatencyStrip({ probe, ip, location }: { probe: ProbeIPDelay
       </Tooltip.Content></Tooltip.Portal>
     </Tooltip.Root>
   </Tooltip.Provider>;
-}
+});

@@ -68,12 +68,13 @@ export function AvailableIPList({
     setPage(1);
   }
   const SortIcon = direction === "asc" ? ArrowUp : ArrowDown;
-  const {data,setPage,refresh:reload,loading:refreshing,error}=usePagedList("available-ips",initialItems,{search:search.trim(),protocol,region,provider,sort,direction},10000);
+  const {data,setData,setPage,refresh:reload,loading:refreshing,error}=usePagedList("available-ips",initialItems,{search:search.trim(),protocol,region,provider,sort,direction},10000);
   const items=data.items;
   const [locationVersion, setLocationVersion] = useState(0);
   const [copied, setCopied] = useState(false);
   const [locations, setLocations] = useState<Record<string, IPLocation | null>>({});
   const [speedTests, setSpeedTests] = useState<Record<string, { error?: string; loading?: boolean }>>({});
+  const [blacklisting, setBlacklisting] = useState<Record<string, boolean>>({});
   const locationCache = useRef<Record<string, IPLocation | null>>({});
   const locationIPs = items.map(item => item.ip).join(",");
 
@@ -188,13 +189,29 @@ export function AvailableIPList({
   }
 
   async function blacklist(ip: string) {
-    const result = await addBlacklist([ip]);
-    if (!result.ok) {
-      toast.error(result.error);
-      return;
+    setBlacklisting(prev => ({ ...prev, [ip]: true }));
+    try {
+      const result = await addBlacklist([ip]);
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success(`${ip} 已加入黑名单`);
+      setData(prev => ({
+        ...prev,
+        items: prev.items.filter(item => item.ip !== ip),
+        total: Math.max(0, prev.total - 1),
+      }));
+      reload();
+    } catch {
+      toast.error("加入黑名单失败，请重试");
+    } finally {
+      setBlacklisting(prev => {
+        const next = { ...prev };
+        delete next[ip];
+        return next;
+      });
     }
-    reload();
-    toast.success(`${ip} 已加入黑名单`);
   }
 
   return (
@@ -427,8 +444,19 @@ export function AvailableIPList({
                     >
                       生成节点
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => blacklist(item.ip)} aria-label={`屏蔽 ${item.ip}`}>
-                      <Ban />屏蔽
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={blacklisting[item.ip]}
+                      onClick={() => blacklist(item.ip)}
+                      aria-label={`屏蔽 ${item.ip}`}
+                    >
+                      {blacklisting[item.ip] ? (
+                        <LoaderCircle className="animate-spin" />
+                      ) : (
+                        <Ban />
+                      )}
+                      {blacklisting[item.ip] ? "屏蔽中" : "屏蔽"}
                     </Button>
                     </div>
                   </TableCell>
