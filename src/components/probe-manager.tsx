@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { cancelScan, startScan } from "@/app/actions";
 import { protocolLabels, connectivityLabel } from "@/lib/protocol";
 import { availabilityTone, formatDuration, formatTime, percent } from "@/lib/cf";
+import { networkAddressCount } from "@/lib/network";
 import { ListPagination } from "@/components/list-pagination";
 import { usePagedList } from "@/components/use-paged-list";
 import type { PageResult } from "@/lib/pagination";
@@ -71,6 +72,9 @@ export function ProbeList({
           <h1 className="text-2xl font-semibold">连通性检测记录</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
             每轮检测保存为一条记录，可回看该轮的可用 IP、延迟与变化。仅使用 gRPC 检测，所有协议共用结果。
+          </p>
+          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
+            增量检测按未测 IP 分批推进；大网段每批最多检测 4096 个地址，同一网段可能有多条记录。下方显示的是本批进度和整个网段的 IP 总数。
           </p>
           <Link
             href="/available-ips"
@@ -275,6 +279,7 @@ function RecordTable({
       <div className="divide-y overflow-hidden rounded-xl border bg-white sm:hidden">
         {items.map((item) => {
           const rate = percent(item.success, item.completed);
+          const networkTotal = item.cidrs.reduce((sum, cidr) => sum + networkAddressCount(cidr), 0n);
           return (
             <div key={item.id} className="px-4 py-3">
               <Link
@@ -285,9 +290,7 @@ function RecordTable({
                   <div className="min-w-0">
                     <NetworkSummary cidrs={item.cidrs} networks={networks} />
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      第{" "}
-                      {item.round} 轮 ·{" "}
-                      {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测" : "全量"}
+                      {item.scope === "incremental" ? "增量 · 当前批次" : `第 ${item.round} 轮 · ${item.scope === "available" ? "复测" : "全量"}`}
                     </p>
                   </div>
                   <Badge
@@ -299,11 +302,16 @@ function RecordTable({
                 </div>
                 <dl className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
                   <div className="flex gap-1">
-                    <dt>可用</dt>
+                    <dt>本批可用 / 已测</dt>
                     <dd className="font-medium text-foreground tabular-nums">
                       {item.success} / {item.completed}
                     </dd>
                   </div>
+                  {item.scope === "incremental" && (
+                    <div className="col-span-2 text-muted-foreground">
+                      本批目标 {item.total.toLocaleString()} · 网段总数 {networkTotal.toLocaleString()} IP
+                    </div>
+                  )}
                   <div className="flex gap-1">
                     <dt>可用率</dt>
                     <dd className={`tabular-nums ${availabilityTone(rate)}`}>
@@ -342,7 +350,7 @@ function RecordTable({
               <TableHead className="pl-5">开始时间</TableHead>
               <TableHead>网段 / 运营商</TableHead>
               <TableHead className="w-32">轮次</TableHead>
-              <TableHead className="w-32">可用 / 已测</TableHead>
+              <TableHead className="w-36">本批可用 / 已测</TableHead>
               <TableHead className="w-24">可用率</TableHead>
               <TableHead className="w-28">耗时</TableHead>
               <TableHead className="w-24">状态</TableHead>
@@ -352,6 +360,7 @@ function RecordTable({
           <TableBody>
             {items.map((item) => {
               const rate = percent(item.success, item.completed);
+              const networkTotal = item.cidrs.reduce((sum, cidr) => sum + networkAddressCount(cidr), 0n);
               return (
                 <TableRow key={item.id} className="group relative">
                   <TableCell className="pl-5 text-sm tabular-nums text-muted-foreground">
@@ -366,8 +375,7 @@ function RecordTable({
                     </Link>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    第 {item.round} 轮 ·{" "}
-                    {item.scope === "incremental" ? "增量" : item.scope === "available" ? "复测可用" : "全量"}
+                    {item.scope === "incremental" ? "增量 · 当前批次" : `第 ${item.round} 轮 · ${item.scope === "available" ? "复测可用" : "全量"}`}
                   </TableCell>
                   <TableCell className="text-sm tabular-nums">
                     <span className="font-medium text-emerald-700">
@@ -377,11 +385,13 @@ function RecordTable({
                       {" "}
                       / {item.completed}
                     </span>
-                    {item.completed < item.total && (
+                    {item.scope === "incremental" ? (
                       <p className="mt-1 text-[11px] text-muted-foreground">
-                        共 {item.total} 个
+                        本批目标 {item.total.toLocaleString()} · 网段总数 {networkTotal.toLocaleString()} IP
                       </p>
-                    )}
+                    ) : item.completed < item.total ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground">本轮目标 {item.total.toLocaleString()} 个</p>
+                    ) : null}
                   </TableCell>
                   <TableCell>
                     {rate == null ? (
