@@ -279,7 +279,7 @@ function RecordTable({
       <div className="divide-y overflow-hidden rounded-xl border bg-white sm:hidden">
         {items.map((item) => {
           const rate = percent(item.success, item.completed);
-          const networkTotal = item.cidrs.reduce((sum, cidr) => sum + networkAddressCount(cidr), 0n);
+          const networkTotal = item.cidrs.reduce((sum, cidr) => sum + networkAddressCount(cidr), BigInt(0));
           return (
             <div key={item.id} className="px-4 py-3">
               <Link
@@ -360,7 +360,7 @@ function RecordTable({
           <TableBody>
             {items.map((item) => {
               const rate = percent(item.success, item.completed);
-              const networkTotal = item.cidrs.reduce((sum, cidr) => sum + networkAddressCount(cidr), 0n);
+              const networkTotal = item.cidrs.reduce((sum, cidr) => sum + networkAddressCount(cidr), BigInt(0));
               return (
                 <TableRow key={item.id} className="group relative">
                   <TableCell className="pl-5 text-sm tabular-nums text-muted-foreground">
