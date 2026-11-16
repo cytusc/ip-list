@@ -159,6 +159,23 @@ func TestDNSPublishesEveryHealthyJapaneseIP(t *testing.T) {
 	}
 }
 
+func TestDNSWebsiteRecordLifecycle(t *testing.T) {
+	record := dnsRemoteRecord{ID: "url", Name: "url.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"203.0.113.9"}}
+	managed := map[string]bool{"url.reiiv.com/A": true}
+
+	disabled := dnsTestConfig()
+	disabled.WebsiteEnabled = false
+	if plan := dnsBuildPlan(disabled, nil, []dnsRemoteRecord{record}, managed, false); len(plan) != 1 || plan[0].Action != "delete" {
+		t.Fatalf("disabled website record should be reclaimed: %+v", plan)
+	}
+
+	empty := dnsTestConfig()
+	empty.WebsiteEnabled = true
+	if plan := dnsBuildPlan(empty, nil, []dnsRemoteRecord{record}, managed, false); len(plan) != 1 || plan[0].Action != "hold" {
+		t.Fatalf("empty website pool must keep the last record: %+v", plan)
+	}
+}
+
 func TestDNSPlans(t *testing.T) {
 	c := dnsTestConfig()
 	hk := dnsRemoteRecord{ID: "hk", Name: "hk.reiiv.com", Type: "A", Line: "default_view", Status: "ACTIVE", TTL: 300, Values: []string{"103.135.251.114", "191.222.220.126"}}

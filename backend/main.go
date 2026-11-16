@@ -270,9 +270,16 @@ func (a *app) routes() http.Handler {
 			apiError(w, 403, "请求来源不受信任", nil)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
+		// Key list and probe endpoints regularly take several seconds on a full
+		// pool; a single 10-second cap turned slow reads into connection errors.
 		_, pattern := mux.Handler(r)
+		timeout := 10 * time.Second
+		switch pattern {
+		case "GET /available-ips", "GET /probe-agent/targets", "POST /probe-agent/results":
+			timeout = 30 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
 		ctx = context.WithValue(ctx, databaseRequestKey{}, pattern)
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
