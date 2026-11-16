@@ -2,8 +2,12 @@ import "server-only";
 import { api } from "@/lib/api";
 import { pageHeaders, type PageResult } from "@/lib/pagination";
 
-export async function pagedQuery<T, Extra extends object = object>(path: string, signal?: AbortSignal): Promise<PageResult<T> & Extra> {
-  const { data, response } = await api<T[] | { items?: T[]; results?: T[] }>(path,{signal});
+export async function pagedQuery<T, Extra extends object = object>(
+  path: string,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<PageResult<T> & Extra> {
+  const { data, response } = await api<T[] | { items?: T[]; results?: T[] }>(path, { signal, timeoutMs });
   const meta = response.headers.get("X-List-Meta");
   return {
     ...(Array.isArray(data) ? {} : data),

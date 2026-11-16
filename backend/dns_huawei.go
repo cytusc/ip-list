@@ -151,7 +151,9 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 			continue
 		}
 		prefix, ok := strings.CutSuffix(r.Name, "."+c.Domain)
-		if !ok || (dnsCountry(prefix) == "" && !(c.WebsiteEnabled && prefix == "url")) || (r.Type != "A" && r.Type != "AAAA") {
+		// url.<domain> is tracked even while website switching is off, so a
+		// disabled website pool is deleted instead of silently frozen.
+		if !ok || (dnsCountry(prefix) == "" && prefix != "url") || (r.Type != "A" && r.Type != "AAAA") {
 			continue
 		}
 		key := dnsRecordKey(r.Name, r.Type)
@@ -195,10 +197,16 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 			r.Action = "hold"
 			r.Reason = "云端记录不是正常状态，暂不修改"
 		case len(r.Desired) == 0:
-			if len(existing) > 0 && managed[key] {
+			switch {
+			case r.Name == "url."+c.Domain && c.WebsiteEnabled:
+				// Website back-to-origin has no healthy substitute; keep the last
+				// published addresses instead of taking the site offline.
+				r.Action = "hold"
+				r.Reason = "网站回源池暂无合格 IP，保留上一轮解析"
+			case len(existing) > 0 && managed[key]:
 				r.Action = "delete"
 				r.Reason = "已接管的记录没有符合条件的 IP"
-			} else {
+			default:
 				r.Action = "hold"
 				r.Reason = "没有健康 IP，尚未接管的记录保留"
 			}

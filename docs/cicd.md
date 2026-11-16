@@ -37,6 +37,10 @@
 - 已安装 `curl`、Python 3、PostgreSQL 客户端和 `flock`。
 - Go API 监听 `127.0.0.1:8081`，Web 监听 `127.0.0.1:3000`，Nginx 提供外部 HTTPS。
 
+> **自签证书与探针绑定**：外部站点使用自签证书时，`/etc/ip-list.env` 的 `PROBE_TLS_PIN` 必须等于该证书公钥的指纹
+> （`openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64`）。
+> 证书续期后若不更新该值，所有节点的 TLS 探测都会失败而界面只显示"不可用"。换证时同步更新 `PROBE_TLS_PIN` 并重新部署探针。
+
 既有 systemd 的 `EnvironmentFile` 和 Xray 配置继续生效。部署通过 `release.conf` drop-in 指定发布目录及启动命令。
 
 ## 发布和恢复
