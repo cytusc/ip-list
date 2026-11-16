@@ -124,7 +124,9 @@ func (a *app) reuseUnfinishedNodeHealth(ctx context.Context, hash string, items 
 // Shared DNS entrances must work for every enabled accelerated TLS sample, with its own SNI.
 // Old scan evidence and ICMP success cannot establish current TLS/proxy health.
 func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidates []dnsCandidate, check func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error)) []string {
-	phase, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// Every enabled sample must be attempted twice per candidate; 60 seconds only
+	// covered part of the list, so unfinished IPs kept resetting their recovery.
+	phase, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 	deadline, _ := phase.Deadline()
 	type result struct {

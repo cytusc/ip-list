@@ -78,7 +78,8 @@ func (a *app) maintainNodeHealth(ctx context.Context) {
 }
 
 func (a *app) recheckNodeHealth(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
+	// Must outlast the 180 second check phase inside dnsCheckNodes plus the save.
+	ctx, cancel := context.WithTimeout(ctx, 210*time.Second)
 	defer cancel()
 	rows, err := a.db.Query(ctx, `SELECT host(p.ip) FROM node_ip_evidence p
  LEFT JOIN node_ip_health h ON h.ip=p.ip WHERE p.protocol='grpc' AND p.available

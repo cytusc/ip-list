@@ -264,3 +264,37 @@ ORDER BY hits_14d ASC, n.name LIMIT 60;
 - 未推送、未合并到 `main`、未部署生产。按 `docs/cicd.md`，推送 `main` 会触发 GitHub Actions 构建与发布。
 - 建议上线顺序仍按第 6 节：先超时与日志（当天可上），再退避与 `url.` 回收（观察 1–2 天），最后 CF 配额与保留策略。
 
+---
+
+## 9. 健康门禁放宽（2026-11-17）
+
+### 现场数据
+
+2026-11-17 06:50 的生产快照：`node_ip_pool` 有 93 个 `available`，但 `current_node_ip_pool` 和 `shared_node_ip_pool` 的可用行都是 **0**（11-16 21:00 曾是 46）。`ip_health_checks` 12 小时内 `passed` 3,448 次、`unknown` 1,289 次、`failed` 332 次；`ip_health_recovery` 105 行全部 `ready=false`（42 个隔离、62 个一轮未累积）。
+
+### 原因
+
+门禁要求"连续 3 轮 × 间隔 ≥5 分钟 × 覆盖 ≥10 分钟 × 全部加速样本各通过 2 次"，但实际节奏满足不了前两项：
+
+- 单轮复查预算只有 60 秒（`dns_nodes.go`），79 个候选 × 5 个样本 × 2 次尝试跑不完，每轮只覆盖一部分；
+- 复查按"最久未查优先"轮转，同一 IP 实际间隔约 10–13 分钟，而累积窗口以 15 分钟为界，稍一排队就清零；
+- 任意一次 `unknown` 同样清零。
+
+夜间 02:00 全量重扫刷新证据后，池子就贴在 0 附近震荡（当时只有 1 个 IP 累积到第 2 轮，说明不是死锁）。
+
+### 改动（保持判定语义不变，只调工程参数）
+
+| 位置 | 改动 |
+| --- | --- |
+| `backend/dns_nodes.go` | 单轮检测预算 60 秒 → **180 秒** |
+| `backend/node_health.go` | 复查外层超时 75 秒 → **210 秒**（必须大于内层预算） |
+| `backend/health_recovery.go` | 连续轮次间隙上限 15 分钟 → **20 分钟** |
+| `backend/health_recovery_test.go` | 对应用例的最后一次间隔 48 → 53 分钟（21 分钟，仍应清零） |
+
+未改动：仍需 3 轮、仍需全部样本各通过 2 次、隔离与解除隔离规则不变。
+
+### 验证方法
+
+部署后观察 `current_node_ip_pool` 的 `available` 行数与 `ip_health_recovery` 的 `ready` 行数是否在 1–2 小时内从 0 抬起来；同时看 `ip_health_checks` 的 `unknown` 占比是否下降（预算耗尽导致的 unknown 应该明显减少）。
+
+
