@@ -230,3 +230,37 @@ ORDER BY hits_14d ASC, n.name LIMIT 60;
 - **不要关掉 15 分钟健康门禁**：`current_node_ip_pool` 的可用 IP 会瞬间从 46 涨到几千个“看起来能用”的历史 IP，DNS 会把它们发出去，这是拿可用性换数字。
 - **不要给 `node_ip_pool` 跑全表 VACUUM**：245 MB 表加 autovacuum 已经够用，手工全表 VACUUM 会在这台 1.9 GB 内存的机器上锁表数分钟。
 - **不要用“重启服务”解决 CF 积压**：队列在 PG 里，重启只会让正在跑的那轮作废重来。
+
+---
+
+## 8. 实施记录（2026-11-16，分支 `optimize/scan-queue-and-retention`）
+
+### 已落地的改动
+
+| 提交 | 内容 | 主要文件 |
+| --- | --- | --- |
+| `2644f2c` | 项目分析与修复方案文档、README/cicd 同步 | `docs/`, `README.md` |
+| `e33a94d` | 请求超时按路由分级；退避接入夜间队列；`url.` 记录回收；失败样本 30 天保留；飞书可重试错误重试一次；每轮扫描产出摘要日志 | `main.go`、`automatic_scans.go`、`network_scan_backoff.go`、`dns_huawei.go`、`dns_notify.go`、`data_retention.go`、`scans.go`、`dns_test.go` |
+| `c4542a7` | 可用 IP 列表使用 32 秒请求预算 | `src/lib/api.ts`、`paged-query.ts`、`available-ips/page.tsx` |
+| `6ba2458` | 客户端分页代理同步放宽超时 | `src/app/api/available-ips/route.ts`、`lists/[kind]/route.ts` |
+| `c257680` | 夜间 CF 配额 `--cf-limit`、网段体检 SQL | `scripts/daily-scan.py`、`scripts/range-audit.sql` |
+
+### 与方案的差异
+
+- **P0-4 增加了一条保护**：`WebsiteEnabled=true` 且 `url.` 暂无合格 IP 时走 `hold` 而不是 `delete`，避免回源记录被瞬时清空；只有关闭网站优选才删除。`TestDNSWebsiteRecordLifecycle` 覆盖这两个分支。
+- **P0-3 只提高了并发（16→24），超时保持 5 秒**。3 秒超时会把“握手慢但可用”的 IP 判死，损失比收益大。
+- **退避判断放在消费侧**而不是入队侧：队列项被拾取时若 `next_scan_at` 未到期则直接删除条目。这样不会出现“入队侧跳过、遗留条目永远排不空”的死角。
+
+### 验证结果
+
+- `go build ./...`、`go vet ./...`、`go test .` 全部通过（DB 相关用例因未设置 `TEST_DATABASE_URL` 自动 skip）。
+- `tsc --noEmit`、`eslint src` 无告警。
+- 新增 SQL 在生产库做过 `EXPLAIN`（不写入）验证：退避 INSERT 走主键索引；CF 配额排名查询 187 个网段耗时 9.2 ms。
+- 顺带修了 `TestDatabaseQueryTrace` 在 Windows 上的误报（时钟粒度导致 elapsed 为 0），该失败在 `cd16660` 上复现，与本次改动无关。
+- 已知未覆盖：`backend/cmd/latency-probe` 的 `TestWindowsNativeICMPLoopback/::1` 在 Windows 本机失败，属环境问题，CI 在 Linux 上不受影响。
+
+### 尚未执行（需要你确认）
+
+- 未推送、未合并到 `main`、未部署生产。按 `docs/cicd.md`，推送 `main` 会触发 GitHub Actions 构建与发布。
+- 建议上线顺序仍按第 6 节：先超时与日志（当天可上），再退避与 `url.` 回收（观察 1–2 天），最后 CF 配额与保留策略。
+
