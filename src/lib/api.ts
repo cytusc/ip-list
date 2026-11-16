@@ -10,24 +10,28 @@ export class ApiError extends Error {
     super(message);
   }
 }
+export type ApiOptions = RequestInit & { timeoutMs?: number };
 export async function api<T>(
   path: string,
-  options: RequestInit = {},
+  options: ApiOptions = {},
 ): Promise<{ data: T; response: Response }> {
+  const { timeoutMs = 12000, ...init } = options;
   let response: Response;
   try {
     response = await fetch(
       `${process.env.API_URL || "http://127.0.0.1:8081"}${path}`,
       {
-        ...options,
+        ...init,
         headers: {
           "Content-Type": "application/json",
           Cookie: (await cookies()).toString(),
           Origin: process.env.APP_ORIGIN || "http://localhost:3000",
-          ...options.headers,
+          ...init.headers,
         },
         cache: "no-store",
-        signal: options.signal ? AbortSignal.any([options.signal,AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000),
+        signal: init.signal
+          ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       },
     );
   } catch {
