@@ -43,6 +43,19 @@
 
 既有 systemd 的 `EnvironmentFile` 和 Xray 配置继续生效。部署通过 `release.conf` drop-in 指定发布目录及启动命令。
 
+### 手工安装 Python 脚本时必须用 LF 换行
+
+发布包不含 `scripts/daily-scan.py`，服务器上的 `/usr/local/sbin/ip-list-daily-scan` 需手工更新。从 Windows 工作区直接上传的文件是 CRLF，shebang 会变成 `#!/usr/bin/python3\r`，systemd 执行时报 `status=203/EXEC`（"No such file or directory"），而 `python3 -m py_compile` 仍然通过，很容易误判成文件缺失。
+
+上传后先确认：
+
+```sh
+head -1 /usr/local/sbin/ip-list-daily-scan | od -An -c   # 结尾必须是 \n，不能是 \r \n
+grep -c $'\r' /usr/local/sbin/ip-list-daily-scan          # 应为 0
+systemd-run --unit=scan-check --collect --wait --pipe \
+  --property=EnvironmentFile=/etc/ip-list.env /usr/local/sbin/ip-list-daily-scan --check
+```
+
 ## 发布和恢复
 
 1. 发布包传到 `/var/tmp/ip-list-cicd/<run-id>-<attempt>/` 并校验 SHA-256。
