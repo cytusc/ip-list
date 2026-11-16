@@ -104,5 +104,8 @@ func (a *app) recheckNodeHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return a.dnsCheckNodes(ctx, items)
+	// The publish path keeps its short budget; only this sweep may run long enough
+	// for every sample to be attempted twice per candidate. Skipped when a publish
+	// owns the node check.
+	return a.dnsCheckNodesBackground(ctx, items)
 }

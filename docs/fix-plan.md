@@ -284,9 +284,13 @@ ORDER BY hits_14d ASC, n.name LIMIT 60;
 
 ### 改动（保持判定语义不变，只调工程参数）
 
+第一次改动把内层预算统一提到 180 秒，结果 **DNS 发布路径跟着超时**：`executeDNS` 用同一个 `dnsCheckNodes`，发布自身只有 3 分钟上下文，连续三次同步都报 `DNS 发布前节点复查失败: context deadline exceeded`、`records` 为空（07:14–07:30 实测）。因此最终按调用方区分预算：
+
 | 位置 | 改动 |
 | --- | --- |
-| `backend/dns_nodes.go` | 单轮检测预算 60 秒 → **180 秒** |
+| `backend/dns_nodes.go` | 发布预算 60 秒（不变）；**后台复查预算 150 秒**，并发 worker 8 → 12 |
+| `backend/dns_nodes.go` | 两条路径共用 `nodeCheckMu`：发布占锁等待，后台复查 `TryLock` 抢不到就跳过本轮（两者并发写 `node_ip_health` 会让对方报"检测结果已更新"） |
+| `backend/dns.go` | 发布上下文 3 分钟 → **4 分钟**（等待复查进行中的锁 + 自身 60 秒检查） |
 | `backend/node_health.go` | 复查外层超时 75 秒 → **210 秒**（必须大于内层预算） |
 | `backend/health_recovery.go` | 连续轮次间隙上限 15 分钟 → **20 分钟** |
 | `backend/health_recovery_test.go` | 对应用例的最后一次间隔 48 → 53 分钟（21 分钟，仍应清零） |
