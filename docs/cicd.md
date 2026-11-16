@@ -43,9 +43,13 @@
 
 既有 systemd 的 `EnvironmentFile` 和 Xray 配置继续生效。部署通过 `release.conf` drop-in 指定发布目录及启动命令。
 
-### 手工安装 Python 脚本时必须用 LF 换行
+### 夜间队列脚本由部署步骤自动安装
 
-发布包不含 `scripts/daily-scan.py`，服务器上的 `/usr/local/sbin/ip-list-daily-scan` 需手工更新。从 Windows 工作区直接上传的文件是 CRLF，shebang 会变成 `#!/usr/bin/python3\r`，systemd 执行时报 `status=203/EXEC`（"No such file or directory"），而 `python3 -m py_compile` 仍然通过，很容易误判成文件缺失。
+`scripts/daily-scan.py` 随发布包下发到 `<release>/scripts/`，`deploy-release.sh` 在应用健康检查通过后安装到 `/usr/local/sbin/ip-list-daily-scan`（`root:root 0755`），内容不变时跳过，变更时把上一版留为 `.prev`。安装失败只告警，不回滚已健康的发布。
+
+因此修改夜间队列逻辑后，走正常发布流程即可，不需要再手工上传脚本。
+
+若确实要手工安装，注意 Windows 工作区里的文件是 CRLF 换行，shebang 会变成 `#!/usr/bin/python3\r`，systemd 执行时报 `status=203/EXEC`（"No such file or directory"），而 `python3 -m py_compile` 仍然通过，容易误判成文件缺失。
 
 上传后先确认：
 

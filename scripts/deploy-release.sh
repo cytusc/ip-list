@@ -155,6 +155,38 @@ for ((attempt=0; attempt<30; attempt++)); do
   sleep 2
 done
 [[ "$healthy" -eq 1 ]] || { echo "Application health checks failed" >&2; exit 1; }
+
+# The nightly queue script runs from /usr/local/sbin under the systemd timer, not
+# from the release directory, so it has to be installed here. Failures must not
+# roll back a healthy application; they only leave the previous script in place.
+nightly_source="$release_dir/scripts/daily-scan.py"
+nightly_target=/usr/local/sbin/ip-list-daily-scan
+if [[ -f "$nightly_source" ]]; then
+  nightly_tmp="$release_dir/.daily-scan.py.install"
+  # A CRLF checkout turns the shebang into "#!/usr/bin/python3\r" and systemd
+  # then fails with 203/EXEC while python3 -m py_compile still succeeds.
+  if sed 's/\r$//' "$nightly_source" > "$nightly_tmp" \
+    && chmod 755 "$nightly_tmp" \
+    && python3 -m py_compile "$nightly_tmp" 2>/dev/null; then
+    nightly_hash=$(sha256sum "$nightly_tmp" | cut -d' ' -f1)
+    installed_hash=-
+    if [[ -f "$nightly_target" ]]; then installed_hash=$(sha256sum "$nightly_target" | cut -d' ' -f1); fi
+    if [[ "$nightly_hash" == "$installed_hash" ]]; then
+      echo "Nightly scan script is unchanged: $nightly_target"
+    else
+      if [[ -f "$nightly_target" ]]; then cp -a "$nightly_target" "$nightly_target.prev"; fi
+      if install -o root -g root -m 755 "$nightly_tmp" "$nightly_target"; then
+        echo "Updated nightly scan script: $nightly_target"
+      else
+        echo "Could not install $nightly_target; the previous script stays in use" >&2
+      fi
+    fi
+  else
+    echo "Nightly scan script could not be prepared; the installed version stays in use" >&2
+  fi
+  rm -f "$nightly_tmp"
+  rm -rf "$release_dir/__pycache__" "$release_dir/.daily-scan.py.install"
+fi
 if [[ -n "$previous" && "$previous" != "$release_dir" ]]; then
   ln -s "$previous" "$previous_link.next.$$"
   mv -Tf "$previous_link.next.$$" "$previous_link"
