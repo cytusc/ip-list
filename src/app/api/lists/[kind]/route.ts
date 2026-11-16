@@ -15,7 +15,12 @@ export async function GET(request: Request, { params }: { params: Promise<{kind:
   if(kind==="scan-detail" && /^\d+$/.test(query.get("id") || "")) {path=`/scan-records/${query.get("id")}`;query.set("paged","1");}
   if (!path) return Response.json({error:"列表不存在"},{status:404});
   try {
-    return Response.json(await pagedQuery(`${path}?${query}`,request.signal), {headers:{"Cache-Control":"no-store"}});
+    // The available-IP list aggregates the whole shared pool and probe history;
+    // it shares the Go API's longer read budget instead of the 12s default.
+    return Response.json(
+      await pagedQuery(`${path}?${query}`, request.signal, kind === "available-ips" ? 32000 : undefined),
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch(error) {
     return Response.json({error:error instanceof ApiError ? error.message : "列表加载失败，请重试"}, {status:error instanceof ApiError ? error.status : 503});
   }
