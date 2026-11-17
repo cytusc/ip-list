@@ -87,7 +87,7 @@ func TestShareLinkParameters(t *testing.T) {
 					t.Fatal(s)
 				}
 			case "grpc":
-				if !strings.Contains(s, "svc") {
+				if !strings.Contains(s, "svc") || config["grpc-opts"].(map[string]any)["grpc-user-agent"] != "ip-list/1.0" {
 					t.Fatal(s)
 				}
 			}

@@ -95,6 +95,10 @@ func parseShare(raw string) (map[string]any, *url.URL, error) {
 		return nil, nil, errors.New("无法解析该节点链接，请检查参数")
 	}
 	config := configs[0]
+	if q.Get("type") == "grpc" {
+		// Identify our probes; the kernel's grpc-go/1.36.0 default triggers CF DDoS false positives.
+		config["grpc-opts"].(map[string]any)["grpc-user-agent"] = "ip-list/1.0"
+	}
 	if u.Scheme == "trojan" {
 		// Mihomo uses implicit TLS and sni; Xray uses explicit TLS and servername.
 		config["tls"] = true

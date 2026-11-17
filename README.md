@@ -6,6 +6,8 @@
 
 已接入 mihomo v1.19.33 内核，用于批量筛选可用于代理节点的 IP。尚未实现规则下发或流量过滤，节点启用状态不表示在线状态。
 
+Mihomo gRPC 探测使用 `ip-list/1.0` User-Agent：2026-11-17 实测内核默认的 `grpc-go/1.36.0` 被 Cloudflare L7 DDoS 规则误拦截为 403，表现为 `unexpected response version`。此设置覆盖扫描、后台复查及测速，不修改分享链接；外部 gRPC 客户端若遇到同样拦截，需自行设置兼容的 User-Agent。Xray 检测路径不受此设置影响。
+
 ## 筛选可用 IP
 
 1. 在节点页选择「导入 VLESS 节点」，每行一条链接，支持 HTTPUpgrade、XHTTP、gRPC、WS 和 TCP。
