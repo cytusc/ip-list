@@ -33,20 +33,6 @@ func (a *app) pruneConnectivityData(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	removed += tag.RowsAffected()
-	// Failure evidence is only useful while ranges are still being rescanned;
-	// without an age bound this table grows by every distinct address ever probed.
-	tag, err = tx.Exec(ctx, `DELETE FROM node_ip_pool
- WHERE checked_at < now()-interval '30 days' AND NOT available`)
-	if err != nil {
-		return 0, err
-	}
-	removed += tag.RowsAffected()
-	tag, err = tx.Exec(ctx, `DELETE FROM ip_results
- WHERE checked_at < now()-interval '30 days' AND NOT available`)
-	if err != nil {
-		return 0, err
-	}
-	removed += tag.RowsAffected()
 	if _, err = tx.Exec(ctx, `DELETE FROM ip_health_checks WHERE checked_at<now()-interval '7 days'`); err != nil {
 		return 0, err
 	}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,13 +15,6 @@ import (
 	"strings"
 	"time"
 )
-
-// A transport failure or 5xx response may succeed on a second attempt; a Feishu
-// business error code or 4xx will fail the same way every time.
-type retryableNotifyError struct{ err error }
-
-func (e retryableNotifyError) Error() string { return e.err.Error() }
-func (e retryableNotifyError) Unwrap() error { return e.err }
 
 // Leave headroom below Feishu's 30 KB message limit, including JSON escaping.
 const dnsFeishuCardLimit = 20 * 1024
@@ -230,11 +222,8 @@ func sendDNSFeishu(ctx context.Context, client *http.Client, webhook string, mes
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			if ctx.Err() != nil {
-				return fmt.Errorf("飞书通知发送超时或已取消")
-			}
 			// HTTP errors include the request URL; never log the webhook token.
-			return retryableNotifyError{fmt.Errorf("飞书通知请求失败，请检查网络和 Webhook 配置")}
+			return fmt.Errorf("飞书通知请求失败，请检查网络和 Webhook 配置")
 		}
 		var result struct {
 			Code       *int `json:"code"`
@@ -243,11 +232,7 @@ func sendDNSFeishu(ctx context.Context, client *http.Client, webhook string, mes
 		err = json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&result)
 		resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			statusErr := fmt.Errorf("飞书通知返回 HTTP %d（第 %d/%d 张卡片）", resp.StatusCode, i+1, len(messages))
-			if resp.StatusCode >= http.StatusInternalServerError {
-				return retryableNotifyError{statusErr}
-			}
-			return statusErr
+			return fmt.Errorf("飞书通知返回 HTTP %d（第 %d/%d 张卡片）", resp.StatusCode, i+1, len(messages))
 		}
 		if err != nil || (result.Code == nil && result.StatusCode == nil) {
 			return fmt.Errorf("飞书通知响应格式无效")
@@ -271,18 +256,9 @@ func notifyDNSReport(report *dnsReport) {
 	if err == nil && len(messages) > 0 {
 		// Cloud writes may have succeeded even if the run was canceled or only
 		// partially completed. Give their notification its own bounded context.
-		client := &http.Client{Timeout: 5 * time.Second}
-		for attempt := 1; attempt <= 2; attempt++ {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			err = sendDNSFeishu(ctx, client, webhook, messages)
-			cancel()
-			var retryable retryableNotifyError
-			if err == nil || !errors.As(err, &retryable) || attempt == 2 {
-				break
-			}
-			log.Printf("飞书通知失败，2 秒后重试一次：%v", err)
-			time.Sleep(2 * time.Second)
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		err = sendDNSFeishu(ctx, &http.Client{Timeout: 5 * time.Second}, webhook, messages)
 	}
 	if err != nil {
 		warning := "DNS 变更飞书通知未全部送达：" + err.Error()

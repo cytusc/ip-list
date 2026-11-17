@@ -234,9 +234,7 @@ func (a *app) runDNSOnce(ctx context.Context) {
 	if _, err = conn.Exec(ctx, "UPDATE dns_settings SET running=true,requested='' WHERE id"); err != nil {
 		return
 	}
-	// Node publishing may wait for a running recovery sweep before its own 60 second
-	// check phase, so the run needs headroom beyond the five minute interval.
-	runCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	runCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	report := dnsReport{Mode: requested, Domain: c.Domain, Config: c, StartedAt: time.Now().UTC(), Records: []dnsPlanRecord{}, Candidates: []dnsCandidate{}}
 	if err = c.validate(); err == nil {

@@ -10,33 +10,7 @@ import (
 	"time"
 )
 
-// Publishing shares one 60 second budget with the rest of the sync; the background
-// recovery sweep runs longer so every sample can be attempted twice per candidate.
-const (
-	nodePublishBudget  = 60 * time.Second
-	nodeRecoveryBudget = 150 * time.Second
-)
-
-// Both paths write node_ip_health and the recovery rows, and a concurrent writer
-// makes the other run fail with "检测结果已更新". Publishing takes the lock and
-// waits; the background sweep skips a round instead of delaying a publish.
-var nodeCheckMu sync.Mutex
-
 func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) error {
-	nodeCheckMu.Lock()
-	defer nodeCheckMu.Unlock()
-	return a.dnsCheckNodesWithin(ctx, candidates, nodePublishBudget)
-}
-
-func (a *app) dnsCheckNodesBackground(ctx context.Context, candidates []dnsCandidate) error {
-	if !nodeCheckMu.TryLock() {
-		return nil
-	}
-	defer nodeCheckMu.Unlock()
-	return a.dnsCheckNodesWithin(ctx, candidates, nodeRecoveryBudget)
-}
-
-func (a *app) dnsCheckNodesWithin(ctx context.Context, candidates []dnsCandidate, budget time.Duration) error {
 	needed := false
 	for _, item := range candidates {
 		needed = needed || (item.Pool != "cf" && item.State != "failed")
@@ -107,7 +81,7 @@ func (a *app) dnsCheckNodesWithin(ctx context.Context, candidates []dnsCandidate
 			eligible[item.IP] = true
 		}
 	}
-	states := dnsCheckNodesBudget(ctx, templates, candidates, check, budget)
+	states := dnsCheckNodesWith(ctx, templates, candidates, check)
 	if err := a.saveNodeHealth(ctx, samplesHash, started, candidates, states); err != nil {
 		return err
 	}
@@ -150,11 +124,7 @@ func (a *app) reuseUnfinishedNodeHealth(ctx context.Context, hash string, items 
 // Shared DNS entrances must work for every enabled accelerated TLS sample, with its own SNI.
 // Old scan evidence and ICMP success cannot establish current TLS/proxy health.
 func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidates []dnsCandidate, check func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error)) []string {
-	return dnsCheckNodesBudget(ctx, templates, candidates, check, nodePublishBudget)
-}
-
-func dnsCheckNodesBudget(ctx context.Context, templates []map[string]any, candidates []dnsCandidate, check func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error), budget time.Duration) []string {
-	phase, cancel := context.WithTimeout(ctx, budget)
+	phase, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	deadline, _ := phase.Deadline()
 	type result struct {
@@ -166,7 +136,7 @@ func dnsCheckNodesBudget(ctx context.Context, templates []map[string]any, candid
 	results := make([][]result, len(candidates))
 	jobs := make(chan job)
 	var workers sync.WaitGroup
-	for worker := 0; worker < 12; worker++ {
+	for worker := 0; worker < 8; worker++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()

@@ -134,20 +134,6 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 	if err != nil {
 		return false, err
 	}
-	remove := func() error {
-		_, err := a.db.Exec(ctx, "DELETE FROM network_auto_scans WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND created_at=$4 AND recheck_after IS NOT DISTINCT FROM $5::timestamptz", networkID, protocol, cidr, createdAt, recheckAfter)
-		return err
-	}
-	// Ranges without output for weeks are backed off to 1/3/5/7/15 day intervals;
-	// the nightly queue still offers them, so drop the entry instead of scanning.
-	var due bool
-	if err = a.db.QueryRow(ctx, `SELECT COALESCE((SELECT next_scan_at<=now() FROM network_scan_backoff
-  WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr),true)`, networkID, protocol, cidr).Scan(&due); err != nil {
-		return false, err
-	}
-	if !due {
-		return false, remove()
-	}
 	input, raw, name, targetID, err := a.automaticScanSample(ctx, protocol)
 	if err != nil {
 		return false, err
@@ -183,12 +169,11 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 	if err != nil {
 		return false, err
 	}
+	remove := func() error {
+		_, err := a.db.Exec(ctx, "DELETE FROM network_auto_scans WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND created_at=$4 AND recheck_after IS NOT DISTINCT FROM $5::timestamptz", networkID, protocol, cidr, createdAt, recheckAfter)
+		return err
+	}
 	if total == 0 {
-		// The range is fully inspected for this window: this is the moment a
-		// no-output streak is meaningful, not every 4096-address batch.
-		if backoffErr := a.recordQueueBackoff(ctx, networkID, protocol, cidr); backoffErr != nil {
-			log.Printf("记录网段退避失败 network=%s protocol=%s: %v", networkID, protocol, backoffErr)
-		}
 		return false, remove()
 	}
 	if (protocol != "cf" || recheckAfter != nil) && total > 4096 {
@@ -224,10 +209,7 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 func (a *app) automaticScanSample(ctx context.Context, protocol string) (scanInput, string, string, string, error) {
 	input := scanInput{URL: "https://www.gstatic.com/generate_204", Timeout: 5000, Concurrency: defaultNodeScanConcurrency}
 	if protocol == "cf" {
-		// CF probes are plain TLS handshakes against the target domain; 24 keeps
-		// the box responsive while cutting a 4096-address round from ~21 to ~14
-		// minutes. The nightly queue itself is capped by scripts/daily-scan.py.
-		input.Concurrency = 24
+		input.Concurrency = 16
 		preferred := ""
 		if data, err := a.redis.Get(ctx, cfLatestKey).Result(); err == nil {
 			if snapshot, err := a.redis.Get(ctx, scanKey(data)).Bytes(); err == nil {

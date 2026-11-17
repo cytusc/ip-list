@@ -428,13 +428,6 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 				defer stop()
 				finished := time.Now().UTC()
 				job.FinishedAt = &finished
-				pool := job.Protocol
-				if job.TargetID != "" {
-					pool = "cf"
-				}
-				log.Printf("扫描完成 job=%s pool=%s ranges=%s total=%d success=%d status=%s elapsed=%s",
-					job.ID, pool, strings.Join(job.CIDRs, ","), job.Total, job.Success, job.Status,
-					finished.Sub(job.StartedAt).Round(time.Second))
 				if err := a.saveScanResults(finalCtx, job); err != nil {
 					job.Status = "interrupted"
 					job.Error = "可用 IP 列表保存失败，请重新测试"

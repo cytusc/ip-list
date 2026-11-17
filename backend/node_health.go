@@ -78,8 +78,7 @@ func (a *app) maintainNodeHealth(ctx context.Context) {
 }
 
 func (a *app) recheckNodeHealth(ctx context.Context) error {
-	// Must outlast the 180 second check phase inside dnsCheckNodes plus the save.
-	ctx, cancel := context.WithTimeout(ctx, 210*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
 	defer cancel()
 	rows, err := a.db.Query(ctx, `SELECT host(p.ip) FROM node_ip_evidence p
  LEFT JOIN node_ip_health h ON h.ip=p.ip WHERE p.protocol='grpc' AND p.available
@@ -104,8 +103,5 @@ func (a *app) recheckNodeHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// The publish path keeps its short budget; only this sweep may run long enough
-	// for every sample to be attempted twice per candidate. Skipped when a publish
-	// owns the node check.
-	return a.dnsCheckNodesBackground(ctx, items)
+	return a.dnsCheckNodes(ctx, items)
 }

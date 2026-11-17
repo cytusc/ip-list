@@ -88,11 +88,9 @@
 
 每天北京时间 05:00 清理超过 24 小时的已结束或中断扫描记录、超过 24 小时的探针采样及汇总，DNS 同步日志保留最近 20 次，然后执行 VACUUM/ANALYZE。当前 IP 池、配置和活跃扫描保留。大表本体超过 64 MB 且空闲比例达到 50% 时，先备份数据库，再执行 VACUUM FULL 回收磁盘；相关查询可能短暂等待，获取表锁超过 2 秒则失败退出，单条语句最多 120 秒。备份存放在 `/var/lib/postgresql/ip-list-maintenance`，成功重整后保留最近 3 份。停机错过维护时间后会补执行，日志可通过 `journalctl -u ip-list-daily-maintenance` 查看。
 
-服务器夜间全量检测使用 `scripts/daily-scan.py` 和 `scripts/systemd/ip-list-daily-scan.*`。脚本位于 `/usr/local/sbin/ip-list-daily-scan`（0755），由 CI 发布流程在健康检查通过后自动安装（内容不变时跳过，变更时保留 `.prev`）；systemd 单元需一次性安装到 `/etc/systemd/system/`，执行 `systemctl daemon-reload && systemctl enable --now ip-list-daily-scan.timer`。需要 Python 3.9+、`psql` 和 `/etc/ip-list.env` 中的 API、管理员及数据库配置。
+服务器夜间全量检测使用 `scripts/daily-scan.py` 和 `scripts/systemd/ip-list-daily-scan.*`。将脚本安装到 `/usr/local/sbin/ip-list-daily-scan`（0755），单元安装到 `/etc/systemd/system/`，执行 `systemctl daemon-reload && systemctl enable --now ip-list-daily-scan.timer`。需要 Python 3.9+、`psql` 和 `/etc/ip-list.env` 中的 API、管理员及数据库配置。
 
 定时器每天北京时间 02:00 将全部启用网段加入 gRPC 共用池与 CF 共用池的持久化全量队列，不受接口分页和节点单次 4096 IP 上限影响。后台按批执行，同池已有任务时等待；服务重启后继续。以最近一次凌晨 2 点为结果截止时间，旧检测结果保留并重新检测，重叠网段复用该时间之后的结果。已有未完成全量队列保留原截止时间，避免每天重置进度；停机错过时间后会补触发。`--check` 验证真实入队事务后回滚，`--nodes-only` 只补跑节点检测。
-
-连续无产出的网段按 1、3、5、7、15 天退避（`network_scan_backoff`）：队列项在网段整段测完且 24 小时内没有可用 IP 时计入退避，未到期的队列项会被直接丢弃，不再重复扫描。CF 探测受同一把锁串行、速率约每小时 2 万个地址，因此每个夜晚只为产出最高的 `--cf-limit` 个网段（默认 30）入队 CF 全量，其余网段顺延到后续夜晚。
 
 在「连通性测试」选择 gRPC 样本节点与网段，可进行增量检测、单次全量检测或自动巡检。所有节点协议共用一个检测任务，避免重复扫描；CF 检测独立运行。没有 gRPC 节点时，需先导入并启用。
 

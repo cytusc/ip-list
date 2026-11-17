@@ -35,9 +35,6 @@ func TestDatabaseQueryTrace(t *testing.T) {
 	}
 	output.Reset()
 	tracer.threshold = time.Nanosecond
-	// Windows clock granularity can make two back-to-back reads equal; give the
-	// elapsed measurement a tick to move past a one-nanosecond threshold.
-	time.Sleep(time.Millisecond)
 	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
 	if !strings.Contains(output.String(), "error=none") {
 		t.Fatal("slow successful query not logged")

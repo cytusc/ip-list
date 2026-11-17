@@ -3,7 +3,7 @@ import type { AvailableIP } from "@/lib/types";
 
 export async function GET() {
   try {
-    const { data } = await api<AvailableIP[]>("/available-ips", { timeoutMs: 32000 });
+    const { data } = await api<AvailableIP[]>("/available-ips");
     return Response.json(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return Response.json(

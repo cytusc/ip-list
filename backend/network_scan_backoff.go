@@ -124,37 +124,3 @@ func (a *app) updateDailyNetworkBackoff(ctx context.Context, job scanJob) error 
 }
 
 func nextDailyScanAt() time.Time { return time.Now().UTC().Add(24 * time.Hour) }
-
-// The nightly queue drains large ranges in batches over hours; record the streak
-// once, when the queue entry is removed and the whole range has been inspected.
-func (a *app) recordQueueBackoff(ctx context.Context, networkID, protocol, cidr string) error {
-	if protocol != connectivityProtocol && protocol != "cf" {
-		return nil
-	}
-	table := "node_ip_pool"
-	if protocol == "cf" {
-		table = "cf_ip_pool"
-	}
-	_, err := a.db.Exec(ctx, `
-WITH prev AS (
- SELECT COALESCE((SELECT no_output_streak FROM network_scan_backoff
-  WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr),0) AS streak
-), outcome AS (
- SELECT EXISTS(SELECT 1 FROM `+table+`
-  WHERE available AND ip <<= $3::cidr AND checked_at>now()-interval '24 hours') AS produced
-)
-INSERT INTO network_scan_backoff(network_id,cidr,protocol,no_output_streak,interval_days,next_scan_at,updated_at)
-SELECT $1,$3::cidr,$2,
- CASE WHEN o.produced THEN 0 ELSE p.streak+1 END,
- CASE WHEN o.produced THEN 1 WHEN p.streak<2 THEN 1 WHEN p.streak=2 THEN 3
-      WHEN p.streak=3 THEN 5 WHEN p.streak=4 THEN 7 ELSE 15 END,
- now()+make_interval(days => CASE WHEN o.produced THEN 1 WHEN p.streak<2 THEN 1
-      WHEN p.streak=2 THEN 3 WHEN p.streak=3 THEN 5 WHEN p.streak=4 THEN 7 ELSE 15 END),
- now()
-FROM prev p, outcome o
-ON CONFLICT(network_id,protocol) DO UPDATE SET
- cidr=excluded.cidr,no_output_streak=excluded.no_output_streak,
- interval_days=excluded.interval_days,next_scan_at=excluded.next_scan_at,updated_at=excluded.updated_at`,
-		networkID, protocol, cidr)
-	return err
-}

@@ -37,28 +37,7 @@
 - 已安装 `curl`、Python 3、PostgreSQL 客户端和 `flock`。
 - Go API 监听 `127.0.0.1:8081`，Web 监听 `127.0.0.1:3000`，Nginx 提供外部 HTTPS。
 
-> **自签证书与探针绑定**：外部站点使用自签证书时，`/etc/ip-list.env` 的 `PROBE_TLS_PIN` 必须等于该证书公钥的指纹
-> （`openssl x509 -in cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64`）。
-> 证书续期后若不更新该值，所有节点的 TLS 探测都会失败而界面只显示"不可用"。换证时同步更新 `PROBE_TLS_PIN` 并重新部署探针。
-
 既有 systemd 的 `EnvironmentFile` 和 Xray 配置继续生效。部署通过 `release.conf` drop-in 指定发布目录及启动命令。
-
-### 夜间队列脚本由部署步骤自动安装
-
-`scripts/daily-scan.py` 随发布包下发到 `<release>/scripts/`，`deploy-release.sh` 在应用健康检查通过后安装到 `/usr/local/sbin/ip-list-daily-scan`（`root:root 0755`），内容不变时跳过，变更时把上一版留为 `.prev`。安装失败只告警，不回滚已健康的发布。
-
-因此修改夜间队列逻辑后，走正常发布流程即可，不需要再手工上传脚本。
-
-若确实要手工安装，注意 Windows 工作区里的文件是 CRLF 换行，shebang 会变成 `#!/usr/bin/python3\r`，systemd 执行时报 `status=203/EXEC`（"No such file or directory"），而 `python3 -m py_compile` 仍然通过，容易误判成文件缺失。
-
-上传后先确认：
-
-```sh
-head -1 /usr/local/sbin/ip-list-daily-scan | od -An -c   # 结尾必须是 \n，不能是 \r \n
-grep -c $'\r' /usr/local/sbin/ip-list-daily-scan          # 应为 0
-systemd-run --unit=scan-check --collect --wait --pipe \
-  --property=EnvironmentFile=/etc/ip-list.env /usr/local/sbin/ip-list-daily-scan --check
-```
 
 ## 发布和恢复
 

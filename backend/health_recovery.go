@@ -19,13 +19,10 @@ type healthRecovery struct {
 }
 
 // Count spaced rounds, never repeated previews or simultaneous background jobs.
-// A gap longer than 20 minutes restarts the streak: the background recheck runs
-// every five minutes over a rotating candidate list, so the same IP is normally
-// revisited every 10-13 minutes and a 15 minute cut-off never let it accumulate.
 func (h *healthRecovery) observe(status string, at time.Time, control bool) bool {
 	switch status {
 	case "passed":
-		if h.Since.IsZero() || at.Sub(h.CountedAt) > 20*time.Minute {
+		if h.Since.IsZero() || at.Sub(h.CountedAt) > 15*time.Minute {
 			h.Since, h.CountedAt, h.Rounds = at, at, 1
 		} else if at.Sub(h.CountedAt) >= 5*time.Minute {
 			h.CountedAt, h.Rounds = at, h.Rounds+1

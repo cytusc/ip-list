@@ -31,7 +31,7 @@ func TestHealthRecoverySpacedRounds(t *testing.T) {
 	if !h.observe("passed", at.Add(32*time.Minute), true) || h.Quarantined {
 		t.Fatal("recovery failed", h)
 	}
-	if h.observe("passed", at.Add(53*time.Minute), true) || h.Rounds != 1 {
+	if h.observe("passed", at.Add(48*time.Minute), true) || h.Rounds != 1 {
 		t.Fatal("stale gap did not reset streak", h)
 	}
 }

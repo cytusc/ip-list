@@ -22,16 +22,6 @@ WITH queued AS (
  FROM networks n CROSS JOIN (VALUES ('grpc'),('cf')) AS p(protocol)
  WHERE n.enabled AND (p.protocol='grpc' OR NOT :'nodes_only'::boolean)
  AND (p.protocol='grpc' OR EXISTS(SELECT 1 FROM cf_targets))
- -- CF probes bind the whole pool on one lock and run at ~20k addresses/hour, so
- -- queue only the ranges that currently produce, capped by --cf-limit per night.
- AND (p.protocol='grpc' OR n.id IN (
-   SELECT ranked.id FROM (
-     SELECT n2.id,
-       row_number() OVER (ORDER BY (SELECT count(*) FROM node_ip_pool pl
-         WHERE pl.available AND pl.ip <<= n2.cidr) DESC, n2.id) AS rn
-     FROM networks n2 WHERE n2.enabled
-   ) ranked WHERE ranked.rn <= :'cf_limit'::int
- ))
  ON CONFLICT(network_id,protocol) DO UPDATE SET
   cidr=excluded.cidr,user_id=excluded.user_id,
   created_at=now(),recheck_after=excluded.recheck_after
@@ -69,8 +59,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='Validate the queue transaction, then roll it back')
     parser.add_argument('--nodes-only', action='store_true', help='Repair a missed node run without queuing CF again')
-    parser.add_argument('--cf-limit', type=int, default=30,
-                        help='Queue at most this many producing ranges for CF (default 30)')
     args = parser.parse_args()
     base = os.environ.get('API_URL', 'http://127.0.0.1:8081')
     cookie = ''
@@ -96,8 +84,7 @@ def main():
         result = subprocess.run(
             ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1',
              '-v', 'user_id=' + user_id, '-v', 'cutoff=' + cutoff,
-             '-v', 'nodes_only=' + str(args.nodes_only).lower(),
-             '-v', 'cf_limit=' + str(max(0, args.cf_limit))],
+             '-v', 'nodes_only=' + str(args.nodes_only).lower()],
             input=QUEUE_SQL + ('ROLLBACK;' if args.check else 'COMMIT;'),
             env=env, text=True, capture_output=True, timeout=60)
         if result.returncode:
