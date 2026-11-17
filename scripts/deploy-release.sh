@@ -155,6 +155,12 @@ for ((attempt=0; attempt<30; attempt++)); do
   sleep 2
 done
 [[ "$healthy" -eq 1 ]] || { echo "Application health checks failed" >&2; exit 1; }
+# A bad script must leave the previous timer executable intact.
+if python3 "$release_dir/scripts/install-nightly.py" "$release_dir/scripts/daily-scan.py" /usr/local/sbin/ip-list-daily-scan; then
+  echo "Nightly scan script installed"
+else
+  echo "Nightly scan script installation failed; inspect the timer before the next run" >&2
+fi
 if [[ -n "$previous" && "$previous" != "$release_dir" ]]; then
   ln -s "$previous" "$previous_link.next.$$"
   mv -Tf "$previous_link.next.$$" "$previous_link"

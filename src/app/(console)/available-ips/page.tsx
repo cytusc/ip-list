@@ -3,5 +3,5 @@ import type { AvailableIP } from "@/lib/types";
 import { AvailableIPList } from "@/components/available-ip-list";
 
 export default async function AvailableIPsPage() {
-  return <AvailableIPList initialItems={await pagedQuery<AvailableIP>("/available-ips")} />;
+  return <AvailableIPList initialItems={await pagedQuery<AvailableIP>("/available-ips", undefined, 32000)} />;
 }

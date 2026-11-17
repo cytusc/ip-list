@@ -124,3 +124,33 @@ func (a *app) updateDailyNetworkBackoff(ctx context.Context, job scanJob) error 
 }
 
 func nextDailyScanAt() time.Time { return time.Now().UTC().Add(24 * time.Hour) }
+
+// Consuming the exact queue entry and advancing backoff are one statement:
+// retries or a replaced request cannot count the same sweep twice.
+func (a *app) finishAutomaticFullScan(ctx context.Context, networkID, protocol, cidr string, createdAt, cutoff time.Time) error {
+	_, err := a.db.Exec(ctx, `WITH finished AS (
+ DELETE FROM network_auto_scans
+ WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND created_at=$4 AND recheck_after=$5
+ RETURNING network_id,cidr,protocol
+), scanned AS (
+ SELECT f.*,COALESCE(b.no_output_streak,0) AS previous_streak,
+ CASE WHEN f.protocol='cf' THEN EXISTS(
+  SELECT 1 FROM cf_ip_pool p WHERE p.ip <<= f.cidr AND p.available AND p.checked_at >= $5
+ ) ELSE EXISTS(
+  SELECT 1 FROM node_ip_evidence p WHERE p.ip <<= f.cidr AND p.protocol=f.protocol AND p.available AND p.checked_at >= $5
+ ) END AS produced
+ FROM finished f LEFT JOIN network_scan_backoff b
+ ON b.network_id=f.network_id AND b.protocol=f.protocol AND b.cidr=f.cidr
+), intervals AS (
+ SELECT *,CASE WHEN produced THEN 1 WHEN previous_streak<2 THEN 1
+ WHEN previous_streak=2 THEN 3 WHEN previous_streak=3 THEN 5
+ WHEN previous_streak=4 THEN 7 ELSE 15 END AS days FROM scanned
+)
+INSERT INTO network_scan_backoff(network_id,cidr,protocol,no_output_streak,interval_days,next_scan_at,updated_at)
+SELECT network_id,cidr,protocol,CASE WHEN produced THEN 0 ELSE previous_streak+1 END,
+ days,now()+make_interval(days => days),now() FROM intervals
+ON CONFLICT(network_id,protocol) DO UPDATE SET
+ cidr=excluded.cidr,no_output_streak=excluded.no_output_streak,interval_days=excluded.interval_days,
+ next_scan_at=excluded.next_scan_at,updated_at=excluded.updated_at`, networkID, protocol, cidr, createdAt, cutoff)
+	return err
+}

@@ -18,6 +18,8 @@ cp -a bin/latency-probe "$stage/bin/"
 cp -a scripts/latency-probe "$stage/scripts/"
 cp scripts/deploy-release.sh "$stage/scripts/"
 cp scripts/cleanup-deployments.py "$stage/scripts/"
+cp scripts/daily-scan.py "$stage/scripts/"
+cp scripts/install-nightly.py "$stage/scripts/"
 cp "$(command -v node)" "$stage/runtime/node"
 printf '%s\n' "$revision" > "$stage/REVISION"
 # Include initialization code as well as SQL so changes to either trigger migration.

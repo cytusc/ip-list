@@ -1,9 +1,9 @@
 import { api, ApiError } from "@/lib/api";
 import type { AvailableIP } from "@/lib/types";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const { data } = await api<AvailableIP[]>("/available-ips");
+    const { data } = await api<AvailableIP[]>("/available-ips", { signal: request.signal, timeoutMs: 32000 });
     return Response.json(data, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return Response.json(

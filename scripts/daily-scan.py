@@ -16,12 +16,28 @@ BEGIN;
 SET LOCAL statement_timeout = '30s';
 SET LOCAL lock_timeout = '5s';
 -- Read every enabled range, independently of the HTTP list pagination.
-WITH queued AS (
+WITH pending_cf AS (
+ SELECT count(*) AS total FROM network_auto_scans q JOIN networks n ON n.id=q.network_id
+ WHERE q.protocol='cf' AND n.enabled AND n.cidr=q.cidr
+), cf_candidates AS (
+ SELECT n.id FROM networks n
+ LEFT JOIN network_scan_backoff b ON b.network_id=n.id AND b.protocol='cf' AND b.cidr=n.cidr
+ WHERE n.enabled AND NOT :'nodes_only'::boolean AND EXISTS(SELECT 1 FROM cf_targets)
+ AND (b.network_id IS NULL OR b.next_scan_at<=now())
+ AND NOT EXISTS(SELECT 1 FROM network_auto_scans q WHERE q.network_id=n.id AND q.protocol='cf' AND q.cidr=n.cidr)
+ -- Rotate least recently completed ranges first; CF evidence breaks ties.
+ ORDER BY b.updated_at NULLS FIRST,
+ EXISTS(SELECT 1 FROM cf_ip_pool p WHERE p.ip <<= n.cidr AND p.available) DESC,n.id
+ LIMIT greatest(0,:'cf_limit'::integer-(SELECT total FROM pending_cf))
+), queued AS (
  INSERT INTO network_auto_scans(network_id,cidr,protocol,user_id,recheck_after)
  SELECT n.id,n.cidr,p.protocol,:'user_id'::uuid,:'cutoff'::timestamptz
  FROM networks n CROSS JOIN (VALUES ('grpc'),('cf')) AS p(protocol)
  WHERE n.enabled AND (p.protocol='grpc' OR NOT :'nodes_only'::boolean)
  AND (p.protocol='grpc' OR EXISTS(SELECT 1 FROM cf_targets))
+ AND (p.protocol='grpc' OR n.id IN (SELECT id FROM cf_candidates))
+ AND NOT EXISTS(SELECT 1 FROM network_scan_backoff b
+  WHERE b.network_id=n.id AND b.protocol=p.protocol AND b.cidr=n.cidr AND b.next_scan_at>now())
  ON CONFLICT(network_id,protocol) DO UPDATE SET
   cidr=excluded.cidr,user_id=excluded.user_id,
   created_at=now(),recheck_after=excluded.recheck_after
@@ -59,7 +75,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='Validate the queue transaction, then roll it back')
     parser.add_argument('--nodes-only', action='store_true', help='Repair a missed node run without queuing CF again')
+    parser.add_argument('--cf-limit', type=int, default=30, help='Maximum queued CF ranges, including unfinished work (default: 30)')
     args = parser.parse_args()
+    if args.cf_limit < 0:
+        parser.error('--cf-limit must be nonnegative')
     base = os.environ.get('API_URL', 'http://127.0.0.1:8081')
     cookie = ''
 
@@ -84,7 +103,7 @@ def main():
         result = subprocess.run(
             ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1',
              '-v', 'user_id=' + user_id, '-v', 'cutoff=' + cutoff,
-             '-v', 'nodes_only=' + str(args.nodes_only).lower()],
+             '-v', 'nodes_only=' + str(args.nodes_only).lower(), '-v', 'cf_limit=' + str(args.cf_limit)],
             input=QUEUE_SQL + ('ROLLBACK;' if args.check else 'COMMIT;'),
             env=env, text=True, capture_output=True, timeout=60)
         if result.returncode:

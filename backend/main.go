@@ -129,7 +129,7 @@ func main() {
 	go a.maintainAutomaticScans(ctx)
 	go a.maintainNetworkMetadata(ctx)
 	go a.maintainDNS(ctx)
-	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, done := context.WithTimeout(context.Background(), 10*time.Second)
@@ -270,9 +270,14 @@ func (a *app) routes() http.Handler {
 			apiError(w, 403, "请求来源不受信任", nil)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
 		_, pattern := mux.Handler(r)
+		timeout := 10 * time.Second
+		switch pattern {
+		case "GET /available-ips", "GET /probe-agent/targets", "POST /probe-agent/results":
+			timeout = 30 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
 		ctx = context.WithValue(ctx, databaseRequestKey{}, pattern)
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})

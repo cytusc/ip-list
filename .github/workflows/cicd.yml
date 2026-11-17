@@ -47,7 +47,9 @@ jobs:
           npm run typecheck
           node --experimental-strip-types --test scripts/tests/probe-history.test.mjs
       - name: Check deployment retention
-        run: python3 -m unittest discover -s scripts/tests -p 'test_cleanup_deployments.py'
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_cleanup_deployments.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_install_nightly.py'
       - name: Check daily database maintenance
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable
@@ -58,6 +60,8 @@ jobs:
           sudo apt-get install -y postgresql-client-17
           export PATH="/usr/lib/postgresql/17/bin:$PATH"
           python3 -m unittest discover -s scripts/tests -p 'test_daily_maintenance.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_daily_scan.py'
+          go -C backend test -run '^TestAutomaticFullScanBackoff$' -count=1
       - name: Check backend
         run: |
           go -C backend test ./...

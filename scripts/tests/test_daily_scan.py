@@ -29,6 +29,8 @@ class NightlyScanTests(unittest.TestCase):
 BEGIN;
 CREATE TEMP TABLE networks(id uuid PRIMARY KEY,cidr cidr,enabled boolean);
 CREATE TEMP TABLE cf_targets(id integer);
+CREATE TEMP TABLE cf_ip_pool(ip inet,available boolean);
+CREATE TEMP TABLE network_scan_backoff(network_id uuid,cidr cidr,protocol text,next_scan_at timestamptz,updated_at timestamptz);
 CREATE TEMP TABLE network_auto_scans(
  network_id uuid,cidr cidr,protocol text,user_id uuid,
  recheck_after timestamptz,created_at timestamptz DEFAULT now(),
@@ -44,7 +46,7 @@ DO $$ BEGIN
 END $$;
 -- Mark yesterday's full recheck and an ordinary incremental queue entry.
 UPDATE network_auto_scans SET recheck_after='2026-10-29 02:00+08' WHERE network_id=md5('1')::uuid;
-UPDATE network_auto_scans SET recheck_after=NULL WHERE network_id=md5('2')::uuid;
+UPDATE network_auto_scans SET recheck_after=NULL WHERE network_id=md5('2')::uuid AND protocol='grpc';
 """
         verify_second = """
 DO $$ BEGIN
@@ -59,13 +61,33 @@ DO $$ BEGIN
  IF (SELECT count(*) FROM network_auto_scans)<>127 OR EXISTS(SELECT 1 FROM network_auto_scans WHERE protocol<>'grpc') THEN
  RAISE EXCEPTION 'Node-only repair touched CF'; END IF;
 END $$;
+TRUNCATE network_auto_scans;
+"""
+        quota_setup = '\n\\set nodes_only false\n\\set cf_limit 2\n'
+        verify_quota = """
+DO $$ BEGIN
+ IF (SELECT count(*) FROM network_auto_scans WHERE protocol='cf')<>2 THEN RAISE EXCEPTION 'CF quota ignored'; END IF;
+END $$;
+CREATE TEMP TABLE carried AS SELECT network_id FROM network_auto_scans WHERE protocol='cf' ORDER BY network_id LIMIT 1;
+UPDATE network_auto_scans SET recheck_after='2026-10-29 02:00+08' WHERE network_id IN (SELECT network_id FROM carried) AND protocol='cf';
+INSERT INTO network_scan_backoff SELECT q.network_id,q.cidr,'cf',now()+interval '1 day',now()
+ FROM network_auto_scans q WHERE protocol='cf' AND network_id NOT IN (SELECT network_id FROM carried);
+DELETE FROM network_auto_scans WHERE protocol='cf' AND network_id NOT IN (SELECT network_id FROM carried);
+"""
+        verify_rotation = """
+DO $$ BEGIN
+ IF (SELECT count(*) FROM network_auto_scans WHERE protocol='cf')<>2 THEN RAISE EXCEPTION 'Backlog not counted toward quota'; END IF;
+ IF NOT EXISTS(SELECT 1 FROM network_auto_scans WHERE protocol='cf' AND recheck_after='2026-10-29 02:00+08') THEN RAISE EXCEPTION 'Backlog reset'; END IF;
+ IF EXISTS(SELECT 1 FROM network_auto_scans q JOIN network_scan_backoff b USING(network_id,protocol) WHERE q.protocol='cf') THEN RAISE EXCEPTION 'Completed range did not rotate out'; END IF;
+END $$;
 ROLLBACK;
 """
-        sql = fixture + queue + verify_first + queue + verify_second + '\n\\set nodes_only true\n' + queue + verify_nodes
+        sql = (fixture + queue + verify_first + queue + verify_second + '\n\\set nodes_only true\n' + queue + verify_nodes
+               + quota_setup + queue + verify_quota + queue + verify_rotation)
         env = daily.postgres_environment(os.environ['TEST_DATABASE_URL'])
         result = subprocess.run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1',
                                  '-v', 'user_id=00000000-0000-0000-0000-000000000001',
-                                 '-v', 'cutoff=2026-10-30T02:00:00+08:00', '-v', 'nodes_only=false'],
+                                 '-v', 'cutoff=2026-10-30T02:00:00+08:00', '-v', 'nodes_only=false', '-v', 'cf_limit=200'],
                                 input=sql, env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 

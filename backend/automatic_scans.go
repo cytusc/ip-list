@@ -134,6 +134,22 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 	if err != nil {
 		return false, err
 	}
+	remove := func() error {
+		_, err := a.db.Exec(ctx, "DELETE FROM network_auto_scans WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND created_at=$4 AND recheck_after IS NOT DISTINCT FROM $5::timestamptz", networkID, protocol, cidr, createdAt, recheckAfter)
+		return err
+	}
+	if recheckAfter != nil {
+		var deferred bool
+		err = a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM network_scan_backoff
+ WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND next_scan_at>now()
+ AND updated_at<$4)`, networkID, protocol, cidr, recheckAfter).Scan(&deferred)
+		if err != nil {
+			return false, err
+		}
+		if deferred {
+			return false, remove()
+		}
+	}
 	input, raw, name, targetID, err := a.automaticScanSample(ctx, protocol)
 	if err != nil {
 		return false, err
@@ -169,11 +185,10 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 	if err != nil {
 		return false, err
 	}
-	remove := func() error {
-		_, err := a.db.Exec(ctx, "DELETE FROM network_auto_scans WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND created_at=$4 AND recheck_after IS NOT DISTINCT FROM $5::timestamptz", networkID, protocol, cidr, createdAt, recheckAfter)
-		return err
-	}
 	if total == 0 {
+		if recheckAfter != nil {
+			return false, a.finishAutomaticFullScan(ctx, networkID, protocol, cidr, createdAt, *recheckAfter)
+		}
 		return false, remove()
 	}
 	if (protocol != "cf" || recheckAfter != nil) && total > 4096 {

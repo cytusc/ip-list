@@ -326,6 +326,13 @@ func (a *app) runScanRound(parent context.Context, job scanJob, input scanInput,
 }
 
 func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInput, template map[string]any, total int, targets iter.Seq[netip.Addr], previous map[string]scanResult) scanJob {
+	defer func() {
+		pool := job.Protocol
+		if job.TargetID != "" {
+			pool = "cf"
+		}
+		log.Printf("扫描完成 job=%s pool=%s ranges=%s total=%d success=%d status=%s elapsed=%s", job.ID, pool, strings.Join(job.CIDRs, ","), job.Total, job.Success, job.Status, time.Since(job.StartedAt).Round(time.Second))
+	}()
 	ctx, cancel := scanRoundContext(parent)
 	defer cancel()
 	workerCount := min(input.Concurrency, total)

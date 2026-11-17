@@ -234,7 +234,7 @@ func (a *app) runDNSOnce(ctx context.Context) {
 	if _, err = conn.Exec(ctx, "UPDATE dns_settings SET running=true,requested='' WHERE id"); err != nil {
 		return
 	}
-	runCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	runCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 	report := dnsReport{Mode: requested, Domain: c.Domain, Config: c, StartedAt: time.Now().UTC(), Records: []dnsPlanRecord{}, Candidates: []dnsCandidate{}}
 	if err = c.validate(); err == nil {
@@ -245,7 +245,6 @@ func (a *app) runDNSOnce(ctx context.Context) {
 	}
 	finished := time.Now().UTC()
 	report.FinishedAt = &finished
-	notifyDNSReport(&report)
 	raw, _ := json.Marshal(report)
 	// Persist the outcome even when graceful shutdown canceled the run.
 	finishCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
