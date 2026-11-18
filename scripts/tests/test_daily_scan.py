@@ -38,6 +38,7 @@ CREATE TEMP TABLE network_auto_scans(
 INSERT INTO networks SELECT md5(i::text)::uuid,'198.18.0.0/16',true FROM generate_series(1,127) i;
 INSERT INTO networks VALUES(md5('disabled')::uuid,'203.0.113.0/24',false);
 INSERT INTO cf_targets VALUES(1);
+INSERT INTO network_scan_backoff VALUES(md5('1')::uuid,'grpc','198.18.0.0/16',0,15,now()+interval '1 day',now());
 """
         queue = daily.QUEUE_SQL.replace('BEGIN;', '')
         verify_first = """
@@ -51,7 +52,7 @@ UPDATE network_auto_scans SET recheck_after=NULL WHERE network_id=md5('2')::uuid
         verify_second = """
 DO $$ BEGIN
  IF (SELECT count(*) FROM network_auto_scans)<>254 THEN RAISE EXCEPTION 'Repeated queue added duplicates'; END IF;
- IF (SELECT count(*) FROM network_auto_scans WHERE recheck_after='2026-10-29 02:00+08')<>2 THEN RAISE EXCEPTION 'Unfinished full work reset'; END IF;
+ IF (SELECT count(*) FROM network_auto_scans WHERE recheck_after='2026-10-30 02:00+08')<>254 THEN RAISE EXCEPTION 'Nightly cutoff not refreshed'; END IF;
  IF EXISTS(SELECT 1 FROM network_auto_scans WHERE recheck_after IS NULL) THEN RAISE EXCEPTION 'Incremental queue not upgraded'; END IF;
 END $$;
 TRUNCATE network_auto_scans;

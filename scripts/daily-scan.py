@@ -36,13 +36,12 @@ WITH pending_cf AS (
  WHERE n.enabled AND (p.protocol='grpc' OR NOT :'nodes_only'::boolean)
  AND (p.protocol='grpc' OR EXISTS(SELECT 1 FROM cf_targets))
  AND (p.protocol='grpc' OR n.id IN (SELECT id FROM cf_candidates))
- AND NOT EXISTS(SELECT 1 FROM network_scan_backoff b
-  WHERE b.network_id=n.id AND b.protocol=p.protocol AND b.cidr=n.cidr AND b.next_scan_at>now())
+ -- Nightly gRPC is a required full sweep; CF keeps its quota/backoff rotation.
+ AND (p.protocol='grpc' OR NOT EXISTS(SELECT 1 FROM network_scan_backoff b
+  WHERE b.network_id=n.id AND b.protocol=p.protocol AND b.cidr=n.cidr AND b.next_scan_at>now()))
  ON CONFLICT(network_id,protocol) DO UPDATE SET
   cidr=excluded.cidr,user_id=excluded.user_id,
   created_at=now(),recheck_after=excluded.recheck_after
- -- Preserve unfinished full scans, including those carried over from yesterday.
- WHERE network_auto_scans.cidr<>excluded.cidr OR network_auto_scans.recheck_after IS NULL
  RETURNING protocol
 )
 SELECT protocol,count(*) FROM queued GROUP BY protocol ORDER BY protocol;

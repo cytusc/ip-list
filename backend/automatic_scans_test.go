@@ -171,6 +171,11 @@ func TestAutomaticNetworkScans(t *testing.T) {
 	// A full recheck must revisit both old successes and fresh failures, then
 	// drain without repeating them. It preserves results until replacements arrive.
 	cutoff := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err = db.Exec(ctx, `INSERT INTO network_scan_backoff(network_id,cidr,protocol,no_output_streak,interval_days,next_scan_at,updated_at)
+ VALUES($1,'127.0.0.0/30',$2,1,15,now()+interval '1 day',now())
+ ON CONFLICT(network_id,protocol) DO UPDATE SET next_scan_at=excluded.next_scan_at,updated_at=excluded.updated_at`, networkID, protocol); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = db.Exec(ctx, `INSERT INTO network_auto_scans(network_id,cidr,protocol,user_id,recheck_after)
  VALUES($1,'127.0.0.0/30',$2,$3,$4)`, networkID, protocol, userID, cutoff); err != nil {
 		t.Fatal(err)

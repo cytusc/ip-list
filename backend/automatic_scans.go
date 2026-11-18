@@ -138,7 +138,8 @@ func (a *app) processAutomaticScan(ctx context.Context, protocol, leaseID string
 		_, err := a.db.Exec(ctx, "DELETE FROM network_auto_scans WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND created_at=$4 AND recheck_after IS NOT DISTINCT FROM $5::timestamptz", networkID, protocol, cidr, createdAt, recheckAfter)
 		return err
 	}
-	if recheckAfter != nil {
+	// Nightly gRPC is a forced full sweep; only CF retains backoff deferral.
+	if recheckAfter != nil && protocol != connectivityProtocol {
 		var deferred bool
 		err = a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM network_scan_backoff
  WHERE network_id=$1 AND protocol=$2 AND cidr=$3::cidr AND next_scan_at>now()
