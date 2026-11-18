@@ -38,7 +38,7 @@ CREATE TEMP TABLE network_auto_scans(
 INSERT INTO networks SELECT md5(i::text)::uuid,'198.18.0.0/16',true FROM generate_series(1,127) i;
 INSERT INTO networks VALUES(md5('disabled')::uuid,'203.0.113.0/24',false);
 INSERT INTO cf_targets VALUES(1);
-INSERT INTO network_scan_backoff VALUES(md5('1')::uuid,'grpc','198.18.0.0/16',0,15,now()+interval '1 day',now());
+INSERT INTO network_scan_backoff VALUES(md5('1')::uuid,'198.18.0.0/16','grpc',now()+interval '1 day',now());
 """
         queue = daily.QUEUE_SQL.replace('BEGIN;', '')
         verify_first = """
