@@ -42,6 +42,9 @@ WITH pending_cf AS (
  ON CONFLICT(network_id,protocol) DO UPDATE SET
   cidr=excluded.cidr,user_id=excluded.user_id,
   created_at=now(),recheck_after=excluded.recheck_after
+ WHERE excluded.protocol='grpc'
+    OR network_auto_scans.cidr<>excluded.cidr
+    OR network_auto_scans.recheck_after IS NULL
  RETURNING protocol
 )
 SELECT protocol,count(*) FROM queued GROUP BY protocol ORDER BY protocol;

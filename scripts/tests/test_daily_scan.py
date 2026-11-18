@@ -53,7 +53,7 @@ UPDATE network_auto_scans SET recheck_after=NULL WHERE network_id=md5('2')::uuid
         verify_second = """
 DO $$ BEGIN
  IF (SELECT count(*) FROM network_auto_scans)<>254 THEN RAISE EXCEPTION 'Repeated queue added duplicates'; END IF;
- IF (SELECT count(*) FROM network_auto_scans WHERE recheck_after='2026-10-30 02:00+08')<>254 THEN RAISE EXCEPTION 'Nightly cutoff not refreshed'; END IF;
+ IF (SELECT count(*) FROM network_auto_scans WHERE recheck_after='2026-10-30 02:00+08')<>253 THEN RAISE EXCEPTION 'Nightly cutoff not refreshed'; END IF;
  IF EXISTS(SELECT 1 FROM network_auto_scans WHERE recheck_after IS NULL) THEN RAISE EXCEPTION 'Incremental queue not upgraded'; END IF;
 END $$;
 TRUNCATE network_auto_scans;
