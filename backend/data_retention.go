@@ -11,9 +11,11 @@ import (
 func (a *app) pruneConnectivityData(ctx context.Context) (int64, error) {
 	var removed int64
 	for _, query := range []string{
-		`DELETE FROM ip_results r WHERE r.protocol<>$1 OR NOT EXISTS (
+		`DELETE FROM ip_results WHERE protocol<>$1`,
+		`DELETE FROM ip_results r WHERE r.protocol=$1 AND NOT EXISTS (
  SELECT 1 FROM nodes n WHERE n.id=r.node_id AND n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=r.config_hash)`,
-		`DELETE FROM node_ip_pool p WHERE p.protocol<>$1 OR NOT EXISTS (
+		`DELETE FROM node_ip_pool WHERE protocol<>$1`,
+		`DELETE FROM node_ip_pool p WHERE p.protocol=$1 AND NOT EXISTS (
  SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash)`,
 	} {
 		tag, err := a.db.Exec(ctx, query, connectivityProtocol)
