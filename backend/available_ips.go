@@ -107,7 +107,52 @@ func (a *app) saveIPResults(ctx context.Context, job scanJob) error {
 func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	args := []any{q.Get("search"), q.Get("protocol"), q.Get("region"), q.Get("provider")}
-	p, ok := a.listPage(w, r, 20, availableIPCandidatesSQL+" SELECT count(*) FROM filtered", args...)
+	for _, key := range []string{"node_dns_status", "url_dns_status"} {
+		switch q.Get(key) {
+		case "", "all", "synced", "not_synced", "disabled", "unknown":
+		default:
+			apiError(w, 422, "无效的 DNS 筛选状态", nil)
+			return
+		}
+	}
+	var dnsIPs []string
+	if node, url := q.Get("node_dns_status"), q.Get("url_dns_status"); (node != "" && node != "all") || (url != "" && url != "all") {
+		rows, err := a.db.Query(r.Context(), availableIPCandidatesSQL+" SELECT host(ip) FROM filtered", args...)
+		if err != nil {
+			dbError(w, err)
+			return
+		}
+		candidates := []availableIP{}
+		for rows.Next() {
+			var item availableIP
+			if err = rows.Scan(&item.IP); err != nil {
+				rows.Close()
+				dbError(w, err)
+				return
+			}
+			candidates = append(candidates, item)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			dbError(w, err)
+			return
+		}
+		if err = a.availableIPDNSSyncStatus(r.Context(), candidates); err != nil {
+			dbError(w, err)
+			return
+		}
+		dnsIPs = []string{}
+		for _, item := range candidates {
+			if (node == "" || node == "all" || item.NodeDNS == node) && (url == "" || url == "all" || item.URLDNS == url) {
+				dnsIPs = append(dnsIPs, item.IP)
+			}
+		}
+	}
+	args = append(args, dnsIPs)
+	const candidatesSQL = availableIPCandidatesSQL + `, dns_filtered AS (
+ SELECT * FROM filtered WHERE $5::inet[] IS NULL OR ip=ANY($5::inet[])
+)`
+	p, ok := a.listPage(w, r, 20, candidatesSQL+" SELECT count(*) FROM dns_filtered", args...)
 	if !ok {
 		return
 	}
@@ -115,7 +160,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	if err := a.db.QueryRow(r.Context(), availableIPCandidatesSQL+` SELECT json_build_object(
  'allTotal',(SELECT count(*) FROM candidates),
  'countries',(SELECT COALESCE(json_agg(country ORDER BY country),'[]') FROM (SELECT DISTINCT country FROM candidates WHERE country<>'') c),
- 'providers',(SELECT COALESCE(json_agg(provider ORDER BY provider),'[]') FROM (SELECT DISTINCT provider FROM candidates WHERE provider<>'') c))`, args...).Scan(&facets); err != nil {
+ 'providers',(SELECT COALESCE(json_agg(provider ORDER BY provider),'[]') FROM (SELECT DISTINCT provider FROM candidates WHERE provider<>'') c))`, args[:4]...).Scan(&facets); err != nil {
 		dbError(w, err)
 		return
 	}
@@ -146,9 +191,9 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 ) rank ON true`
 		order = "rank.value " + direction + " NULLS LAST, info.ip"
 	}
-	rows, err := a.db.Query(r.Context(), availableIPCandidatesSQL+`, selected AS MATERIALIZED (
+	rows, err := a.db.Query(r.Context(), candidatesSQL+`, selected AS MATERIALIZED (
  SELECT info.*,row_number() OVER (ORDER BY `+order+`) AS position
- FROM filtered info `+ranking+` ORDER BY `+order+` LIMIT $5 OFFSET $6)
+ FROM dns_filtered info `+ranking+` ORDER BY `+order+` LIMIT $6 OFFSET $7)
  SELECT host(s.ip),s.protocol,s.delay_ms, '', '协议共用 IP 池',s.checked_at,COALESCE(info.asn,''),COALESCE(info.provider,'')
  FROM selected info JOIN shared_node_ip_pool s ON s.ip=info.ip AND s.available
  ORDER BY info.position,s.protocol`, append(args, p.Size, p.Offset())...)

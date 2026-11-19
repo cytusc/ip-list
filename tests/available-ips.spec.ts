@@ -27,6 +27,8 @@ test("可用 IP 列展示、排序、搜索筛选、刷新失败恢复与移动�
   const fixtures = [
     {
       ip: "192.0.2.25",
+      node_dns_status: "synced",
+      url_dns_status: "not_synced",
       asn: "AS13335",
       provider: "Cloudflare",
       probe_delays: [{ probe_id: "probe-1", name: "测试探针", online: true, fresh: true, window_end: checked_at,
@@ -58,6 +60,8 @@ test("可用 IP 列展示、排序、搜索筛选、刷新失败恢复与移动�
     },
     {
       ip: "2001:db8:1234:5678:abcd:ef01:1234:5678",
+      node_dns_status: "not_synced",
+      url_dns_status: "synced",
       checks: [
         {
           protocol: "vless/grpc",
@@ -73,7 +77,8 @@ test("可用 IP 列展示、排序、搜索筛选、刷新失败恢复与移动�
   await page.route("**/api/lists/available-ips?*", async (route) => {
     const query = new URL(route.request().url()).searchParams;
     let items = fixtures.filter(item => (!query.get("search") || item.ip.includes(query.get("search")!))
-      && (!query.get("protocol") || query.get("protocol") === "all" || item.checks.some(check => check.protocol === query.get("protocol"))));
+      && (!query.get("node_dns_status") || query.get("node_dns_status") === "all" || item.node_dns_status === query.get("node_dns_status"))
+      && (!query.get("url_dns_status") || query.get("url_dns_status") === "all" || item.url_dns_status === query.get("url_dns_status")));
     if (query.get("direction") === "desc") items = items.toReversed();
     await route.fulfill({
       status: fail ? 503 : 200,
@@ -104,15 +109,23 @@ test("可用 IP 列展示、排序、搜索筛选、刷新失败恢复与移动�
       await expect(page.locator("tbody tr").first()).toContainText(direction === "asc" ? fixtures[0].ip : fixtures[1].ip);
     }
   }
-  await page.getByLabel("协议筛选", { exact: true }).click();
-  await page.getByRole("option", { name: "VLESS · gRPC", exact: true }).click();
+  await expect(page.getByLabel("协议筛选", { exact: true })).toHaveCount(0);
+  await page.getByLabel("节点 DNS筛选", { exact: true }).click();
+  await page.getByRole("option", { name: "节点 DNS：未同步", exact: true }).click();
   await expect(row).toHaveCount(0);
+  await expect(page.getByRole("table")).toContainText(fixtures[1].ip);
+  await page.getByLabel("URL DNS筛选", { exact: true }).click();
+  await page.getByRole("option", { name: "URL DNS：未同步", exact: true }).click();
+  await expect(page.getByText("没有匹配的 IP", { exact: true })).toBeVisible();
+  await page.getByLabel("URL DNS筛选", { exact: true }).click();
+  await page.getByRole("option", { name: "URL DNS：已同步", exact: true }).click();
   await expect(page.getByRole("table")).toContainText(fixtures[1].ip);
   await page.getByLabel("搜索 IP、节点、ASN 或服务商").fill("不匹配");
   await expect(page.getByText("没有匹配的 IP", { exact: true })).toBeVisible();
   await page.getByLabel("搜索 IP、节点、ASN 或服务商").fill("");
-  await page.getByLabel("协议筛选", { exact: true }).click();
-  await page.getByRole("option", { name: "全部协议", exact: true }).click();
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  await expect(page.getByLabel("节点 DNS筛选", { exact: true })).toHaveText("全部节点 DNS");
+  await expect(page.getByLabel("URL DNS筛选", { exact: true })).toHaveText("全部URL DNS");
   await expect(row).toBeVisible();
   fail = true;
   await page.getByRole("button", { name: "刷新", exact: true }).click();

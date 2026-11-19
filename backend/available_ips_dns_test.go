@@ -5,9 +5,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestAvailableIPRejectsInvalidDNSFilter(t *testing.T) {
+	for _, key := range []string{"node_dns_status", "url_dns_status"} {
+		w := httptest.NewRecorder()
+		(&app{}).availableIPs(w, httptest.NewRequest("GET", "/available-ips?"+key+"=invalid", nil))
+		if w.Code != 422 {
+			t.Fatalf("%s: status=%d, want 422", key, w.Code)
+		}
+	}
+}
 
 func TestAvailableIPsIndependentOfDNSSync(t *testing.T) {
 	a := paginationApp(t)
@@ -51,6 +62,11 @@ func TestAvailableIPsIndependentOfDNSSync(t *testing.T) {
 		}
 	}
 	checkPage("", "30", 20) // No successful sync yet.
+	checkPage("node_dns_status=unknown", "30", 20)
+	checkPage("node_dns_status=synced", "0", 0)
+	checkPage("url_dns_status=disabled", "30", 20)
+	pageRequest(t, a.availableIPs, "/available-ips?node_dns_status=invalid", 422)
+	pageRequest(t, a.availableIPs, "/available-ips?url_dns_status=invalid", 422)
 	report := dnsReport{Mode: "sync", Domain: "reiiv.com"}
 	r := dnsPlanRecord{Name: "jp.reiiv.com", Type: "A", Action: "update", Applied: true}
 	for i := 1; i <= 30; i++ {
@@ -81,6 +97,15 @@ func TestAvailableIPsIndependentOfDNSSync(t *testing.T) {
 	}
 	now := time.Now()
 	saveReport(report, now)
+	checkPage("node_dns_status=synced&page=1", "26", 20)
+	checkPage("node_dns_status=synced&page=2", "26", 6)
+	checkPage("node_dns_status=not_synced", "2", 2)
+	checkPage("url_dns_status=synced", "1", 1)
+	checkPage("url_dns_status=not_synced", "27", 20)
+	checkPage("node_dns_status=not_synced&url_dns_status=synced", "1", 1)
+	checkPage("node_dns_status=synced&url_dns_status=synced", "0", 0)
+	checkPage("node_dns_status=synced&region=US", "4", 4)
+	checkPage("node_dns_status=all&url_dns_status=all", "28", 20)
 	// DNS snapshots cannot change the upstream available pool.
 	report.Mode, report.Records = "preview", nil
 	saveReport(report, now.Add(time.Second))
@@ -118,4 +143,5 @@ func TestAvailableIPsIndependentOfDNSSync(t *testing.T) {
 	}
 	exec(`UPDATE dns_settings SET config=jsonb_set(config,'{enabled}','false')`)
 	checkPage("", "28", 20)
+	checkPage("node_dns_status=disabled", "28", 20)
 }

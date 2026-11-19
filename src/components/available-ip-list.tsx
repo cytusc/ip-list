@@ -28,7 +28,6 @@ import { addBlacklist } from "@/app/actions";
 
 import { p95TrimmedProbeAverage } from "@/lib/probe-history";
 import { ProbeLatencyStrip } from "@/components/probe-latency-strip";
-import { protocolLabels } from "@/lib/protocol";
 import type { PageResult } from "@/lib/pagination";
 import { usePagedList } from "@/components/use-paged-list";
 import { ListPagination } from "@/components/list-pagination";
@@ -57,7 +56,8 @@ export function AvailableIPList({
 }) {
   const [linkIP, setLinkIP] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [protocol, setProtocol] = useState("all");
+  const [nodeDNS, setNodeDNS] = useState("all");
+  const [urlDNS, setURLDNS] = useState("all");
   const [region, setRegion] = useState("all");
   const [provider, setProvider] = useState("all");
   const [sort, setSort] = useState("");
@@ -68,7 +68,7 @@ export function AvailableIPList({
     setPage(1);
   }
   const SortIcon = direction === "asc" ? ArrowUp : ArrowDown;
-  const {data,setData,setPage,refresh:reload,loading:refreshing,error}=usePagedList("available-ips",initialItems,{search:search.trim(),protocol,region,provider,sort,direction},10000);
+  const {data,setData,setPage,refresh:reload,loading:refreshing,error}=usePagedList("available-ips",initialItems,{search:search.trim(),node_dns_status:nodeDNS,url_dns_status:urlDNS,region,provider,sort,direction},10000);
   const items=data.items;
   const [locationVersion, setLocationVersion] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -136,9 +136,9 @@ export function AvailableIPList({
     ...(provider.startsWith("provider:") ? [provider.slice(9)] : []),
   ])].sort((a, b) => a.localeCompare(b, "zh-CN"));
   const locationsResolved = items.filter(item => locations[item.ip] !== undefined).length;
-  const filtersActive = search !== "" || protocol !== "all" || region !== "all" || provider !== "all";
+  const filtersActive = search !== "" || nodeDNS !== "all" || urlDNS !== "all" || region !== "all" || provider !== "all";
   function clearFilters() {
-    setSearch(""); setProtocol("all"); setRegion("all"); setProvider("all"); setPage(1);
+    setSearch(""); setNodeDNS("all"); setURLDNS("all"); setRegion("all"); setProvider("all"); setPage(1);
   }
   const visible=items;
   function refresh() {
@@ -290,25 +290,20 @@ export function AvailableIPList({
               }}
             />
           </div>
-          <Select
-            value={protocol}
-            onValueChange={(value) => {
-              setProtocol(value);
-              setPage(1);
-            }}
-          >
-            <SelectTrigger aria-label="协议筛选" className="w-full sm:w-44">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部协议</SelectItem>
-              {Object.entries(protocolLabels).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {[
+            { label: "节点 DNS", value: nodeDNS, setValue: setNodeDNS },
+            { label: "URL DNS", value: urlDNS, setValue: setURLDNS },
+          ].map(({ label, value, setValue }) => (
+            <Select key={label} value={value} onValueChange={value => { setValue(value); setPage(1); }}>
+              <SelectTrigger aria-label={`${label}筛选`} className="w-full sm:w-44"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部{label}</SelectItem>
+                {["synced", "not_synced", "disabled", "unknown"].map(status => (
+                  <SelectItem key={status} value={status}>{label}：{dnsStatusLabel(status)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ))}
           <Select value={region} onValueChange={value => { setRegion(value); setPage(1); }}>
             <SelectTrigger aria-label="地区筛选" className="w-full sm:w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -471,7 +466,7 @@ export function AvailableIPList({
                   </p>
                   <p className="mt-2 text-sm text-muted-foreground">
                     {data.allTotal
-                      ? "调整搜索词、地区、服务商或协议筛选后重试。"
+                      ? "调整搜索词、地区、服务商或 DNS 筛选后重试。"
                       : "完成节点检测后，等待 DNS 优选同步；启用 DNS 优选时，仅显示已成功同步且当前检测仍有效的 IP。"}
                   </p>
                   {filtersActive && <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>清除筛选</Button>}
