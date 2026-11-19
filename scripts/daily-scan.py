@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 QUEUE_SQL = """
 BEGIN;
-SET LOCAL statement_timeout = '30s';
+SET LOCAL statement_timeout = '120s';
 SET LOCAL lock_timeout = '5s';
 -- Read every enabled range, independently of the HTTP list pagination.
 WITH pending_cf AS (
@@ -102,13 +102,15 @@ def main():
         # Keep database credentials out of process arguments and diagnostic output.
         env = postgres_environment(os.environ['DATABASE_URL'])
         cutoff = nightly_cutoff().isoformat()
+        command = ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1',
+                   '-v', 'user_id=' + user_id, '-v', 'cutoff=' + cutoff,
+                   '-v', 'nodes_only=' + str(args.nodes_only).lower(), '-v', 'cf_limit=' + str(args.cf_limit)]
         result = subprocess.run(
-            ['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1',
-             '-v', 'user_id=' + user_id, '-v', 'cutoff=' + cutoff,
-             '-v', 'nodes_only=' + str(args.nodes_only).lower(), '-v', 'cf_limit=' + str(args.cf_limit)],
-            input=QUEUE_SQL + ('ROLLBACK;' if args.check else 'COMMIT;'),
-            env=env, text=True, capture_output=True, timeout=60)
+            command, input=QUEUE_SQL + ('ROLLBACK;' if args.check else 'COMMIT;'),
+            env=env, text=True, capture_output=True, timeout=160)
         if result.returncode:
+            if result.stderr.strip():
+                print('Nightly queue PostgreSQL error: ' + result.stderr.strip(), file=sys.stderr)
             raise RuntimeError('Nightly queue transaction failed; no changes committed')
         print(f'Full scan cutoff: {cutoff}; ' + ('validation rolled back' if args.check else 'queue committed'), flush=True)
         for line in result.stdout.splitlines():
