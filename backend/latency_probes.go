@@ -463,13 +463,15 @@ func (a *app) reportProbeResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var saved int64
-	err = tx.QueryRow(r.Context(), `WITH received AS (
+	err = tx.QueryRow(r.Context(), `WITH target_ips AS MATERIALIZED (
+SELECT ip FROM (`+probeTargetPoolSQL+`) pool
+), received AS (
 SELECT r.ip::inet AS ip,r.delay_ms,r.success,r.checked_at
 FROM jsonb_to_recordset($2::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at timestamptz)
 ), inserted AS (
 INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port)
 SELECT $1,p.ip,p.delay_ms,p.success,p.checked_at,$3,$4 FROM received p
-WHERE EXISTS(SELECT 1 FROM (`+probeTargetPoolSQL+`) pool WHERE pool.ip=p.ip)
+JOIN target_ips pool ON pool.ip=p.ip
 AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
 RETURNING 1
 ), seen AS (
