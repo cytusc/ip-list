@@ -431,7 +431,7 @@ func (a *app) runScanTargets(parent context.Context, job scanJob, input scanInpu
 						job.Status = "completed"
 					}
 				}
-				finalCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+				finalCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 				defer stop()
 				finished := time.Now().UTC()
 				job.FinishedAt = &finished
