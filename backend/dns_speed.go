@@ -2,10 +2,19 @@ package main
 
 import (
 	"context"
-	"math"
-	"strconv"
 	"strings"
 )
+
+func dnsSpeedPassed(country string, speed float64) bool {
+	switch strings.ToUpper(country) {
+	case "HK":
+		return speed > 10
+	case "SG":
+		return speed >= 7
+	default:
+		return speed >= 9
+	}
+}
 
 func (a *app) filterDNSSlowIPs(ctx context.Context, items []dnsCandidate) error {
 	ips := make([]string, 0, len(items))
@@ -17,11 +26,6 @@ func (a *app) filterDNSSlowIPs(ctx context.Context, items []dnsCandidate) error 
 	if len(ips) == 0 {
 		return nil
 	}
-	benchmark, err := a.dnsSpeedBenchmark(ctx)
-	if err != nil {
-		return err
-	}
-	hasBenchmark := !math.IsNaN(benchmark) && !math.IsInf(benchmark, 0) && benchmark > 0
 	rows, err := a.db.Query(ctx, `SELECT host(ip),speed_mib_s,success
  FROM available_ip_speed_tests WHERE ip=ANY($1::inet[])`, ips)
 	if err != nil {
@@ -57,39 +61,12 @@ func (a *app) filterDNSSlowIPs(ctx context.Context, items []dnsCandidate) error 
 			item.State, item.Reason = "pending", "没有成功的下载测速结果，暂不进入节点 DNS"
 			continue
 		}
-		minimum := 9.0
-		switch strings.ToUpper(item.Country) {
-		case "HK":
-			if !hasBenchmark {
-				item.State, item.Reason = "pending", "AS36002 没有成功测速基准，暂不进入节点 DNS"
-				continue
-			}
-			minimum = benchmark
-		case "SG":
-			minimum = 7
-		}
-		if result.value < minimum {
+		if !dnsSpeedPassed(item.Country, result.value) {
 			item.State = "pending"
-			if strings.EqualFold(item.Country, "HK") {
-				item.Reason = "下载速度低于 AS36002 基准 " + strconv.FormatFloat(minimum, 'f', 2, 64) + " MiB/s"
-			} else {
-				item.Reason = "下载速度低于节点 DNS 门槛 " + strconv.FormatFloat(minimum, 'f', 2, 64) + " MiB/s"
-			}
+			item.Reason = "下载速度未达到节点 DNS 门槛：香港需 >10 MiB/s，新加坡需 ≥7 MiB/s，其他地区需 ≥9 MiB/s"
 		}
 	}
 	return nil
-}
-
-func (a *app) dnsSpeedBenchmark(ctx context.Context) (float64, error) {
-	var benchmark float64
-	err := a.db.QueryRow(ctx, `SELECT COALESCE(avg(test.speed_mib_s),0)
- FROM (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available) s
- JOIN available_ip_speed_tests test ON test.ip=s.ip AND test.success`+networkInfoJoin+`
- WHERE info.asn='AS36002'`).Scan(&benchmark)
-	if err != nil {
-		return 0, err
-	}
-	return benchmark, nil
 }
 
 func (a *app) availableIPSpeedStatus(ctx context.Context, items []availableIP) error {
@@ -118,20 +95,9 @@ func (a *app) availableIPSpeedStatus(ctx context.Context, items []availableIP) e
 		return err
 	}
 	rows.Close()
-	benchmark, err := a.dnsSpeedBenchmark(ctx)
-	if err != nil {
-		return err
-	}
 	for i := range items {
-		minimum := 9.0
-		switch strings.ToUpper(countries[items[i].IP]) {
-		case "HK":
-			minimum = benchmark
-		case "SG":
-			minimum = 7
-		}
 		result := items[i].SpeedTest
-		items[i].SpeedPassed = result != nil && result.Success && result.SpeedMiBs > 0 && result.SpeedMiBs >= minimum && minimum > 0
+		items[i].SpeedPassed = result != nil && result.Success && dnsSpeedPassed(countries[items[i].IP], result.SpeedMiBs)
 	}
 	return nil
 }
