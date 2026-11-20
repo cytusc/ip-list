@@ -1,0 +1,20 @@
+[Unit]
+Description=Sample IP Guard database waits and host stalls
+After=postgresql.service
+
+[Service]
+User=postgres
+Group=postgres
+Environment=PGDATABASE=ipguard
+ExecStart=/usr/bin/python3 -u /usr/local/sbin/ip-list-db-diagnostics
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

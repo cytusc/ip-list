@@ -21,6 +21,42 @@
 现有证据不能确定是磁盘、锁还是宿主机调度问题。正常节奏的长 checkpoint
 写入阶段也不能单独证明磁盘故障。
 
+### 持续诊断
+
+发布包包含独立的 `ip-list-db-diagnostics.service`。部署时校验并原子安装
+Python 脚本到 `/usr/local/sbin/ip-list-db-diagnostics`，以 postgres 用户通过
+本机 peer 认证访问 `ipguard`；不读取应用凭据。每 5 秒采样一次，查询最多
+运行 2 秒，子进程最多等待 4 秒。正常时每分钟记录一次；数据库操作超过
+2 秒、采样间隔超过 10 秒或采样失败时立即记录。瞬时等待可能被采样遗漏。
+
+```sh
+journalctl -u ip-list-db-diagnostics --since '1 hour ago' --no-pager
+journalctl -u ip-list-api --since '1 hour ago' --no-pager | rg '数据库查询|数据库连接等待'
+```
+
+诊断 JSON 含 PID、事务和查询时长、wait event、阻塞 PID，以及 `/proc` 的
+CPU ticks（第 8 项为 steal）、I/O pressure、diskstats 和 load；计数器是累计值，
+分析时比较相邻采样。没有 SQL 正文、参数和连接错误详情；操作只区分
+COMMIT、ROLLBACK 和普通 statement。应用慢日志的 PID 可与同一时段采样关联。
+服务自身不写数据库，也不使用应用连接池。主机整体停顿时它同样无法采样，
+恢复后的间隔告警只能证明采样中断，不能直接证明宿主机故障。
+
+生产开启以下可热加载设置，先备份 `postgresql.auto.conf` 再执行：
+
+```sql
+ALTER SYSTEM SET track_io_timing = on;
+ALTER SYSTEM SET track_wal_io_timing = on;
+ALTER SYSTEM SET log_lock_waits = on;
+SELECT pg_reload_conf();
+```
+
+这些是集群级设置，增加计时和锁等待日志开销；未关闭同步提交，未扩大前台连接池。
+PostgreSQL 自身的锁等待日志可能含 SQL，按数据库日志现有权限管理。
+检查 `pg_stat_io`、`pg_stat_wal` 的写入／同步计时，以及 PostgreSQL 17 的
+`pg_stat_checkpointer`；不能把累计时间当作一次事件的耗时。
+回退时恢复备份的设置并 reload；回退到不含诊断脚本的旧版本前，停止并禁用
+诊断服务。监控安装失败会在发布日志告警，不触发应用回滚，须单独检查服务状态。
+
 生产 PostgreSQL 17，主机 2 核、约 2 GiB 内存。以下是实际数据上的
 `EXPLAIN (ANALYZE, BUFFERS)` 单次观测，并非持续压测或延迟承诺。
 

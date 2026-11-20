@@ -155,6 +155,15 @@ for ((attempt=0; attempt<30; attempt++)); do
   sleep 2
 done
 [[ "$healthy" -eq 1 ]] || { echo "Application health checks failed" >&2; exit 1; }
+if python3 "$release_dir/scripts/install-nightly.py" "$release_dir/scripts/db-diagnostics.py" /usr/local/sbin/ip-list-db-diagnostics \
+  && install -m 644 "$release_dir/scripts/systemd/ip-list-db-diagnostics.service" /etc/systemd/system/ip-list-db-diagnostics.service \
+  && systemctl daemon-reload \
+  && systemctl enable ip-list-db-diagnostics.service \
+  && systemctl restart ip-list-db-diagnostics.service; then
+  echo "Database diagnostics started"
+else
+  echo "Database diagnostics installation failed; inspect ip-list-db-diagnostics.service" >&2
+fi
 # A bad script must leave the previous timer executable intact.
 if python3 "$release_dir/scripts/install-nightly.py" "$release_dir/scripts/daily-scan.py" /usr/local/sbin/ip-list-daily-scan; then
   echo "Nightly scan script installed"

@@ -36,9 +36,10 @@ func TestDatabaseQueryTrace(t *testing.T) {
 	output.Reset()
 	trace := ctx.Value(databaseQueryKey{}).(databaseQueryTrace)
 	trace.started = time.Now().Add(-2 * time.Hour)
+	trace.pid = 12345
 	ctx = context.WithValue(ctx, databaseQueryKey{}, trace)
 	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
-	if !strings.Contains(output.String(), "error=none") {
+	if !strings.Contains(output.String(), "error=none") || !strings.Contains(output.String(), "pid=12345") {
 		t.Fatal("slow successful query not logged")
 	}
 	if databaseQueryID("SELECT\n $1") != databaseQueryID("SELECT $1") {

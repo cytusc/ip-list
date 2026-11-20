@@ -26,6 +26,7 @@ type databaseAcquireKey struct{}
 type databaseQueryTrace struct {
 	started time.Time
 	id      string
+	pid     uint32
 }
 
 func databaseQueryID(sql string) string {
@@ -56,8 +57,12 @@ func databaseErrorCode(err error) string {
 	}
 }
 
-func (t *databaseTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	return context.WithValue(ctx, databaseQueryKey{}, databaseQueryTrace{time.Now(), databaseQueryID(data.SQL)})
+func (t *databaseTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	trace := databaseQueryTrace{started: time.Now(), id: databaseQueryID(data.SQL)}
+	if conn != nil {
+		trace.pid = conn.PgConn().PID()
+	}
+	return context.WithValue(ctx, databaseQueryKey{}, trace)
 }
 
 func (t *databaseTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
@@ -67,7 +72,7 @@ func (t *databaseTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pg
 	}
 	elapsed := time.Since(trace.started)
 	if elapsed >= t.threshold || data.Err != nil {
-		t.logf("数据库查询 query=%s request=%q duration=%s error=%s", trace.id, databaseRequest(ctx), elapsed.Round(time.Millisecond), databaseErrorCode(data.Err))
+		t.logf("数据库查询 query=%s pid=%d request=%q duration=%s error=%s", trace.id, trace.pid, databaseRequest(ctx), elapsed.Round(time.Millisecond), databaseErrorCode(data.Err))
 	}
 }
 

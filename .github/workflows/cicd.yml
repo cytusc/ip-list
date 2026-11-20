@@ -50,6 +50,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_cleanup_deployments.py'
           python3 -m unittest discover -s scripts/tests -p 'test_install_nightly.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_db_diagnostics.py'
       - name: Check daily database maintenance
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable
