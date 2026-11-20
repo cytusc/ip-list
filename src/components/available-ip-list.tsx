@@ -350,7 +350,7 @@ export function AvailableIPList({
                   最近测通{sort === "checked_at" ? <SortIcon /> : <ArrowUpDown />}
                 </Button>
               </TableHead>
-              <TableHead aria-sort={sort === "speed_test" ? (direction === "asc" ? "ascending" : "descending") : "none"} title="手动和自动测速都通过 HK2-gRPC 下载 100 MB；自动测速每 4 小时一次">
+              <TableHead aria-sort={sort === "speed_test" ? (direction === "asc" ? "ascending" : "descending") : "none"} title="通过 HK2-gRPC 下载 100 MB；成功后每 4 小时复测，每 5 分钟检查缺失或失败的测速并重试">
                 <Button variant="ghost" size="sm" onClick={() => toggleSort("speed_test")} title="按最新成功测速速度排序；无结果或失败的 IP 排在最后">
                   下载速度{sort === "speed_test" ? <SortIcon /> : <ArrowUpDown />}
                 </Button>
@@ -422,6 +422,9 @@ export function AvailableIPList({
                           {item.speed_test.success ? `${item.speed_test.speed_mib_s.toFixed(2)} MiB/s · ${(item.speed_test.duration_ms / 1000).toFixed(2)}s` : "最近测速失败 / 未达标"}
                         </p>
                         <p className="text-xs text-muted-foreground">{formatTime(item.speed_test.checked_at)}</p>
+                        {!item.speed_test.success && item.speed_test.last_success_at && <p className="text-xs text-muted-foreground">
+                          上次成功：{item.speed_test.speed_mib_s.toFixed(2)} MiB/s · {formatTime(item.speed_test.last_success_at)}
+                        </p>}
                       </>}
                       {!item.speed_test && <p className="inline-flex items-center gap-1.5 text-xs text-rose-700"><i className="size-2 rounded-full bg-rose-500" aria-hidden="true" />尚无测速结果</p>}
                       {speedTestState?.error && <p className="max-w-36 text-xs text-destructive" title={speedTestState.error}>失败</p>}

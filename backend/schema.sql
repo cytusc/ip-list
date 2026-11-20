@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS available_ip_speed_tests (
  checked_at timestamptz NOT NULL,
  success boolean NOT NULL
 );
+ALTER TABLE available_ip_speed_tests ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
+UPDATE available_ip_speed_tests SET last_success_at=checked_at WHERE success AND last_success_at IS NULL;
 CREATE INDEX IF NOT EXISTS nodes_enabled_config_hash_idx ON nodes((md5(share_uri))) WHERE enabled;
 CREATE OR REPLACE VIEW node_grpc_samples AS
  SELECT DISTINCT share_uri,md5(share_uri) AS config_hash FROM nodes

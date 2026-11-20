@@ -259,7 +259,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 		dbError(w, err)
 		return
 	}
-	speedRows, err := a.db.Query(r.Context(), `SELECT host(ip),duration_ms,speed_mib_s,checked_at,success
+	speedRows, err := a.db.Query(r.Context(), `SELECT host(ip),duration_ms,speed_mib_s,checked_at,success,last_success_at
  FROM available_ip_speed_tests WHERE ip=ANY($1::inet[])`, ips)
 	if err != nil {
 		dbError(w, err)
@@ -269,7 +269,7 @@ func (a *app) availableIPs(w http.ResponseWriter, r *http.Request) {
 	for speedRows.Next() {
 		var ip string
 		var result availableIPSpeedTest
-		if err = speedRows.Scan(&ip, &result.Duration, &result.SpeedMiBs, &result.CheckedAt, &result.Success); err != nil {
+		if err = speedRows.Scan(&ip, &result.Duration, &result.SpeedMiBs, &result.CheckedAt, &result.Success, &result.LastSuccessAt); err != nil {
 			dbError(w, err)
 			return
 		}

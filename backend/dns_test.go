@@ -177,7 +177,7 @@ func TestDNSPlans(t *testing.T) {
 	}{
 		{"monitor outage", healthy, []dnsRemoteRecord{hk}, nil, true, "hold"},
 		{"unknown country sample", append(healthy, dnsCandidate{IP: "47.243.107.190", Country: "HK", State: "unknown"}), []dnsRemoteRecord{hk}, nil, false, "update"},
-		{"owned empty", nil, []dnsRemoteRecord{hk}, map[string]bool{"hk.reiiv.com/A": true}, false, "delete"},
+		{"owned empty", nil, []dnsRemoteRecord{hk}, map[string]bool{"hk.reiiv.com/A": true}, false, "hold"},
 		{"unowned empty", nil, []dnsRemoteRecord{hk}, nil, false, "hold"},
 		{"duplicate line", healthy, []dnsRemoteRecord{hk, hk}, nil, false, "hold"},
 		{"cname", healthy, []dnsRemoteRecord{hk, {ID: "cname", Name: "hk.reiiv.com", Type: "CNAME"}}, nil, false, "hold"},
@@ -194,7 +194,7 @@ func TestDNSPlans(t *testing.T) {
 		t.Fatal("uncertain published IP survived healthy replacement", filtered)
 	}
 	preserved := dnsBuildPlan(c, []dnsCandidate{{IP: "103.135.251.114", Country: "HK", State: "unknown"}, {IP: "191.222.220.126", Country: "HK", State: "failed"}, {IP: "8.8.8.8", Country: "US", State: "healthy"}}, []dnsRemoteRecord{hk}, nil, false)
-	if !slices.Equal(preserved[0].Desired, []string{"103.135.251.114"}) {
+	if !slices.Equal(preserved[0].Desired, hk.Values) {
 		t.Fatal("lost uncertain IP without a healthy replacement in its own record", preserved)
 	}
 	other := hk
@@ -223,7 +223,7 @@ func TestDNSProbeFailureEvidencePreservesRecords(t *testing.T) {
 	}{
 		{"probe network outage", "failed", false, true},
 		{"missing reports", "unknown", true, true},
-		{"confirmed target failure", "failed", true, false},
+		{"confirmed target failure", "failed", true, true},
 		{"healthy target", "healthy", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -287,6 +287,12 @@ func TestDNSIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Exec(ctx, "DELETE FROM node_ip_pool WHERE protocol=$1", protocol)
+	if _, err = db.Exec(ctx, `INSERT INTO available_ip_speed_tests(ip,duration_ms,speed_mib_s,checked_at,success)
+ VALUES('191.222.220.126',1000,20,now(),true),('8.8.8.8',1000,20,now(),true)
+ ON CONFLICT(ip) DO UPDATE SET success=true,speed_mib_s=20,checked_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(ctx, "DELETE FROM available_ip_speed_tests WHERE ip IN ('191.222.220.126','8.8.8.8')")
 	defer db.Exec(ctx, "DELETE FROM dns_managed_records WHERE zone_id='dns-test-zone'")
 	attachPoolConfig(t, db, protocol)
 	var probe string

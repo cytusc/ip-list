@@ -34,7 +34,9 @@ func TestDatabaseQueryTrace(t *testing.T) {
 		}
 	}
 	output.Reset()
-	tracer.threshold = time.Nanosecond
+	trace := ctx.Value(databaseQueryKey{}).(databaseQueryTrace)
+	trace.started = time.Now().Add(-2 * time.Hour)
+	ctx = context.WithValue(ctx, databaseQueryKey{}, trace)
 	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
 	if !strings.Contains(output.String(), "error=none") {
 		t.Fatal("slow successful query not logged")

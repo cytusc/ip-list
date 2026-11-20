@@ -35,7 +35,7 @@ func TestDNSRefusesCompleteDeletionWithLiveControl(t *testing.T) {
 		if err := a.executeDNS(ctx, dnsTestConfig(), &report, fake); err != nil {
 			t.Fatal(err)
 		}
-		if len(fake.writes) != 0 || len(report.Records) != 2 || !strings.Contains(report.Warning, "全部解析") {
+		if len(fake.writes) != 0 || len(report.Records) != 2 || !strings.Contains(report.Warning, "保留原解析") {
 			t.Fatalf("unsafe report: %+v writes=%+v", report, fake.writes)
 		}
 		if len(report.Candidates) != 2 {

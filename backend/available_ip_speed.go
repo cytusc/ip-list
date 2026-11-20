@@ -25,10 +25,11 @@ type availableIPSpeedResult struct {
 }
 
 type availableIPSpeedTest struct {
-	Duration  int64     `json:"duration_ms"`
-	SpeedMiBs float64   `json:"speed_mib_s"`
-	CheckedAt time.Time `json:"checked_at"`
-	Success   bool      `json:"success"`
+	Duration      int64      `json:"duration_ms"`
+	SpeedMiBs     float64    `json:"speed_mib_s"`
+	CheckedAt     time.Time  `json:"checked_at"`
+	Success       bool       `json:"success"`
+	LastSuccessAt *time.Time `json:"last_success_at"`
 }
 
 func (a *app) speedTestAvailableIP(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +132,7 @@ func downloadSpeedIP(ctx context.Context, template map[string]any, ip netip.Addr
 }
 
 func (a *app) maintainAvailableIPSpeedTests(ctx context.Context) {
-	ticker := time.NewTicker(4 * time.Hour)
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
 		a.runAvailableIPSpeedTests(ctx)
@@ -145,7 +146,10 @@ func (a *app) maintainAvailableIPSpeedTests(ctx context.Context) {
 
 func (a *app) runAvailableIPSpeedTests(ctx context.Context) {
 	rows, err := a.db.Query(ctx, `SELECT DISTINCT host(p.ip) FROM shared_node_ip_pool p
- WHERE p.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip) ORDER BY host(p.ip)`)
+ LEFT JOIN available_ip_speed_tests s ON s.ip=p.ip
+ WHERE p.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)
+ AND (s.ip IS NULL OR s.checked_at <= now()-CASE WHEN s.success THEN interval '4 hours' ELSE interval '5 minutes' END)
+ ORDER BY host(p.ip)`)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("读取可用 IP 测速列表失败: %v", err)
@@ -175,11 +179,6 @@ func (a *app) runAvailableIPSpeedTests(ctx context.Context) {
 		}
 		return
 	}
-	if _, err = a.db.Exec(ctx, `DELETE FROM available_ip_speed_tests s WHERE
- NOT EXISTS(SELECT 1 FROM shared_node_ip_pool p WHERE p.ip=s.ip AND p.available)
- OR EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)`); err != nil {
-		log.Printf("清理过期 IP 测速结果失败: %v", err)
-	}
 	if len(ips) == 0 {
 		return
 	}
@@ -199,6 +198,9 @@ func (a *app) runAvailableIPSpeedTests(ctx context.Context) {
 		testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		result, testErr := downloadSpeedIP(testCtx, template, ip, availableIPAutomaticSpeedTestBytes)
 		cancel()
+		if ctx.Err() != nil {
+			return
+		}
 		if saveErr := a.saveAvailableIPSpeedResult(ctx, ip, result, testErr == nil); saveErr != nil && ctx.Err() == nil {
 			log.Printf("保存 IP 测速结果失败 ip=%s: %v", ip, saveErr)
 		}
@@ -226,11 +228,14 @@ func (a *app) saveAvailableIPSpeedFailures(ctx context.Context, ips []netip.Addr
 }
 
 func (a *app) saveAvailableIPSpeedResult(ctx context.Context, ip netip.Addr, result availableIPSpeedResult, success bool) error {
-	_, err := a.db.Exec(ctx, `INSERT INTO available_ip_speed_tests(ip,duration_ms,speed_mib_s,checked_at,success)
- SELECT $1::inet,$2,$3,now(),$4 WHERE EXISTS(
+	_, err := a.db.Exec(ctx, `INSERT INTO available_ip_speed_tests(ip,duration_ms,speed_mib_s,checked_at,success,last_success_at)
+ SELECT $1::inet,$2,$3,now(),$4,CASE WHEN $4 THEN now() END WHERE EXISTS(
  SELECT 1 FROM shared_node_ip_pool p WHERE p.ip=$1::inet AND p.available)
  AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=$1::inet)
- ON CONFLICT(ip) DO UPDATE SET duration_ms=excluded.duration_ms,speed_mib_s=excluded.speed_mib_s,
+ ON CONFLICT(ip) DO UPDATE SET
+ duration_ms=CASE WHEN excluded.success THEN excluded.duration_ms ELSE available_ip_speed_tests.duration_ms END,
+ speed_mib_s=CASE WHEN excluded.success THEN excluded.speed_mib_s ELSE available_ip_speed_tests.speed_mib_s END,
+ last_success_at=CASE WHEN excluded.success THEN excluded.last_success_at ELSE available_ip_speed_tests.last_success_at END,
  checked_at=excluded.checked_at,success=excluded.success`, ip.String(), result.Duration, result.SpeedMiBs, success)
 	return err
 }

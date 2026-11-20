@@ -520,48 +520,18 @@ func (a *app) executeDNSWithNodeCheck(ctx context.Context, c dnsConfig, report *
 	if err := a.filterDNSSlowIPs(ctx, candidates); err != nil {
 		return fmt.Errorf("读取下载测速结果失败: %w", err)
 	}
-	managed := map[string]bool{}
-	rows, err := a.db.Query(ctx, "SELECT name,type FROM dns_managed_records WHERE domain=$1 AND zone_id=$2", c.Domain, zone)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var name, kind string
-		if err = rows.Scan(&name, &kind); err != nil {
-			rows.Close()
-			return err
-		}
-		managed[dnsRecordKey(name, kind)] = true
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
 	dnsSelectLatency(candidates)
 	report.Candidates = candidates
-	report.Records = dnsBuildPlan(c, candidates, remote, managed, uncertain)
-	// A common probe/route failure must not erase the last published records.
-	hasDesired, hasDelete := false, false
+	report.Records = dnsBuildPlan(c, candidates, remote, nil, uncertain)
 	for _, r := range report.Records {
-		hasDesired = hasDesired || len(r.Desired) > 0
-		hasDelete = hasDelete || r.Action == "delete"
-	}
-	if hasDelete && !hasDesired {
-		report.Warning = "全部解析均将被删除，疑似探针或线路整体异常：保留现有解析，等待恢复或人工核查"
-		for i := range report.Records {
-			r := &report.Records[i]
-			if r.Action == "delete" {
-				r.Action = "hold"
-				r.Desired = append([]string{}, r.Current...)
-				r.Reason = report.Warning
-			}
+		if r.Action == "hold" && len(r.Current) > 0 && r.Reason == dnsNoReplacement {
+			report.Warning = "部分解析暂无健康替代 IP，已保留原解析，等待恢复或人工核查"
 		}
 	}
 	if uncertain {
 		report.Warning = dnsMonitorUnavailable
 	} else if locationIncomplete {
-		report.Warning = "部分 IP 定位查询不完整：仅保留这些 IP 的已有解析，不影响其他 IP 更新或失效清理"
+		report.Warning = "部分 IP 定位查询不完整：仅保留这些 IP 的已有解析，无健康替代 IP 的记录保留原解析"
 	}
 	if report.Mode == "preview" {
 		return nil

@@ -131,6 +131,7 @@ export type AvailableIP = {
   url_dns_status: "synced" | "not_synced" | "disabled" | "unknown";
 };
 export type AvailableIPSpeedTest = AvailableIPSpeedResult & {
+  last_success_at?: string | null;
   checked_at: string;
   success: boolean;
 };

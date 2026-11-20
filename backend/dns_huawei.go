@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -131,16 +130,12 @@ func (h *huaweiDNS) Apply(ctx context.Context, zone string, r dnsPlanRecord, ttl
 	return nil
 }
 
+const dnsNoReplacement = "本记录暂无健康替代 IP，保留全部原解析，等待恢复或人工核查"
+
 // Manage country names and the optional website name on the default line.
 // Existing records are adopted; weighted duplicates or CNAME conflicts are blocked.
-func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteRecord, managed map[string]bool, uncertain bool) []dnsPlanRecord {
+func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteRecord, _ map[string]bool, uncertain bool) []dnsPlanRecord {
 	desired := dnsDesired(c, candidates)
-	unknown := map[string]bool{}
-	for _, ip := range candidates {
-		if ip.State == "unknown" {
-			unknown[ip.Pool+"/"+ip.IP] = true
-		}
-	}
 	byKey := map[string][]dnsRemoteRecord{}
 	cnames := map[string]bool{}
 	for _, r := range remote {
@@ -170,18 +165,6 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 			}
 			sort.Strings(r.Current)
 		}
-		// Keep uncertain addresses only when this record has no healthy replacement.
-		hasHealthy := len(r.Desired) > 0
-		for _, ip := range r.Current {
-			pool := ""
-			if r.Name == "url."+c.Domain {
-				pool = "cf"
-			}
-			if !hasHealthy && unknown[pool+"/"+ip] && !slices.Contains(r.Desired, ip) {
-				r.Desired = append(r.Desired, ip)
-				r.Reason = "本记录暂无健康替代 IP，暂留待确认的旧解析，尚未验证可用"
-			}
-		}
 		sort.Strings(r.Desired)
 		switch {
 		case uncertain:
@@ -195,13 +178,9 @@ func dnsBuildPlan(c dnsConfig, candidates []dnsCandidate, remote []dnsRemoteReco
 			r.Action = "hold"
 			r.Reason = "云端记录不是正常状态，暂不修改"
 		case len(r.Desired) == 0:
-			if len(existing) > 0 && managed[key] {
-				r.Action = "delete"
-				r.Reason = "已接管的记录没有符合条件的 IP"
-			} else {
-				r.Action = "hold"
-				r.Reason = "没有健康 IP，尚未接管的记录保留"
-			}
+			r.Action = "hold"
+			r.Desired = append([]string{}, r.Current...)
+			r.Reason = dnsNoReplacement
 		case len(existing) == 0:
 			r.Action = "create"
 		case strings.Join(r.Current, ",") == strings.Join(r.Desired, ",") && existing[0].TTL == c.TTL:

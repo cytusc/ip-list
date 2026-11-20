@@ -177,6 +177,8 @@ func TestDNSNodePublishGate(t *testing.T) {
  SELECT 'grpc',ip::inet,true,40,now(),md5('vless://test@sample.invalid:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb
  FROM unnest(ARRAY['38.59.225.75','38.59.225.138']) ip;
  INSERT INTO dns_ip_locations(ip,country,policy_version) SELECT ip::inet,'GB',3 FROM unnest(ARRAY['38.59.225.75','38.59.225.138']) ip;
+ INSERT INTO available_ip_speed_tests(ip,duration_ms,speed_mib_s,checked_at,success)
+ SELECT ip::inet,1000,20,now(),true FROM unnest(ARRAY['38.59.225.75','38.59.225.138']) ip;
  INSERT INTO latency_probes(name,token_hash,last_seen,heartbeat_at) VALUES('selected','selected',now(),now());
  INSERT INTO latency_probe_results(probe_id,ip,success,delay_ms,checked_at)
  SELECT id,ip::inet,true,165,now()-make_interval(secs=>age) FROM latency_probes
