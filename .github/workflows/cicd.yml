@@ -69,7 +69,7 @@ jobs:
       - name: Check probe data retention
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable
-        run: go -C backend test -run 'TestProbeCompaction|TestConnectivityDataRetention|TestMaintenancePoolIsolation' -count=1
+        run: go -C backend test -run 'TestProbeCompaction|TestConnectivityDataRetention|TestMaintenancePoolIsolation|TestScanNetworkProgress' -count=1
       - name: Check DNS outage tolerance and speed result retention
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable

@@ -355,6 +355,24 @@ func (a *app) scanNetworkMetadata(ctx context.Context, cidrs []string) ([]scanNe
 // entry exists. Durable results outlive the seven-day round history.
 // IP bounds use the (protocol,ip) index; adding <<= makes PostgreSQL prefer GiST.
 func (a *app) scanNetworkProgress(ctx context.Context) (networkScanProgress, error) {
+	// A canceled poll must not cancel the shared calculation for other callers.
+	result := a.progressFlight.DoChan("network-progress", func() (any, error) {
+		work, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return a.loadScanNetworkProgress(work)
+	})
+	select {
+	case <-ctx.Done():
+		return networkScanProgress{}, ctx.Err()
+	case result := <-result:
+		if result.Err != nil {
+			return networkScanProgress{}, result.Err
+		}
+		return result.Val.(networkScanProgress), nil
+	}
+}
+
+func (a *app) loadScanNetworkProgress(ctx context.Context) (networkScanProgress, error) {
 	var progress networkScanProgress
 	const cacheKey = "ipfilter:scan:network-progress"
 	if a.redis != nil {
@@ -364,10 +382,10 @@ func (a *app) scanNetworkProgress(ctx context.Context) (networkScanProgress, err
 	}
 	err := a.db.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE
   NOT EXISTS(SELECT 1 FROM network_auto_scans q WHERE q.network_id=n.id AND q.protocol=$1 AND q.cidr=n.cidr)
-  AND (SELECT count(*) FROM (
-    SELECT p.ip FROM node_ip_pool p WHERE p.protocol=$1 AND p.ip >= network(n.cidr)::inet AND p.ip <= host(broadcast(n.cidr))::inet
-    UNION SELECT b.ip FROM ip_blacklist b WHERE b.ip >= network(n.cidr)::inet AND b.ip <= host(broadcast(n.cidr))::inet
-   ) checked) >= power(2::numeric, (CASE family(n.cidr) WHEN 4 THEN 32 ELSE 128 END)-masklen(n.cidr)))
+  AND ((SELECT count(*) FROM node_ip_pool p WHERE p.protocol=$1 AND p.ip >= network(n.cidr)::inet AND p.ip <= host(broadcast(n.cidr))::inet)
+    + (SELECT count(*) FROM ip_blacklist b WHERE b.ip >= network(n.cidr)::inet AND b.ip <= host(broadcast(n.cidr))::inet
+      AND NOT EXISTS(SELECT 1 FROM node_ip_pool p WHERE p.protocol=$1 AND p.ip=b.ip)))
+    >= power(2::numeric, (CASE family(n.cidr) WHEN 4 THEN 32 ELSE 128 END)-masklen(n.cidr)))
  FROM networks n WHERE n.enabled`, connectivityProtocol).Scan(&progress.Total, &progress.Completed)
 	progress.Pending = progress.Total - progress.Completed
 	if err == nil && a.redis != nil {

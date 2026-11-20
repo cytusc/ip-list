@@ -30,6 +30,7 @@ import (
 	"github.com/ulule/limiter/v3"
 	redisstore "github.com/ulule/limiter/v3/drivers/store/redis"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sync/singleflight"
 )
 
 //go:embed schema.sql
@@ -39,12 +40,13 @@ const cookieName = "ipfilter_session"
 const sessionTTL = 24 * time.Hour
 
 type app struct {
-	db           *pgxpool.Pool
-	redis        *redis.Client
-	sessions     *scs.SessionManager
-	loginLimiter *limiter.Limiter
-	scanContext  context.Context
-	origin       string
+	db             *pgxpool.Pool
+	redis          *redis.Client
+	sessions       *scs.SessionManager
+	loginLimiter   *limiter.Limiter
+	scanContext    context.Context
+	origin         string
+	progressFlight singleflight.Group
 }
 type user struct {
 	ID       string `json:"id"`

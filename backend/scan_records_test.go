@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,42 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestScanNetworkProgressSharesCanceledPolls(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	lock, err := a.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err = lock.Exec(ctx, "LOCK TABLE networks IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the calculation blocked while two polls independently time out.
+	for range 2 {
+		poll, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		_, err = a.scanNetworkProgress(poll)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("poll must stop waiting: %v", err)
+		}
+	}
+	if got := a.db.Stat().AcquiredConns(); got != 2 {
+		t.Fatalf("want one lock and one shared calculation, acquired=%d", got)
+	}
+	if err = lock.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The detached calculation must also release its connection after unblocking.
+	deadline := time.Now().Add(time.Second)
+	for a.db.Stat().AcquiredConns() > 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := a.db.Stat().AcquiredConns(); got != 0 {
+		t.Fatalf("shared calculation did not finish: %d", got)
+	}
+}
 
 // A round is listed before it ends and keeps its results afterwards, so the
 // list can show live progress and the record can still be reopened.
