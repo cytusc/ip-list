@@ -120,14 +120,20 @@ func main() {
 		log.Fatal(err)
 	}
 	a.scanContext = ctx
-	go a.maintainConnectivityData(ctx)
+	maintenanceDB, err := maintenancePool(ctx, db.Config())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer maintenanceDB.Close()
+	maintenance := &app{db: maintenanceDB, redis: rdb}
+	go afterStartup(ctx, 5*time.Minute, maintenance.maintainConnectivityData)
 	go a.maintainAvailableIPSpeedTests(ctx)
-	go a.maintainProbeSamples(ctx)
-	go a.revalidateLegacyCertificates(ctx)
+	go afterStartup(ctx, time.Minute, maintenance.maintainProbeSamples)
+	go afterStartup(ctx, 10*time.Minute, maintenance.revalidateLegacyCertificates)
 	go a.maintainNodeHealth(ctx)
 	go a.resumeNodeSchedules(ctx)
 	go a.maintainAutomaticScans(ctx)
-	go a.maintainNetworkMetadata(ctx)
+	go afterStartup(ctx, 3*time.Minute, maintenance.maintainNetworkMetadata)
 	go a.maintainDNS(ctx)
 	server := &http.Server{Addr: env("API_ADDR", "127.0.0.1:8081"), Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
