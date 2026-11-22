@@ -833,7 +833,7 @@ const PROBE_ONLINE: &str = "COALESCE(enabled AND last_seen>now()-make_interval(s
 const PROBE_TARGET_POOL: &str = "SELECT ip FROM shared_node_ip_pool WHERE available UNION SELECT ip FROM cf_ip_pool WHERE available";
 const PROBE_WINDOW: &str = "(interval_seconds + CEIL((SELECT count(*) FROM (SELECT ip FROM shared_node_ip_pool WHERE available UNION SELECT ip FROM cf_ip_pool WHERE available) targets)::numeric / concurrency)::integer * (CEIL(timeout_ms::numeric/1000)::integer+2) + 30)";
 
-async fn latency_probes_response(client: &tokio_postgres::Client, uri: &str) -> Response {
+async fn latency_probes_response(client: &tokio_postgres::Client, uri: &str, paged: bool) -> Response {
     let id = query_value(uri, "id");
     let ids = query_value(uri, "ids");
     let search = query_value(uri, "search").trim().to_string();
@@ -854,7 +854,14 @@ async fn latency_probes_response(client: &tokio_postgres::Client, uri: &str) -> 
         "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT id::text,name,mode,tcp_port,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,{PROBE_ONLINE} AS online,{PROBE_WINDOW} AS sample_window_seconds FROM latency_probes{filter} ORDER BY created_at DESC,id DESC LIMIT $4 OFFSET $5) t"
     );
     match json_rows(client, &sql, &[&id, &ids, &search, &p.size, &p.offset]).await {
-        Ok(items) => page_headers(Json(items), p.total, p.page, p.size),
+        Ok(items) => {
+            let body = if paged {
+                page_object(items, p.total, p.page, p.size)
+            } else {
+                items
+            };
+            page_headers(Json(body), p.total, p.page, p.size)
+        }
         Err(response) => response,
     }
 }
@@ -871,7 +878,7 @@ async fn latency_probe_list(
         Ok(value) => value,
         Err(response) => return response,
     };
-    latency_probes_response(&client, uri.query().unwrap_or("")).await
+    latency_probes_response(&client, uri.query().unwrap_or(""), false).await
 }
 
 // ---------------------------------------------------------------------------
@@ -991,7 +998,7 @@ pub async fn list_payload(state: &AppState, kind: &str, uri: &str) -> Option<Res
         "blacklist" => Some(blacklist_response(&client, uri).await),
         "cf-targets" => Some(cf_targets_response(&client, uri).await),
         "cf-pool" => Some(cf_pool_response(&client, uri).await),
-        "latency-probes" => Some(latency_probes_response(&client, uri).await),
+        "latency-probes" => Some(latency_probes_response(&client, uri, true).await),
         "certificate-issues" => match certificate_issues_data(&client, uri).await {
             Ok((items, total, page, size)) => Some(Json(page_object(items, total, page, size)).into_response()),
             Err(response) => Some(response),
