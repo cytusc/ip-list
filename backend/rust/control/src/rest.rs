@@ -570,10 +570,10 @@ async fn blacklist_list(
         Ok(value) => value,
         Err(response) => return response,
     };
-    blacklist_response(&client, uri.query().unwrap_or("")).await
+    blacklist_response(&client, uri.query().unwrap_or(""), false).await
 }
 
-async fn blacklist_response(client: &tokio_postgres::Client, uri: &str) -> Response {
+async fn blacklist_response(client: &tokio_postgres::Client, uri: &str, paged: bool) -> Response {
     let search = query_value(uri, "search");
     let where_sql = " FROM ip_blacklist WHERE ($1='' OR position($1 in host(ip))>0)";
     let p = match load_page(
@@ -592,7 +592,14 @@ async fn blacklist_response(client: &tokio_postgres::Client, uri: &str) -> Respo
         "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT host(ip) AS ip,created_at{where_sql} ORDER BY ip LIMIT $2 OFFSET $3) t"
     );
     match json_rows(client, &data_sql, &[&search, &p.size, &p.offset]).await {
-        Ok(items) => page_headers(Json(items), p.total, p.page, p.size),
+        Ok(items) => {
+            let body = if paged {
+                page_object(items, p.total, p.page, p.size)
+            } else {
+                items
+            };
+            page_headers(Json(body), p.total, p.page, p.size)
+        }
         Err(response) => response,
     }
 }
@@ -613,7 +620,7 @@ const CF_STATS: &str = "(SELECT count(*) FROM cf_results r WHERE r.target_id=t.i
  COALESCE((SELECT sum(success) FROM cf_target_rounds k WHERE k.target_id=t.id),\
  (SELECT count(*) FROM cf_results r WHERE r.target_id=t.id AND r.available)) AS checked_success";
 
-async fn cf_targets_response(client: &tokio_postgres::Client, uri: &str) -> Response {
+async fn cf_targets_response(client: &tokio_postgres::Client, uri: &str, paged: bool) -> Response {
     let search = query_value(uri, "search");
     let where_sql = " FROM cf_targets t WHERE ($1='' OR position(lower($1) in lower(t.name||' '||t.url))>0)";
     let p = match load_page(
@@ -633,7 +640,14 @@ async fn cf_targets_response(client: &tokio_postgres::Client, uri: &str) -> Resp
          SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT t.*,{CF_STATS} FROM selected t ORDER BY t.created_at DESC,t.id DESC) t"
     );
     match json_rows(client, &data_sql, &[&search, &p.size, &p.offset]).await {
-        Ok(items) => page_headers(Json(items), p.total, p.page, p.size),
+        Ok(items) => {
+            let body = if paged {
+                page_object(items, p.total, p.page, p.size)
+            } else {
+                items
+            };
+            page_headers(Json(body), p.total, p.page, p.size)
+        }
         Err(response) => response,
     }
 }
@@ -650,10 +664,10 @@ async fn cf_target_list(
         Ok(value) => value,
         Err(response) => return response,
     };
-    cf_targets_response(&client, uri.query().unwrap_or("")).await
+    cf_targets_response(&client, uri.query().unwrap_or(""), false).await
 }
 
-async fn cf_pool_response(client: &tokio_postgres::Client, uri: &str) -> Response {
+async fn cf_pool_response(client: &tokio_postgres::Client, uri: &str, paged: bool) -> Response {
     let search = query_value(uri, "search");
     let where_sql = " FROM cf_ip_pool s WHERE s.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip) AND ($1='' OR position($1 in host(s.ip))>0)";
     let p = match load_page(
@@ -675,7 +689,14 @@ async fn cf_pool_response(client: &tokio_postgres::Client, uri: &str) -> Respons
          LEFT JOIN LATERAL (SELECT w.asn,w.provider FROM networks w WHERE w.enabled AND s.ip <<= w.cidr AND (w.asn<>'' OR w.provider<>'') ORDER BY masklen(w.cidr) DESC,w.updated_at DESC,w.id LIMIT 1) info ON true ORDER BY s.ip) r"
     );
     match json_rows(client, &data_sql, &[&search, &p.size, &p.offset]).await {
-        Ok(items) => page_headers(Json(items), p.total, p.page, p.size),
+        Ok(items) => {
+            let body = if paged {
+                page_object(items, p.total, p.page, p.size)
+            } else {
+                items
+            };
+            page_headers(Json(body), p.total, p.page, p.size)
+        }
         Err(response) => response,
     }
 }
@@ -692,7 +713,7 @@ async fn cf_pool_list(
         Ok(value) => value,
         Err(response) => return response,
     };
-    cf_pool_response(&client, uri.query().unwrap_or("")).await
+    cf_pool_response(&client, uri.query().unwrap_or(""), false).await
 }
 
 async fn create_cf_target(
@@ -995,9 +1016,9 @@ pub async fn list_payload(state: &AppState, kind: &str, uri: &str) -> Option<Res
             )),
             Err(response) => Some(response),
         },
-        "blacklist" => Some(blacklist_response(&client, uri).await),
-        "cf-targets" => Some(cf_targets_response(&client, uri).await),
-        "cf-pool" => Some(cf_pool_response(&client, uri).await),
+        "blacklist" => Some(blacklist_response(&client, uri, true).await),
+        "cf-targets" => Some(cf_targets_response(&client, uri, true).await),
+        "cf-pool" => Some(cf_pool_response(&client, uri, true).await),
         "latency-probes" => Some(latency_probes_response(&client, uri, true).await),
         "certificate-issues" => match certificate_issues_data(&client, uri).await {
             Ok((items, total, page, size)) => Some(Json(page_object(items, total, page, size)).into_response()),
@@ -2416,18 +2437,19 @@ pub async fn scan_records_list(state: &AppState, headers: &HeaderMap, uri: &str)
         Err(response) => return response,
     };
     let search = query_value(uri, "search");
+    let protocol = query_value(uri, "protocol");
     let page = match page_number(uri) {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let count_sql = "SELECT count(*) FROM node_scan_rounds WHERE ($1='' OR position(lower($1) in lower(node_name||' '||url||' '||protocol))>0)";
-    let total = match count(&client, count_sql, &[&search]).await {
+    let count_sql = "SELECT count(*) FROM node_scan_rounds WHERE ($1='' OR position(lower($1) in lower(node_name||' '||url||' '||protocol))>0) AND ($2='' OR protocol=$2)";
+    let total = match count(&client, count_sql, &[&search, &protocol]).await {
         Ok(value) => value,
         Err(response) => return response,
     };
     let page = normalized_page(page, total, 20);
-    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT id::text,job_id,round,protocol,node_name,scope,url,cidrs,input,started_at,finished_at,total,completed,success,status,error,results,updated_at,false AS live FROM node_scan_rounds WHERE ($1='' OR position(lower($1) in lower(node_name||' '||url||' '||protocol))>0) ORDER BY started_at DESC,id DESC LIMIT $2 OFFSET $3) t";
-    let items = match json_rows(&client, sql, &[&search, &20i64, &page_offset(page, 20)]).await {
+    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT id::text,job_id,round,protocol,node_name,scope,url,cidrs,input,started_at,finished_at,total,completed,success,status,error,results,updated_at,false AS live FROM node_scan_rounds WHERE ($1='' OR position(lower($1) in lower(node_name||' '||url||' '||protocol))>0) AND ($2='' OR protocol=$2) ORDER BY started_at DESC,id DESC LIMIT $3 OFFSET $4) t";
+    let items = match json_rows(&client, sql, &[&search, &protocol, &20i64, &page_offset(page, 20)]).await {
         Ok(value) => value,
         Err(response) => return response,
     };
