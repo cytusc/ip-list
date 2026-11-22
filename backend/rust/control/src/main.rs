@@ -178,8 +178,29 @@ fn database_pool(url: &str) -> Result<Pool, Box<dyn std::error::Error>> {
     Ok(Pool::builder(manager).max_size(max_size).build()?)
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({"ok": true}))
+async fn health(State(state): State<AppState>) -> Response {
+    let Some(pool) = state.database.as_ref() else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "数据库连接失败");
+    };
+    let client = match pool.get().await {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "数据库连接失败"),
+    };
+    if client.simple_query("SELECT 1").await.is_err() {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "数据库连接失败");
+    }
+    let Some(redis) = state.redis.as_ref() else {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "Redis 连接失败");
+    };
+    let mut connection = match redis.get_multiplexed_async_connection().await {
+        Ok(value) => value,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "Redis 连接失败"),
+    };
+    let pong: Result<String, _> = redis::cmd("PING").query_async(&mut connection).await;
+    if pong.is_err() {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "Redis 连接失败");
+    }
+    Json(json!({"status": "ok"})).into_response()
 }
 
 async fn probe_config(

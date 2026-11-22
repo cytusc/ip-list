@@ -5,6 +5,7 @@
 //! left with mihomo scans and external network execution.
 
 use super::*;
+use std::collections::HashMap;
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::ToSql;
 
@@ -1727,32 +1728,154 @@ async fn available_ip_data(
     let protocol = query_value(uri, "protocol");
     let region = query_value(uri, "region");
     let provider = query_value(uri, "provider");
+    let node_dns_status = query_value(uri, "node_dns_status");
+    let url_dns_status = query_value(uri, "url_dns_status");
+    for (name, value) in [
+        ("node_dns_status", node_dns_status.as_str()),
+        ("url_dns_status", url_dns_status.as_str()),
+    ] {
+        if !matches!(value, "" | "all" | "synced" | "not_synced" | "disabled" | "unknown") {
+            return Err(error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("无效的 DNS 筛选状态: {name}"),
+            ));
+        }
+    }
     let size = 20i64;
     let requested = page_number(uri)?;
-    let base = "WITH candidates AS MATERIALIZED (\
-         SELECT s.ip,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider,COALESCE(o.country,l.country,'') AS country \
-         FROM (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available) s \
-         LEFT JOIN LATERAL (SELECT w.asn,w.provider FROM networks w WHERE w.enabled AND s.ip <<= w.cidr AND (w.asn<>'' OR w.provider<>'') ORDER BY masklen(w.cidr) DESC,w.updated_at DESC,w.id LIMIT 1) info ON true \
-         LEFT JOIN dns_ip_locations l ON l.ip=s.ip AND l.policy_version=3 \
-         LEFT JOIN ip_location_overrides o ON o.ip=s.ip \
-         WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)), filtered AS (\
-         SELECT c.* FROM candidates c WHERE ($1='' OR position(lower($1) in lower(host(c.ip)||' '||c.asn||' '||c.provider||' 协议共用 IP 池'))>0) \
-         AND ($2='' OR $2='all' OR EXISTS(SELECT 1 FROM shared_node_ip_pool p WHERE p.ip=c.ip AND p.available AND p.protocol=$2)) \
-         AND ($3='' OR $3='all' OR ($3='unknown' AND c.country='') OR c.country=$3) \
-         AND ($4='' OR $4='all' OR ($4='missing' AND c.provider='') OR c.provider=substring($4 from 10)))";
-    let total = count(client, &format!("{base} SELECT count(*) FROM filtered"), &[&search, &protocol, &region, &provider]).await?;
+    let base = r#"WITH candidates AS MATERIALIZED (
+         SELECT s.ip,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider,COALESCE(o.country,l.country,'') AS country
+         FROM (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available) s
+         LEFT JOIN LATERAL (
+           SELECT w.asn,w.provider FROM networks w
+           WHERE w.enabled AND s.ip <<= w.cidr AND (w.asn<>'' OR w.provider<>'')
+           ORDER BY masklen(w.cidr) DESC,w.updated_at DESC,w.id LIMIT 1
+         ) info ON true
+         LEFT JOIN dns_ip_locations l ON l.ip=s.ip AND l.policy_version=3
+         LEFT JOIN ip_location_overrides o ON o.ip=s.ip
+         WHERE NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=s.ip)
+       ), filtered AS (
+         SELECT c.* FROM candidates c WHERE
+         ($1='' OR position(lower($1) in lower(host(c.ip)||' '||c.asn||' '||c.provider||' 协议共用 IP 池'))>0)
+         AND ($2='' OR $2='all' OR EXISTS(SELECT 1 FROM shared_node_ip_pool p WHERE p.ip=c.ip AND p.available AND p.protocol=$2))
+         AND ($3='' OR $3='all' OR ($3='unknown' AND c.country='') OR c.country=$3)
+         AND ($4='' OR $4='all' OR ($4='missing' AND c.provider='') OR c.provider=substring($4 from 10))
+       )"#;
+    let direction = if query_value(uri, "direction") == "desc" {
+        "DESC"
+    } else {
+        "ASC"
+    };
+    let sort = query_value(uri, "sort");
+    let (ranking, order) = match sort.as_str() {
+        "speed_test" => (
+            " LEFT JOIN available_ip_speed_tests rank ON rank.ip=info.ip AND rank.success".to_string(),
+            format!("rank.speed_mib_s {direction} NULLS LAST, info.ip"),
+        ),
+        "checked_at" => (
+            " LEFT JOIN LATERAL (SELECT max(checked_at) AS value FROM shared_node_ip_pool WHERE ip=info.ip AND available) rank ON true".to_string(),
+            format!("rank.value {direction} NULLS LAST, info.ip"),
+        ),
+        "probe_delay" => (
+            r#" LEFT JOIN LATERAL (
+                 SELECT avg(latest.delay_ms) AS value FROM latency_probes p
+                 CROSS JOIN LATERAL (
+                   SELECT delay_ms,success,checked_at FROM latency_probe_results
+                   WHERE probe_id=p.id AND ip=info.ip AND mode=p.mode
+                     AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END
+                     AND checked_at>now()-interval '30 days'
+                   ORDER BY checked_at DESC,id DESC LIMIT 1
+                 ) latest
+                 WHERE "#.to_string()
+                + PROBE_ONLINE
+                + r#" AND latest.success
+                   AND latest.checked_at>now()-make_interval(secs=>(p.interval_seconds + CEIL((SELECT count(DISTINCT ip) FROM shared_node_ip_pool WHERE available)::numeric / p.concurrency)::integer * (CEIL(p.timeout_ms::numeric/1000)::integer+2) + 30)*2)
+               ) rank ON true"#,
+            format!("rank.value {direction} NULLS LAST, info.ip"),
+        ),
+        _ => (String::new(), "info.ip".to_string()),
+    };
+    let dns_filter_active = (!node_dns_status.is_empty() && node_dns_status != "all")
+        || (!url_dns_status.is_empty() && url_dns_status != "all");
+    let mut dns_statuses: HashMap<String, (String, String)> = HashMap::new();
+    let dns_csv = if dns_filter_active {
+        let rows = client
+            .query(
+                &format!("{base} SELECT host(c.ip) FROM filtered"),
+                &[&search, &protocol, &region, &provider],
+            )
+            .await
+            .map_err(db_failure)?;
+        let candidates: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+        let statuses = available_ip_dns_map(client, &candidates).await?;
+        let filtered: Vec<String> = candidates
+            .iter()
+            .filter(|ip| {
+                let (node, url) = statuses
+                    .get(*ip)
+                    .map(|(node, url)| (node.as_str(), url.as_str()))
+                    .unwrap_or(("unknown", "unknown"));
+                (node_dns_status.is_empty() || node_dns_status == "all" || node == node_dns_status)
+                    && (url_dns_status.is_empty()
+                        || url_dns_status == "all"
+                        || url == url_dns_status)
+            })
+            .cloned()
+            .collect();
+        dns_statuses = statuses;
+        if filtered.is_empty() {
+            "__none__".to_string()
+        } else {
+            filtered.join(",")
+        }
+    } else {
+        String::new()
+    };
+    let filtered_sql = format!(
+        r#"{base}, dns_filtered AS (
+         SELECT c.* FROM filtered c
+         WHERE ($5='' OR position(','||host(c.ip)||',' in ','||$5||',')>0)
+       )"#
+    );
+    let total = count(
+        client,
+        &format!("{filtered_sql} SELECT count(*) FROM dns_filtered"),
+        &[&search, &protocol, &region, &provider, &dns_csv],
+    )
+    .await?;
     let page = normalized_page(requested, total, size);
     let data_sql = format!(
-        "{base} SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT host(c.ip) AS ip,c.asn,c.provider,\
-         (SELECT COALESCE(json_agg(json_build_object('protocol',p.protocol,'delay_ms',p.delay_ms,'node_id','','node_name','协议共用 IP 池','checked_at',p.checked_at) ORDER BY p.protocol),'[]'::json) FROM shared_node_ip_pool p WHERE p.ip=c.ip AND p.available) AS checks,\
-         '[]'::json AS probe_delays,\
-         (SELECT json_build_object('duration_ms',st.duration_ms,'speed_mib_s',st.speed_mib_s,'checked_at',st.checked_at,'success',st.success,'last_success_at',st.last_success_at) FROM available_ip_speed_tests st WHERE st.ip=c.ip) AS speed_test,\
-         COALESCE((SELECT st.success FROM available_ip_speed_tests st WHERE st.ip=c.ip),false) AS speed_passed,\
-         'unknown'::text AS node_dns_status,'unknown'::text AS url_dns_status \
-         FROM filtered c ORDER BY c.ip LIMIT $5 OFFSET $6) t"
+        r#"{filtered_sql}, selected AS MATERIALIZED (
+         SELECT info.*,row_number() OVER (ORDER BY {order}) AS position
+         FROM dns_filtered info {ranking} ORDER BY {order} LIMIT $6 OFFSET $7)
+       SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (
+         SELECT host(c.ip) AS ip,c.asn,c.provider,
+           (SELECT COALESCE(json_agg(json_build_object('protocol',p.protocol,'delay_ms',p.delay_ms,'node_id','','node_name','协议共用 IP 池','checked_at',p.checked_at) ORDER BY p.protocol),'[]'::json) FROM shared_node_ip_pool p WHERE p.ip=c.ip AND p.available) AS checks,
+           '[]'::json AS probe_delays,
+           (SELECT json_build_object('duration_ms',st.duration_ms,'speed_mib_s',st.speed_mib_s,'checked_at',st.checked_at,'success',st.success,'last_success_at',st.last_success_at) FROM available_ip_speed_tests st WHERE st.ip=c.ip) AS speed_test,
+           CASE upper(c.country)
+             WHEN 'HK' THEN EXISTS(SELECT 1 FROM available_ip_speed_tests st WHERE st.ip=c.ip AND st.success AND st.speed_mib_s > 10)
+             WHEN 'SG' THEN EXISTS(SELECT 1 FROM available_ip_speed_tests st WHERE st.ip=c.ip AND st.success AND st.speed_mib_s >= 7)
+             ELSE EXISTS(SELECT 1 FROM available_ip_speed_tests st WHERE st.ip=c.ip AND st.success AND st.speed_mib_s >= 9)
+           END AS speed_passed,
+           'unknown'::text AS node_dns_status,'unknown'::text AS url_dns_status
+         FROM selected c ORDER BY c.position) t"#
     );
-    let mut items = json_rows(client, &data_sql, &[&search, &protocol, &region, &provider, &size, &page_offset(page, size)]).await?;
-    let ips: Vec<String> = items
+    let mut items = json_rows(
+        client,
+        &data_sql,
+        &[
+            &search,
+            &protocol,
+            &region,
+            &provider,
+            &dns_csv,
+            &size,
+            &page_offset(page, size),
+        ],
+    )
+    .await?;
+    let page_ips: Vec<String> = items
         .as_array()
         .map(|rows| {
             rows.iter()
@@ -1760,7 +1883,7 @@ async fn available_ip_data(
                 .collect()
         })
         .unwrap_or_default();
-    if !ips.is_empty() {
+    if !page_ips.is_empty() {
         let probe_sql = format!(
             r#"WITH targets AS (
                  SELECT ip::inet FROM unnest(string_to_array($1, ',')) AS selected(ip)
@@ -1805,7 +1928,7 @@ async fn available_ip_data(
                  ) x GROUP BY host(x.ip)
                ) grouped"#
         );
-        let ips_csv = ips.join(",");
+        let ips_csv = page_ips.join(",");
         let probe_text: String = client
             .query_one(&probe_sql, &[&ips_csv])
             .await
@@ -1823,6 +1946,21 @@ async fn available_ip_data(
             }
         }
     }
+    if !dns_filter_active && !page_ips.is_empty() {
+        dns_statuses = available_ip_dns_map(client, &page_ips).await?;
+    }
+    if let Value::Array(rows) = &mut items {
+        for row in rows {
+            if let Value::Object(map) = row {
+                if let Some(ip) = map.get("ip").and_then(Value::as_str) {
+                    if let Some((node, url)) = dns_statuses.get(ip) {
+                        map.insert("node_dns_status".into(), json!(node));
+                        map.insert("url_dns_status".into(), json!(url));
+                    }
+                }
+            }
+        }
+    }
     let meta_sql = format!(
         "{base} SELECT json_build_object('allTotal',(SELECT count(*) FROM candidates),\
          'countries',(SELECT COALESCE(json_agg(country ORDER BY country),'[]') FROM (SELECT DISTINCT country FROM candidates WHERE country<>'') c),\
@@ -1836,6 +1974,108 @@ async fn available_ip_data(
     let meta = serde_json::from_str(&meta_text)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试"))?;
     Ok((items, total, page, size, meta))
+}
+
+async fn available_ip_dns_map(
+    client: &tokio_postgres::Client,
+    ips: &[String],
+) -> Result<HashMap<String, (String, String)>, Response> {
+    let mut statuses = HashMap::new();
+    for ip in ips {
+        statuses.insert(ip.clone(), ("unknown".to_string(), "unknown".to_string()));
+    }
+    let row = client
+        .query_opt(
+            "SELECT config::text,COALESCE((SELECT report::text FROM dns_sync_runs WHERE report->>'mode'='sync' ORDER BY id DESC LIMIT 1),'{}') FROM dns_settings WHERE id",
+            &[],
+        )
+        .await
+        .map_err(db_failure)?;
+    let Some(row) = row else {
+        return Ok(statuses);
+    };
+    let config_text: String = row.get(0);
+    let report_text: String = row.get(1);
+    let config: Value = serde_json::from_str(&config_text).unwrap_or_else(|_| json!({}));
+    let enabled = config
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let website_enabled = config
+        .get("website_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let domain = config
+        .get("domain")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let node_default = if enabled { "unknown" } else { "disabled" }.to_string();
+    let url_default = if website_enabled { "unknown" } else { "disabled" }.to_string();
+    for status in statuses.values_mut() {
+        status.0 = node_default.clone();
+        status.1 = url_default.clone();
+    }
+    let report: Value = serde_json::from_str(&report_text).unwrap_or_else(|_| json!({}));
+    let report_domain = report
+        .get("domain")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if report.get("mode").and_then(Value::as_str) != Some("sync")
+        || domain.is_empty()
+        || report_domain != domain
+    {
+        return Ok(statuses);
+    }
+    let report_error = report.get("error").and_then(Value::as_str).unwrap_or("");
+    for status in statuses.values_mut() {
+        status.0 = if report_error.is_empty() {
+            "not_synced"
+        } else {
+            "unknown"
+        }
+        .to_string();
+        status.1 = if report_error.is_empty() {
+            "not_synced"
+        } else {
+            "unknown"
+        }
+        .to_string();
+    }
+    let url_name = format!("url.{domain}");
+    if let Some(records) = report.get("records").and_then(Value::as_array) {
+        for record in records {
+            if record.get("type").and_then(Value::as_str) != Some("A") {
+                continue;
+            }
+            let name = record.get("name").and_then(Value::as_str).unwrap_or("");
+            let url_record = name.eq_ignore_ascii_case(&url_name);
+            let applied = record
+                .get("applied")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let values = record
+                .get(if applied { "desired" } else { "current" })
+                .and_then(Value::as_array);
+            if let Some(values) = values {
+                for value in values {
+                    if let Some(ip) = value.as_str() {
+                        if let Some((node, url)) = statuses.get_mut(ip) {
+                            if url_record {
+                                url.clear();
+                                url.push_str("synced");
+                            } else {
+                                node.clear();
+                                node.push_str("synced");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(statuses)
 }
 
 async fn available_ips(
@@ -2185,6 +2425,7 @@ async fn dns_items_response(client: &tokio_postgres::Client, kind: &str, uri: &s
 use redis::AsyncCommands;
 
 const SCAN_TTL_SECONDS: u64 = 24 * 60 * 60;
+const SCAN_NETWORK_PROGRESS_KEY: &str = "ipfilter:scan:network-progress";
 
 async fn redis_connection(state: &AppState) -> Result<redis::aio::MultiplexedConnection, Response> {
     let Some(redis) = state.redis.clone() else {
@@ -2524,6 +2765,10 @@ pub async fn scan_records_list(state: &AppState, headers: &HeaderMap, uri: &str)
         Ok(value) => value,
         Err(response) => return response,
     };
+    let network_progress = match scan_network_progress(state, &client).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
     Json(json!({
         "items": items,
         "total": total,
@@ -2531,9 +2776,54 @@ pub async fn scan_records_list(state: &AppState, headers: &HeaderMap, uri: &str)
         "pageSize": 20,
         "active": active,
         "networks": networks,
-        "network_progress": Value::Null,
+        "network_progress": network_progress,
     }))
     .into_response()
+}
+
+async fn scan_network_progress(
+    state: &AppState,
+    client: &tokio_postgres::Client,
+) -> Result<Value, Response> {
+    if let Ok(mut connection) = redis_connection(state).await {
+        let cached: Option<String> = connection
+            .get(SCAN_NETWORK_PROGRESS_KEY)
+            .await
+            .ok()
+            .flatten();
+        if let Some(text) = cached {
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                return Ok(value);
+            }
+        }
+    }
+    let row = client
+        .query_one(
+            r#"SELECT count(*),count(*) FILTER (WHERE
+              NOT EXISTS(SELECT 1 FROM network_auto_scans q WHERE q.network_id=n.id AND q.protocol=$1 AND q.cidr=n.cidr)
+              AND ((SELECT count(*) FROM node_ip_pool p WHERE p.protocol=$1 AND p.ip >= network(n.cidr)::inet AND p.ip <= host(broadcast(n.cidr))::inet)
+                + (SELECT count(*) FROM ip_blacklist b WHERE b.ip >= network(n.cidr)::inet AND b.ip <= host(broadcast(n.cidr))::inet
+                  AND NOT EXISTS(SELECT 1 FROM node_ip_pool p WHERE p.protocol=$1 AND p.ip=b.ip)))
+                >= power(2::numeric, (CASE family(n.cidr) WHEN 4 THEN 32 ELSE 128 END)-masklen(n.cidr)))
+             FROM networks n WHERE n.enabled"#,
+            &[&"grpc"],
+        )
+        .await
+        .map_err(db_failure)?;
+    let total: i64 = row.get(0);
+    let completed: i64 = row.get(1);
+    let value = json!({
+        "total": total,
+        "completed": completed,
+        "pending": total - completed,
+    });
+    if let Ok(mut connection) = redis_connection(state).await {
+        let text = value.to_string();
+        let _: Result<(), redis::RedisError> = connection
+            .set_ex(SCAN_NETWORK_PROGRESS_KEY, text, 10)
+            .await;
+    }
+    Ok(value)
 }
 
 async fn scan_record_detail(
