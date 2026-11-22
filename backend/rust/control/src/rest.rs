@@ -433,7 +433,7 @@ async fn save_config(
         if let Some(id) = &id {
             match client
                 .query_opt(
-                    "UPDATE nodes SET name=$1,address=$2,port=$3,enabled=$4,description=$5,share_uri=$6,updated_at=now() WHERE id=$7::uuid RETURNING id::text",
+                    "UPDATE nodes SET name=$1,address=$2,port=$3,enabled=$4,description=$5,share_uri=$6,updated_at=now() WHERE id=$7::text::uuid RETURNING id::text",
                     &[
                         &input.name.trim(),
                         &input.address.trim(),
@@ -471,7 +471,7 @@ async fn save_config(
         if let Some(id) = &id {
             match client
                 .query_opt(
-                    "UPDATE networks SET name=$1,cidr=$2::cidr,enabled=$3,description=$4,asn=$5,provider=$6,updated_at=now() WHERE id=$7::uuid RETURNING id::text",
+                    "UPDATE networks SET name=$1,cidr=$2::cidr,enabled=$3,description=$4,asn=$5,provider=$6,updated_at=now() WHERE id=$7::text::uuid RETURNING id::text",
                     &[
                         &input.name.trim(),
                         &input.cidr.trim(),
@@ -546,7 +546,7 @@ async fn delete_config(state: AppState, headers: HeaderMap, kind: &str, id: Stri
         Ok(value) => value,
         Err(response) => return response,
     };
-    let sql = format!("DELETE FROM {kind} WHERE id=$1::uuid");
+    let sql = format!("DELETE FROM {kind} WHERE id=$1::text::uuid");
     match client.execute(&sql, &[&id]).await {
         Ok(0) => error(StatusCode::NOT_FOUND, "配置已被删除，请刷新列表"),
         Ok(_) => Json(json!({"ok": true})).into_response(),
@@ -758,7 +758,7 @@ async fn delete_cf_target(
         Err(response) => return response,
     };
     match client
-        .execute("DELETE FROM cf_targets WHERE id=$1::uuid", &[&id])
+        .execute("DELETE FROM cf_targets WHERE id=$1::text::uuid", &[&id])
         .await
     {
         Ok(0) => error(StatusCode::NOT_FOUND, "目标地址不存在"),
@@ -785,7 +785,7 @@ async fn get_cf_target(
         Err(response) => return response,
     };
     let target_sql = format!(
-        "SELECT COALESCE(row_to_json(t)::text,'null') FROM (SELECT t.*,{CF_STATS} FROM cf_targets t WHERE id=$1::uuid) t"
+        "SELECT COALESCE(row_to_json(t)::text,'null') FROM (SELECT t.*,{CF_STATS} FROM cf_targets t WHERE id=$1::text::uuid) t"
     );
     let target_text: String = match client.query_one(&target_sql, &[&id]).await {
         Ok(row) => row.get(0),
@@ -800,19 +800,19 @@ async fn get_cf_target(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let count_sql = "SELECT count(*) FROM cf_results WHERE target_id=$1::uuid AND available AND ($2='' OR position($2 in host(ip))>0)";
+    let count_sql = "SELECT count(*) FROM cf_results WHERE target_id=$1::text::uuid AND available AND ($2='' OR position($2 in host(ip))>0)";
     let total = match count(&client, count_sql, &[&id, &search]).await {
         Ok(value) => value,
         Err(response) => return response,
     };
     let page = normalized_page(page, total, 20);
-    let items_sql = "WITH selected AS MATERIALIZED (SELECT ip,http_status,checked_at FROM cf_results WHERE target_id=$1::uuid AND available AND ($2='' OR position($2 in host(ip))>0) ORDER BY ip LIMIT $3 OFFSET $4)\
+    let items_sql = "WITH selected AS MATERIALIZED (SELECT ip,http_status,checked_at FROM cf_results WHERE target_id=$1::text::uuid AND available AND ($2='' OR position($2 in host(ip))>0) ORDER BY ip LIMIT $3 OFFSET $4)\
          SELECT COALESCE(json_agg(r),'[]'::json)::text FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM selected s LEFT JOIN LATERAL (SELECT w.asn,w.provider FROM networks w WHERE w.enabled AND s.ip <<= w.cidr AND (w.asn<>'' OR w.provider<>'') ORDER BY masklen(w.cidr) DESC,w.updated_at DESC,w.id LIMIT 1) info ON true ORDER BY s.ip) r";
     let items = match json_rows(&client, items_sql, &[&id, &search, &20i64, &page_offset(page, 20)]).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let history_sql = "SELECT COALESCE(json_agg(k),'[]'::json)::text FROM (SELECT finished_at,total,success,status FROM cf_target_rounds WHERE target_id=$1::uuid ORDER BY finished_at DESC LIMIT 12) k";
+    let history_sql = "SELECT COALESCE(json_agg(k),'[]'::json)::text FROM (SELECT finished_at,total,success,status FROM cf_target_rounds WHERE target_id=$1::text::uuid ORDER BY finished_at DESC LIMIT 12) k";
     let history = match json_rows(&client, history_sql, &[&id]).await {
         Ok(value) => value,
         Err(response) => return response,
@@ -888,7 +888,7 @@ async fn cf_detail_payload(state: &AppState, uri: &str) -> Response {
         Err(response) => return response,
     };
     let target_sql = format!(
-        "SELECT COALESCE(row_to_json(t)::text,'null') FROM (SELECT t.*,{CF_STATS} FROM cf_targets t WHERE id=$1::uuid) t"
+        "SELECT COALESCE(row_to_json(t)::text,'null') FROM (SELECT t.*,{CF_STATS} FROM cf_targets t WHERE id=$1::text::uuid) t"
     );
     let target_text: String = match client.query_one(&target_sql, &[&id]).await {
         Ok(row) => row.get(0),
@@ -904,19 +904,19 @@ async fn cf_detail_payload(state: &AppState, uri: &str) -> Response {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let count_sql = "SELECT count(*) FROM cf_results WHERE target_id=$1::uuid AND available AND ($2='' OR position($2 in host(ip))>0)";
+    let count_sql = "SELECT count(*) FROM cf_results WHERE target_id=$1::text::uuid AND available AND ($2='' OR position($2 in host(ip))>0)";
     let total = match count(&client, count_sql, &[&id, &search]).await {
         Ok(value) => value,
         Err(response) => return response,
     };
     let page = normalized_page(requested, total, 20);
-    let items_sql = "WITH selected AS MATERIALIZED (SELECT ip,http_status,checked_at FROM cf_results WHERE target_id=$1::uuid AND available AND ($2='' OR position($2 in host(ip))>0) ORDER BY ip LIMIT $3 OFFSET $4)\
+    let items_sql = "WITH selected AS MATERIALIZED (SELECT ip,http_status,checked_at FROM cf_results WHERE target_id=$1::text::uuid AND available AND ($2='' OR position($2 in host(ip))>0) ORDER BY ip LIMIT $3 OFFSET $4)\
          SELECT COALESCE(json_agg(r),'[]'::json)::text FROM (SELECT host(s.ip) AS ip,s.http_status,s.checked_at,COALESCE(info.asn,'') AS asn,COALESCE(info.provider,'') AS provider FROM selected s LEFT JOIN LATERAL (SELECT w.asn,w.provider FROM networks w WHERE w.enabled AND s.ip <<= w.cidr AND (w.asn<>'' OR w.provider<>'') ORDER BY masklen(w.cidr) DESC,w.updated_at DESC,w.id LIMIT 1) info ON true ORDER BY s.ip) r";
     let items = match json_rows(&client, items_sql, &[&id, &search, &20i64, &page_offset(page, 20)]).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let history_sql = "SELECT COALESCE(json_agg(k),'[]'::json)::text FROM (SELECT finished_at,total,success,status FROM cf_target_rounds WHERE target_id=$1::uuid ORDER BY finished_at DESC LIMIT 12) k";
+    let history_sql = "SELECT COALESCE(json_agg(k),'[]'::json)::text FROM (SELECT finished_at,total,success,status FROM cf_target_rounds WHERE target_id=$1::text::uuid ORDER BY finished_at DESC LIMIT 12) k";
     let history = match json_rows(&client, history_sql, &[&id]).await {
         Ok(value) => value,
         Err(response) => return response,
@@ -1160,7 +1160,7 @@ fn probe_token_hash(token: &str) -> Vec<u8> {
 
 async fn probe_json(client: &tokio_postgres::Client, id: &str) -> Result<Option<Value>, Response> {
     let sql = format!(
-        "SELECT row_to_json(t)::text FROM (SELECT id::text,name,mode,tcp_port,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,{PROBE_ONLINE} AS online FROM latency_probes WHERE id=$1::uuid) t"
+        "SELECT row_to_json(t)::text FROM (SELECT id::text,name,mode,tcp_port,interval_seconds,timeout_ms,concurrency,interface_name,enabled,last_seen,created_at,{PROBE_ONLINE} AS online FROM latency_probes WHERE id=$1::text::uuid) t"
     );
     let text: String = client
         .query_one(&sql, &[&id])
@@ -1248,7 +1248,7 @@ async fn update_probe(
     };
     let updated = client
         .query_opt(
-            "UPDATE latency_probes SET name=$2,interval_seconds=$3,timeout_ms=$4,concurrency=$5,interface_name=$6,enabled=$7,mode=$8,tcp_port=$9 WHERE id=$1::uuid RETURNING id::text",
+            "UPDATE latency_probes SET name=$2,interval_seconds=$3,timeout_ms=$4,concurrency=$5,interface_name=$6,enabled=$7,mode=$8,tcp_port=$9 WHERE id=$1::text::uuid RETURNING id::text",
             &[
                 &id,
                 &input.name,
@@ -1288,7 +1288,7 @@ async fn delete_probe(
         Ok(value) => value,
         Err(response) => return response,
     };
-    match client.execute("DELETE FROM latency_probes WHERE id=$1::uuid", &[&id]).await {
+    match client.execute("DELETE FROM latency_probes WHERE id=$1::text::uuid", &[&id]).await {
         Ok(0) => error(StatusCode::NOT_FOUND, "探针不存在"),
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(err) => db_failure(err),
@@ -1317,7 +1317,7 @@ async fn rotate_probe_token(
     };
     match client
         .execute(
-            "UPDATE latency_probes SET token_hash=$2,token_encrypted=$3 WHERE id=$1::uuid",
+            "UPDATE latency_probes SET token_hash=$2,token_encrypted=$3 WHERE id=$1::text::uuid",
             &[&id, &token_hash.as_slice(), &encrypted],
         )
         .await
@@ -1366,14 +1366,14 @@ async fn probe_deployment(
         let result = if let Some(encrypted) = encrypted {
             client
                 .execute(
-                    "UPDATE latency_probes SET deployment_platform=$2,token_encrypted=$3 WHERE id=$1::uuid AND token_hash=$4",
+                    "UPDATE latency_probes SET deployment_platform=$2,token_encrypted=$3 WHERE id=$1::text::uuid AND token_hash=$4",
                     &[&id, &platform, &encrypted, &probe_token_hash(token)],
                 )
                 .await
         } else {
             client
                 .execute(
-                    "UPDATE latency_probes SET deployment_platform=$2 WHERE id=$1::uuid",
+                    "UPDATE latency_probes SET deployment_platform=$2 WHERE id=$1::text::uuid",
                     &[&id, &platform],
                 )
                 .await
@@ -1386,7 +1386,7 @@ async fn probe_deployment(
     }
     let row = client
         .query_one(
-            "SELECT token_encrypted,deployment_platform FROM latency_probes WHERE id=$1::uuid",
+            "SELECT token_encrypted,deployment_platform FROM latency_probes WHERE id=$1::text::uuid",
             &[&id],
         )
         .await;
@@ -1427,7 +1427,7 @@ async fn probe_history(
         Err(response) => return response,
     };
     let exists = client
-        .query_one("SELECT EXISTS(SELECT 1 FROM latency_probes WHERE id=$1::uuid)", &[&id])
+        .query_one("SELECT EXISTS(SELECT 1 FROM latency_probes WHERE id=$1::text::uuid)", &[&id])
         .await
         .map(|row| row.get::<_, bool>(0));
     match exists {
@@ -1435,7 +1435,7 @@ async fn probe_history(
         Err(err) => return db_failure(err),
         _ => {}
     }
-    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT r.id,host(r.ip) AS ip,r.delay_ms,r.success,r.checked_at FROM latency_probe_results r JOIN latency_probes p ON r.probe_id=p.id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END WHERE r.probe_id=$1::uuid AND r.ip=$2::inet AND r.checked_at>=now()-make_interval(hours=>$3) ORDER BY r.checked_at,r.id LIMIT 1000) t";
+    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT r.id,host(r.ip) AS ip,r.delay_ms,r.success,r.checked_at FROM latency_probe_results r JOIN latency_probes p ON r.probe_id=p.id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END WHERE r.probe_id=$1::text::uuid AND r.ip=$2::inet AND r.checked_at>=now()-make_interval(hours=>$3) ORDER BY r.checked_at,r.id LIMIT 1000) t";
     match json_rows(&client, sql, &[&id, &ip.to_string(), &hours]).await {
         Ok(items) => Json(items).into_response(),
         Err(response) => response,
@@ -1479,7 +1479,7 @@ async fn agent_targets(State(state): State<AppState>, headers: HeaderMap) -> Res
     };
     let settings = client
         .query_one(
-            "UPDATE latency_probes SET last_seen=now() WHERE id=$1::uuid RETURNING interval_seconds,timeout_ms,concurrency,interface_name,mode,tcp_port",
+            "UPDATE latency_probes SET last_seen=now() WHERE id=$1::text::uuid RETURNING interval_seconds,timeout_ms,concurrency,interface_name,mode,tcp_port",
             &[&id],
         )
         .await;
@@ -1541,7 +1541,7 @@ async fn agent_results(State(state): State<AppState>, headers: HeaderMap, body: 
     }
     let probe_settings = client
         .query_one(
-            "SELECT mode,CASE WHEN mode='tcp' THEN tcp_port ELSE 0 END FROM latency_probes WHERE id=$1::uuid AND enabled",
+            "SELECT mode,CASE WHEN mode='tcp' THEN tcp_port ELSE 0 END FROM latency_probes WHERE id=$1::text::uuid AND enabled",
             &[&id],
         )
         .await;
@@ -1580,7 +1580,7 @@ async fn agent_results(State(state): State<AppState>, headers: HeaderMap, body: 
         Err(_) => return error(StatusCode::BAD_REQUEST, "上报数据格式错误"),
     };
     let sql = format!(
-        "WITH target_ips AS MATERIALIZED (SELECT ip FROM ({PROBE_TARGET_POOL}) pool), received AS (SELECT r.ip::inet AS ip,r.delay_ms,r.success,r.checked_at FROM jsonb_to_recordset($2::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at timestamptz)), inserted AS (INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port) SELECT $1::uuid,received.ip,received.delay_ms,received.success,received.checked_at,$3,$4 FROM received JOIN target_ips pool ON pool.ip=received.ip AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=received.ip) RETURNING 1), seen AS (UPDATE latency_probes SET last_seen=now() WHERE id=$1::uuid RETURNING id) SELECT count(*) FROM inserted"
+        "WITH target_ips AS MATERIALIZED (SELECT ip FROM ({PROBE_TARGET_POOL}) pool), received AS (SELECT r.ip::inet AS ip,r.delay_ms,r.success,r.checked_at FROM jsonb_to_recordset($2::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at timestamptz)), inserted AS (INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port) SELECT $1::text::uuid,received.ip,received.delay_ms,received.success,received.checked_at,$3,$4 FROM received JOIN target_ips pool ON pool.ip=received.ip AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=received.ip) RETURNING 1), seen AS (UPDATE latency_probes SET last_seen=now() WHERE id=$1::text::uuid RETURNING id) SELECT count(*) FROM inserted"
     );
     match client
         .query_one(&sql, &[&id, &body_text, &mode, &(port as i32)])
@@ -1598,7 +1598,7 @@ async fn agent_heartbeat(State(state): State<AppState>, headers: HeaderMap) -> R
     };
     match client
         .execute(
-            "UPDATE latency_probes SET last_seen=now(),heartbeat_at=now() WHERE id=$1::uuid",
+            "UPDATE latency_probes SET last_seen=now(),heartbeat_at=now() WHERE id=$1::text::uuid",
             &[&id],
         )
         .await
@@ -2116,7 +2116,7 @@ async fn start_scan(State(state): State<AppState>, headers: HeaderMap, body: Byt
     };
     let node = client
         .query_opt(
-            "SELECT share_uri,name FROM nodes WHERE id=$1::uuid AND enabled AND share_uri<>''",
+            "SELECT share_uri,name FROM nodes WHERE id=$1::text::uuid AND enabled AND share_uri<>''",
             &[&node_id],
         )
         .await;
@@ -2473,7 +2473,7 @@ async fn start_cf_scan(State(state): State<AppState>, headers: HeaderMap, body: 
         Err(response) => return response,
     };
     let target = client
-        .query_opt("SELECT url,name FROM cf_targets WHERE id=$1::uuid", &[&target_id])
+        .query_opt("SELECT url,name FROM cf_targets WHERE id=$1::text::uuid", &[&target_id])
         .await;
     let (url, name): (String, String) = match target {
         Ok(Some(row)) => (row.get(0), row.get(1)),
@@ -2612,7 +2612,7 @@ async fn restore_protocol_network(
     };
     match client
         .execute(
-            "DELETE FROM protocol_networks WHERE network_id=$1::uuid AND protocol=$2",
+            "DELETE FROM protocol_networks WHERE network_id=$1::text::uuid AND protocol=$2",
             &[&id, &protocol],
         )
         .await
