@@ -1,5 +1,14 @@
 # 数据库性能检查（2026-10-28）
 
+## 写入审计（2026-11-22）
+
+- `ip_results` 是 `node_ip_pool` 的逐节点副本，运行时没有读取方；扫描结果改为只写共享池，schema 升级时回填旧库后删除该表。
+- `ip_health_checks` 是逐次健康检查的追加日志，决策和页面只读 `ip_health_recovery` 的最新状态；删除写入、建表和索引，schema 升级时删除旧表。
+- `engine_jobs` 完成/失败记录保留 7 天用于故障诊断，之后由 6 小时一次的维护任务清理。
+- `dns_sync_runs` 历史只保留摘要；最新一条 `sync` 快照保留 `records`（用于匹配已应用的 DNS 记录），但移除 `candidates`，其余历史行的 `records`/`candidates` 全部移除。`dns_settings.report` 继续保留完整计划供 records/candidates 分页。
+- `latency_probe_results_probe_ip_time_idx` 被 `(probe_id,ip,mode,tcp_port,checked_at)` 的测量索引覆盖，删除以减少最高写入量表的索引维护成本。
+- `node_scan_rounds`、`cf_target_rounds`、`ip_health_recovery`、`node_ip_pool`、`cf_results` 仍被列表、详情、决策或统计读取，保留。
+
 ## 宕机恢复及慢查询复查（2026-11-20）
 
 恢复阶段先保障 DNS、心跳和接口：清理、探针压缩、归属补全和历史证书复检
@@ -31,7 +40,7 @@ Python 脚本到 `/usr/local/sbin/ip-list-db-diagnostics`，以 postgres 用户�
 
 ```sh
 journalctl -u ip-list-db-diagnostics --since '1 hour ago' --no-pager
-journalctl -u ip-list-api --since '1 hour ago' --no-pager | rg '数据库查询|数据库连接等待'
+journalctl -u ip-list-worker --since '1 hour ago' --no-pager | rg '数据库查询|数据库连接等待'
 ```
 
 诊断 JSON 含 PID、事务和查询时长、wait event、阻塞 PID，以及 `/proc` 的
@@ -72,7 +81,7 @@ PostgreSQL 自身的锁等待日志可能含 SQL，按数据库日志现有权�
 前后缓存条件不同，不能把时间差全部归因于索引。确定的改善是避免全表扫描并降低读取量。
 节点池、CF 池新增索引分别约 18 MiB、5.6 MiB，会增加写入及存储成本。
 两个索引已在生产使用 `CREATE INDEX CONCURRENTLY` 建立，避免普通建索引阻塞写入。
-新数据库初始化通过 `backend/schema.sql` 建立相同索引。
+新数据库初始化通过 `backend/internal/ipguard/schema.sql` 建立相同索引。
 
 最新探针结果仍按 `checked_at DESC, id DESC` 排序，限定最近 30 天；
 不改变离线探针、无采样、检测失败、ICMP/TCP 模式隔离及历史采样的业务含义。
@@ -87,11 +96,11 @@ PostgreSQL 自身的锁等待日志可能含 SQL，按数据库日志现有权�
 
 ## 后续慢查询定位
 
-API 记录超过 `DB_SLOW_QUERY_THRESHOLD` 的 SQL 和连接获取操作，默认 `500ms`；
+API 与 Worker 记录超过 `DB_SLOW_QUERY_THRESHOLD` 的 SQL 和连接获取操作，默认 `500ms`；
 失败操作无论耗时都记录。配置值使用 Go duration，如 `1s`，必须大于零。
 
 ```sh
-journalctl -u ip-list-api --since '1 hour ago' --no-pager | rg '数据库查询|数据库连接等待'
+journalctl -u ip-list-worker --since '1 hour ago' --no-pager | rg '数据库查询|数据库连接等待'
 ```
 
 查询日志包含规范化 SQL 的 SHA-256 前 16 个十六进制字符、路由、耗时及错误类别；

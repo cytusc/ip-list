@@ -51,7 +51,7 @@ export const ProbeLatencyStrip = React.memo(function ProbeLatencyStrip({
   return <Tooltip.Provider delayDuration={120}>
     <Tooltip.Root>
       <Tooltip.Trigger asChild>
-        <Link href={`/latency-probes/${probe.probe_id}?ip=${encodeURIComponent(ip)}`} aria-label={summary}
+        <Link href={`/latency-probes/detail?id=${encodeURIComponent(probe.probe_id)}&ip=${encodeURIComponent(ip)}`} aria-label={summary}
           onPointerLeave={() => setHovered(null)} onFocus={() => setHovered(null)}
           className="group inline-flex items-center gap-2 rounded-md px-1 py-1.5 text-xs hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
           <span className="max-w-20 truncate font-medium">{probe.name}</span>

@@ -1,7 +1,11 @@
-import { pagedQuery } from "@/lib/paged-query";
+"use client";
+
+import { emptyPage } from "@/lib/paged-query";
 import type { BlacklistedIP } from "@/lib/types";
 import { BlacklistManager } from "@/components/blacklist-manager";
 
-export default async function BlacklistPage() {
-  return <BlacklistManager initialItems={await pagedQuery<BlacklistedIP>("/blacklist")} />;
+const initial = emptyPage<BlacklistedIP>();
+
+export default function BlacklistPage() {
+  return <BlacklistManager initialItems={initial} />;
 }

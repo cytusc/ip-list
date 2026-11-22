@@ -1,0 +1,275 @@
+package ipguard
+
+import (
+	"context"
+	"fmt"
+	"net/netip"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	nodePublishBudget  = 60 * time.Second
+	nodeRecoveryBudget = 150 * time.Second
+)
+
+var nodeCheckMu sync.Mutex
+
+func (a *app) dnsCheckNodes(ctx context.Context, candidates []dnsCandidate) error {
+	nodeCheckMu.Lock()
+	defer nodeCheckMu.Unlock()
+	return a.dnsCheckNodesWithin(ctx, candidates, nodePublishBudget)
+}
+
+func (a *app) dnsCheckNodesBackground(ctx context.Context, candidates []dnsCandidate) error {
+	if !nodeCheckMu.TryLock() {
+		return nil
+	}
+	defer nodeCheckMu.Unlock()
+	return a.dnsCheckNodesWithin(ctx, candidates, nodeRecoveryBudget)
+}
+
+func (a *app) dnsCheckNodesWithin(ctx context.Context, candidates []dnsCandidate, budget time.Duration) error {
+	needed := false
+	for _, item := range candidates {
+		needed = needed || (item.Pool != "cf" && item.State != "failed")
+	}
+	if !needed {
+		return nil
+	}
+	started := time.Now().UTC()
+	rows, err := a.db.Query(ctx, `SELECT share_uri,
+ (SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_proxy_samples)
+ FROM node_proxy_samples ORDER BY config_hash`)
+	if err != nil {
+		return err
+	}
+	var templates []map[string]any
+	var samplesHash string
+	for rows.Next() {
+		var raw string
+		if err = rows.Scan(&raw, &samplesHash); err != nil {
+			break
+		}
+		template, _, parseErr := parseShare(raw)
+		if parseErr != nil {
+			rows.Close()
+			return fmt.Errorf("已启用的加速节点配置无效，请检查节点设置")
+		}
+		templates = append(templates, template)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	// Rotate unfinished IPs to the front so the phase deadline cannot starve later addresses.
+	checked := map[string]time.Time{}
+	history, err := a.db.Query(ctx, `SELECT host(ip),checked_at FROM node_ip_health WHERE samples_hash=$1`, samplesHash)
+	if err != nil {
+		return err
+	}
+	for history.Next() {
+		var ip string
+		var at time.Time
+		if err = history.Scan(&ip, &at); err != nil {
+			break
+		}
+		checked[ip] = at
+	}
+	if err == nil {
+		err = history.Err()
+	}
+	history.Close()
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return checked[candidates[i].IP].Before(checked[candidates[j].IP]) })
+	check := func(ctx context.Context, template map[string]any, ip netip.Addr) (*certificateCheck, error) {
+		certificate, err := checkCertificate(ctx, template, ip)
+		if err == nil {
+			_, err = probeMihomo(ctx, template, ip, "https://www.gstatic.com/generate_204")
+		}
+		return certificate, err
+	}
+	eligible := map[string]bool{}
+	for _, item := range candidates {
+		if item.Pool != "cf" && item.State == "healthy" {
+			eligible[item.IP] = true
+		}
+	}
+	states := dnsCheckNodesBudget(ctx, templates, candidates, check, budget)
+	if err := a.saveNodeHealth(ctx, samplesHash, started, candidates, states); err != nil {
+		return err
+	}
+	return a.reuseUnfinishedNodeHealth(ctx, samplesHash, candidates, states, eligible)
+}
+
+// Budget exhaustion cannot invalidate a still-fresh complete check or refresh its age.
+func (a *app) reuseUnfinishedNodeHealth(ctx context.Context, hash string, items []dnsCandidate, states []string, eligible map[string]bool) error {
+	if hash == "" {
+		return nil
+	}
+	rows, err := a.db.Query(ctx, `SELECT host(h.ip) FROM node_ip_health h
+ JOIN ip_health_recovery r ON r.pool='node' AND r.ip=h.ip AND r.samples_hash=h.samples_hash
+ AND r.checked_at=h.checked_at AND r.ready
+ WHERE h.samples_hash=$1 AND h.samples_hash=(SELECT md5(string_agg(config_hash,',' ORDER BY config_hash)) FROM node_proxy_samples)
+ AND h.status='passed' AND h.checked_at>now()-interval '15 minutes'`, hash)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	usable := map[string]bool{}
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return err
+		}
+		usable[ip] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range items {
+		if states[i] == "" && eligible[items[i].IP] && usable[items[i].IP] && items[i].State == "unknown" {
+			items[i].State, items[i].Reason = "healthy", "本轮检测未完成，沿用 15 分钟内完整通过且已完成恢复观察的结果"
+		}
+	}
+	return nil
+}
+
+// Shared DNS entrances must work for every enabled accelerated TLS sample, with its own SNI.
+// Old scan evidence and ICMP success cannot establish current TLS/proxy health.
+func dnsCheckNodesWith(ctx context.Context, templates []map[string]any, candidates []dnsCandidate, check func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error)) []string {
+	return dnsCheckNodesBudget(ctx, templates, candidates, check, nodePublishBudget)
+}
+
+func dnsCheckNodesBudget(ctx context.Context, templates []map[string]any, candidates []dnsCandidate, check func(context.Context, map[string]any, netip.Addr) (*certificateCheck, error), budget time.Duration) []string {
+	phase, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	deadline, _ := phase.Deadline()
+	type result struct {
+		attempted, passed int
+		invalid           bool
+		details           []nodeHealthAttempt
+	}
+	type job struct{ candidate, node int }
+	results := make([][]result, len(candidates))
+	jobs := make(chan job)
+	var workers sync.WaitGroup
+	for worker := 0; worker < 12; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for j := range jobs {
+				r := &results[j.candidate][j.node]
+				ip, err := netip.ParseAddr(candidates[j.candidate].IP)
+				if err != nil || !publicMetadataPrefix(netip.PrefixFrom(ip, ip.BitLen())) {
+					continue
+				}
+				for attempt := 0; attempt < 2 && phase.Err() == nil && time.Now().Before(deadline); attempt++ {
+					attemptCtx, stop := context.WithTimeout(phase, 8*time.Second)
+					certificate, err := check(attemptCtx, templates[j.node], ip)
+					stop()
+					network := fmt.Sprint(templates[j.node]["network"])
+					if opts, ok := templates[j.node]["ws-opts"].(map[string]any); ok && opts["v2ray-http-upgrade"] == true {
+						network = "httpupgrade"
+					}
+					detail := nodeHealthAttempt{Protocol: fmt.Sprint(templates[j.node]["type"]) + "/" + network, Certificate: certificate}
+					if err != nil {
+						detail.Error = err.Error()
+						for _, key := range []string{"uuid", "password"} {
+							if secret, ok := templates[j.node][key].(string); ok && secret != "" {
+								detail.Error = strings.ReplaceAll(detail.Error, secret, "[redacted]")
+							}
+						}
+						if certificate != nil && certificate.Error != "" {
+							detail.Error = certificate.Error
+						}
+					}
+					r.details = append(r.details, detail)
+					if certificate != nil && certificate.Status == "invalid" {
+						r.invalid = true
+						break
+					}
+					// Timer cancellation can lag behind its deadline; exhausted work is not IP failure.
+					if phase.Err() != nil || !time.Now().Before(deadline) {
+						break
+					}
+					r.attempted++
+					if err == nil && certificate != nil && (certificate.Status == "passed" || certificate.Status == "not_required") {
+						r.passed++
+					}
+				}
+			}
+		}()
+	}
+	states := make([]string, len(candidates))
+	for i := range candidates {
+		if candidates[i].Pool == "cf" || candidates[i].State == "failed" {
+			continue
+		}
+		results[i] = make([]result, len(templates))
+		for node := range templates {
+			select {
+			case jobs <- job{i, node}:
+			case <-phase.Done():
+			}
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	controls := make([]bool, len(templates))
+	for _, row := range results {
+		for node, r := range row {
+			controls[node] = controls[node] || r.passed == 2
+		}
+	}
+	for i := range candidates {
+		item := &candidates[i]
+		if item.Pool == "cf" || item.State == "failed" {
+			continue
+		}
+		passed := len(templates) > 0
+		complete, observedFailure := len(templates) > 0, false
+		attempted := false
+		failed, invalid := false, false
+		item.HealthControl = len(templates) > 0
+		for node, r := range results[i] {
+			item.HealthControl = item.HealthControl && controls[node]
+			item.HealthAttempts = append(item.HealthAttempts, r.details...)
+			attempted = attempted || r.attempted > 0 || r.invalid
+			passed = passed && r.passed == 2
+			complete = complete && r.attempted == 2
+			observedFailure = observedFailure || r.attempted > r.passed
+			invalid = invalid || r.invalid
+			failed = failed || (r.attempted == 2 && r.passed == 0 && controls[node])
+		}
+		switch {
+		case invalid:
+			states[i] = "failed"
+			item.State, item.Reason = "failed", "DNS 发布前复查：节点 SNI 证书验证失败"
+		case failed:
+			states[i] = "failed"
+			item.State, item.Reason = "failed", "DNS 发布前复查：同一加速节点有健康对照 IP，本 IP 连续两次连接失败"
+		case !passed:
+			// Leave unstarted work at the front of the next background recheck.
+			if attempted && (complete || observedFailure) {
+				states[i] = "unknown"
+			}
+			if item.State != "pending" {
+				item.State, item.Reason = "unknown", "DNS 发布前复查：未通过全部测试样本的两次检测，暂停入选"
+				if len(item.HealthAttempts) == 0 && len(templates) > 0 {
+					item.Reason = "本轮检测预算耗尽，尚未执行检测，等待后续轮次优先复查"
+				}
+			}
+		default:
+			states[i] = "passed"
+		}
+	}
+	return states
+}

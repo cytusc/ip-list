@@ -23,10 +23,12 @@ export function ConfigForm({
   kind,
   item,
   onClose,
+  onSaved,
 }: {
   kind: "nodes" | "networks";
   item: Node | Network | null;
   onClose: () => void;
+  onSaved?: () => void;
 }) {
   const isNode = kind === "nodes";
   const isBulkNetwork = !isNode && !item;
@@ -196,6 +198,7 @@ export function ConfigForm({
                     toast.error(
                       `${result.failures.length} 条添加失败：${result.failures.slice(0, 3).join("；")}`,
                     );
+                  if (onSaved) onSaved();
                   onClose();
                   return;
                 }
@@ -212,6 +215,7 @@ export function ConfigForm({
                         : undefined,
                     });
                   }
+                  if (onSaved) onSaved();
                   onClose();
                 } else {
                   setError(result.error);

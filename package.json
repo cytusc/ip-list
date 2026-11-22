@@ -5,14 +5,17 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node scripts/run-control.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "db:init": "go -C backend run . -init",
+    "db:init": "go -C backend run ./cmd/worker -init",
     "test": "go -C backend test ./...",
-    "api:dev": "go -C backend run .",
+    "worker:init": "go -C backend run ./cmd/worker -init",
+    "worker:dev": "go -C backend run ./cmd/worker",
     "probe:build": "sh scripts/latency-probe/build.sh",
-    "api:build": "go -C backend build -o ../bin/ipguard .",
+    "worker:build": "go -C backend build -o ../bin/ipguard-worker ./cmd/worker",
+    "probe:rust": "node scripts/rust-build.mjs build -p latency-probe --release",
+    "control:build": "node scripts/rust-build.mjs build -p control --release",
     "test:e2e": "playwright test"
   },
   "dependencies": {

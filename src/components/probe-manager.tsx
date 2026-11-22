@@ -252,7 +252,7 @@ function ActiveBanner({
       <div className="flex shrink-0 items-center gap-2 sm:justify-end">
         {record && (
           <Button variant="ghost" size="sm" asChild>
-            <Link href={`/probes/${record.id}`}>查看本轮 →</Link>
+            <Link href={`/probes/detail?id=${encodeURIComponent(record.id)}`}>查看本轮 →</Link>
           </Button>
         )}
         <Button variant="outline" size="sm" disabled={stopping} onClick={onStop}>
@@ -283,7 +283,7 @@ function RecordTable({
           return (
             <div key={item.id} className="px-4 py-3">
               <Link
-                href={`/probes/${item.id}`}
+                href={`/probes/detail?id=${encodeURIComponent(item.id)}`}
                 className="block transition-colors active:bg-muted/50"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -368,7 +368,7 @@ function RecordTable({
                   </TableCell>
                   <TableCell>
                     <Link
-                      href={`/probes/${item.id}`}
+                      href={`/probes/detail?id=${encodeURIComponent(item.id)}`}
                       className="font-medium after:absolute after:inset-0 after:content-[''] group-hover:text-primary"
                     >
                       <NetworkSummary cidrs={item.cidrs} networks={networks} />
@@ -430,7 +430,7 @@ function RecordTable({
                         />
                       )}
                       <Link
-                        href={`/probes/${item.id}`}
+                        href={`/probes/detail?id=${encodeURIComponent(item.id)}`}
                         className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
                       >
                         查看

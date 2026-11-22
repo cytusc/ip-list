@@ -1,7 +1,19 @@
-import { pagedQuery } from "@/lib/paged-query";
+"use client";
+
+import { useEffect, useState } from "react";
+import { emptyPage } from "@/lib/paged-query";
 import type { LatencyProbe } from "@/lib/types";
 import { LatencyProbeManager } from "@/components/latency-probe-manager";
 
-export default async function LatencyProbesPage() {
-  return <LatencyProbeManager initial={await pagedQuery<LatencyProbe>("/latency-probes")} tlsPin={process.env.PROBE_TLS_PIN || ""} />;
+const initial = emptyPage<LatencyProbe>();
+
+export default function LatencyProbesPage() {
+  const [tlsPin, setTLSPin] = useState("");
+  useEffect(() => {
+    fetch("/api/probe-config", { credentials: "include" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => setTLSPin(data?.tls_pin || ""))
+      .catch(() => {});
+  }, []);
+  return <LatencyProbeManager initial={initial} tlsPin={tlsPin} />;
 }

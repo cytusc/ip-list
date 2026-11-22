@@ -1,9 +1,13 @@
-"use server";
-import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
-import { api, ApiError, forwardSessionCookie } from "@/lib/api";
+"use client";
+/* eslint-disable @next/next/no-location-assign-relative-destination */
+import { api, ApiError } from "@/lib/api";
 import type { ActionResult, LatencyProbe } from "@/lib/types";
+
+// The UI is a static export; every mutation is followed by an explicit
+// client-side reload, so server-side revalidation is no longer needed.
+function revalidatePath(...args: unknown[]) {
+  void args;
+}
 function failure(error: unknown): Extract<ActionResult, { ok: false }> {
   if (error instanceof ApiError)
     return { ok: false, error: error.message, fields: error.fields };
@@ -12,15 +16,15 @@ function failure(error: unknown): Extract<ActionResult, { ok: false }> {
 }
 export async function login(input: unknown): Promise<ActionResult> {
   try {
-    const { response } = await api("/auth/login", {
+    await api("/auth/login", {
       method: "POST",
       body: JSON.stringify(input),
     });
-    await forwardSessionCookie(response);
   } catch (error) {
     return failure(error);
   }
-  redirect("/nodes");
+  window.location.assign("/nodes/");
+  return { ok: true };
 }
 export async function submitLogin(
   _previous: ActionResult | null,
@@ -33,14 +37,13 @@ export async function submitLogin(
 }
 export async function logout(): Promise<ActionResult> {
   try {
-    const { response } = await api("/auth/logout", { method: "POST" });
-    await forwardSessionCookie(response);
+    await api("/auth/logout", { method: "POST" });
   } catch (error) {
     if (!(error instanceof ApiError && error.status === 401))
       return failure(error);
-    (await cookies()).delete("ipfilter_session");
   }
-  redirect("/login");
+  window.location.assign("/login/");
+  return { ok: true };
 }
 async function save(
   kind: "nodes" | "networks",

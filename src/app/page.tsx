@@ -1,4 +1,10 @@
-import { redirect } from "next/navigation";
+"use client";
+
+import { useEffect } from "react";
+
 export default function Home() {
-  redirect("/nodes");
+  useEffect(() => {
+    window.location.replace("/nodes/");
+  }, []);
+  return null;
 }

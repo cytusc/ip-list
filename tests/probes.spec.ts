@@ -18,7 +18,7 @@ test("导入节点、单次检测、记录详情与巡检停止", async ({
   const name = `连通性-${Date.now()}`;
   let nodeID = "",
     networkID = "";
-  const apiURL = process.env.API_URL || "http://127.0.0.1:8081";
+  const apiURL = process.env.API_URL || "http://127.0.0.1:3000/api";
   const headers = { Origin: process.env.APP_ORIGIN || "http://localhost:3000" };
   try {
     await page.goto("/login");

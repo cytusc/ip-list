@@ -36,17 +36,17 @@ Mihomo gRPC 探测使用 `ip-list/1.0` User-Agent：2026-11-17 实测内核默�
 支持将可用 IP 按 ISO 国家或地区代码发布到华为云公网 DNS，例如 `hk.reiiv.com`、`jp.reiiv.com`、`us.reiiv.com`；首次发现新地区会自动新增记录，IPv4 使用 A，IPv6 使用 AAAA。
 
 1. 确保 `reiiv.com` 已在华为云公网 DNS 托管，注册商处的 NS 已指向该托管域名分配的服务器。
-2. 在 Go API 环境变量配置 `HUAWEICLOUD_SDK_AK`、`HUAWEICLOUD_SDK_SK`，IAM 用户需要域名查询、记录查询/创建/修改/删除权限。区域默认 `cn-north-4`，可用 `HUAWEICLOUD_DNS_REGION` 修改；`HUAWEICLOUD_PROJECT_ID` 可选。密钥不会发送给浏览器。
-3. 升级后执行 `npm run db:init` 创建 DNS 配置和历史表，重新构建并重启 Go API 与 Web 服务。
+2. 在 Go worker 环境变量配置 `HUAWEICLOUD_SDK_AK`、`HUAWEICLOUD_SDK_SK`，IAM 用户需要域名查询、记录查询/创建/修改/删除权限。区域默认 `cn-north-4`，可用 `HUAWEICLOUD_DNS_REGION` 修改；`HUAWEICLOUD_PROJECT_ID` 可选。密钥不会发送给浏览器。
+3. 升级后执行 `npm run db:init` 创建 DNS 配置和历史表，重新构建并重启 `ip-list-worker` 与 `ip-list-web`。
 4. 打开「域名解析」，默认域名 `reiiv.com`、TTL 300 秒、每组最多 10 个 IP。选择协议池和探针，保存后点击「预览」检查，再「立即同步」或开启「定时同步」。定时同步默认关闭。
 
 默认每 300 秒检查当前可用池中通过证书检查且未屏蔽的 IP。探针必须在线且有新鲜采样；观察窗口内成功率必须达到门槛（默认 90%，旧配置的 0 自动迁移为 90%）；失败、负延迟及无效延迟样本均计入失败，不能通过 P95 去峰忽略。成功率不达标会暂停入选；连续失败满 5 分钟则判为不可用。两种判断均需同一探针的健康对照。探针报告目标失败时，还须有同一探针近期成功检测其他目标作佐证，避免探针自身出口故障造成误删；探针离线或整体失联时保留已有解析。延迟按每个 IP 的成功样本计算：取 P95 并排除其上的峰值，再对其余样本求平均；每个 IP 池内，各国家或地区独立以本地区最快 IP 的去峰平均延迟为基准，亚太地区阈值为本地区基准 +10 ms，其他地区为本地区基准 +20 ms。例如香港最低 38 ms，则香港选取 ≤48 ms；美国最低 140 ms，则美国选取 ≤160 ms。符合条件的 IP 按地区同步，默认每组最多 10 个；超出上限时优先选择平均延迟较低的 IP。也可以固定使用指定探针。
 
 可用节点池在启动时及每 5 分钟复查；只有最近 15 分钟通过全部已启用加速 TLS 样本检测并完成恢复观察的 IP 才进入可用列表、链接生成和延迟探针目标。增删、启停或修改加速样本会立即使旧证明失效，等待重新验证；原始扫描结果保留用于重试。网站 CF 回源池独立检测，也每 5 分钟后台复查实际业务 HTTPS。节点与网站入口均需连续通过 3 轮，每轮间隔至少 5 分钟、覆盖至少 10 分钟；不确定结果会中断恢复计数，间隔超过 15 分钟重新观察。初次升级期间暂停新增、保留未确认故障的已有解析。已确认故障的 IP 在恢复完成前持续隔离；入口复查持续待确认至少 30 分钟且存在健康对照时也会隔离，检测系统整体异常时保留已有解析。
 
-节点池在每次 DNS 预览和同步时还会重新检测实际代理连接：固定使用 Mihomo（不受扫描的 `PROBE_KERNEL` 影响），按已导入并启用的 VLESS / Trojan TLS WS、gRPC、XHTTP、HTTPUpgrade 样本逐一保留原始 SNI/Host，每次验证三次 TLS 握手后通过该节点请求 HTTPS 检测地址，每轮需连续两次通过，再满足跨轮恢复观察才允许新增。证书不匹配直接判为失败；普通连接连续两次失败时，须有同一加速样本的其他 IP 连续通过作为对照，才确认该 IP 失败。部分成功、没有健康对照、缺少样本或复查超时均暂停新增；未确认故障且未达到待确认期限时保留已有解析。复查最多并发 8 个、每次 8 秒，总计最多 60 秒，不覆盖探针的延迟排序和地区归属规则。节点仍使用 `gb.reiiv.com` 等优选域名，由 DNS 更新 IP。要保障 EUGame，请将实际使用的加速节点添加并启用为检测样本；HK2 的成功不能单独证明 EUGame 可用。复查从 Go API 的网络出口发起，仍需用客户端所在网络的探针观察线路质量，不能保证其他运营商的 TLS 路由或下载速度。
+节点池在每次 DNS 预览和同步时还会重新检测实际代理连接：固定使用 Mihomo（不受扫描的 `PROBE_KERNEL` 影响），按已导入并启用的 VLESS / Trojan TLS WS、gRPC、XHTTP、HTTPUpgrade 样本逐一保留原始 SNI/Host，每次验证三次 TLS 握手后通过该节点请求 HTTPS 检测地址，每轮需连续两次通过，再满足跨轮恢复观察才允许新增。证书不匹配直接判为失败；普通连接连续两次失败时，须有同一加速样本的其他 IP 连续通过作为对照，才确认该 IP 失败。部分成功、没有健康对照、缺少样本或复查超时均暂停新增；未确认故障且未达到待确认期限时保留已有解析。复查最多并发 8 个、每次 8 秒，总计最多 60 秒，不覆盖探针的延迟排序和地区归属规则。节点仍使用 `gb.reiiv.com` 等优选域名，由 DNS 更新 IP。要保障 EUGame，请将实际使用的加速节点添加并启用为检测样本；HK2 的成功不能单独证明 EUGame 可用。复查从 Go worker 的网络出口发起，仍需用客户端所在网络的探针观察线路质量，不能保证其他运营商的 TLS 路由或下载速度。
 
-每次入口复查写入 `ip_health_checks`，保留 7 天的协议、SNI、证书 SHA-256 指纹和尝试错误；恢复状态保存在 `ip_health_recovery`，重启不会清空隔离记录。只覆盖已导入的受支持加速节点，不检测 Hy2、TUIC、Reality 或直连 TCP，也不覆盖尚不能导入的 SS-WS。
+每次入口复查只更新 `ip_health_recovery` 中的最新状态与连续恢复轮次，不再保留逐次检查副本，重启不会清空隔离记录。只覆盖已导入的受支持加速节点，不检测 Hy2、TUIC、Reality 或直连 TCP，也不覆盖尚不能导入的 SS-WS。
 
 系统接管各国家/地区缩写的全网默认 A / AAAA 记录（包括已有 `hk.reiiv.com`），保留其他线路及其他子域名。短暂丢包或采样不足的 IP 不会新增，已在解析中的待确认 IP 暂时保留；确认失败的 IP 仍会被移除。探针整体不可用或归属地无法完整确定时，本轮保留原解析。已接管的记录没有剩余合格或待确认 IP 时会删除；尚未接管且没有合格 IP 的记录保持原样。若本轮计划会删除最后全部解析，则保留现有记录并告警，等待探针/线路恢复或人工核查，避免整批误删。同名多条权重记录、CNAME 冲突或云端非正常状态会显示原因并跳过。停止定时同步保留已有解析。
 
@@ -71,7 +71,7 @@ Mihomo gRPC 探测使用 `ip-list/1.0` User-Agent：2026-11-17 实测内核默�
 
 站点发布时先运行 `npm run probe:build`（服务器需要 Go），生成六个平台的静态二进制到 `bin/latency-probe`，再构建并重启 Web。下载入口 `/probe-downloads/` 只提供固定白名单中的公共安装文件，不包含探针密钥。自签证书站点在 Web 服务环境配置 `PROBE_TLS_PIN` 为 TLS 证书公钥的 SHA-256 base64 指纹，部署命令、下载和探针请求都会校验此公钥；证书公钥变更后需重新部署探针。公有 CA 证书可不设置，使用系统证书校验。
 
-探针在 macOS/Linux 使用系统 `ping`，Windows 使用官方 ICMP API（IPv4 `IcmpSendEcho2Ex` / IPv6 `Icmp6SendEcho2`），测量电脑到目标 IP 的往返时间，不经过 HTTP/SOCKS 代理。探针会绑定物理网卡（macOS `ping -b`，Linux `ping -I`，Windows ICMP API 指定该网卡源地址）。网卡留空时自动选择唯一已连接且有 IP 的非隧道网卡；多个候选、无可用网卡或指定虚拟隧道时停止本轮检测并记录错误，不回退到默认路由。macOS 例如 `en0`，Linux 例如 `eth0`；Windows 的源地址绑定不能保证绕过所有第三方 VPN/TUN，请关闭 TUN 或为检测目标配置直连规则。日志会输出实际选择的网卡、源地址和检测方式。Windows 本机 API、网卡或资源错误会记录具体错误并跳过上报，不记为目标 IP 不可达；真实超时或远端不可达仍会上报失败。探针需要能访问站点 HTTPS 地址；ICMP 超时可能是目标或网络屏蔽了 ICMP，不代表代理连接一定不可用。服务端使用 SHA-256 哈希验证 Bearer 密钥，并加密保存可恢复的部署密钥；只有已登录管理员可读取部署配置，列表及探针接口不返回密钥；上报只接受当前可用且未列入黑名单的 IP。数据库升级需执行 `npm run db:init`，再重启 Go API。
+探针在 macOS/Linux 使用系统 `ping`，Windows 使用官方 ICMP API（IPv4 `IcmpSendEcho2Ex` / IPv6 `Icmp6SendEcho2`），测量电脑到目标 IP 的往返时间，不经过 HTTP/SOCKS 代理。探针会绑定物理网卡（macOS `ping -b`，Linux `ping -I`，Windows ICMP API 指定该网卡源地址）。网卡留空时自动选择唯一已连接且有 IP 的非隧道网卡；多个候选、无可用网卡或指定虚拟隧道时停止本轮检测并记录错误，不回退到默认路由。macOS 例如 `en0`，Linux 例如 `eth0`；Windows 的源地址绑定不能保证绕过所有第三方 VPN/TUN，请关闭 TUN 或为检测目标配置直连规则。日志会输出实际选择的网卡、源地址和检测方式。Windows 本机 API、网卡或资源错误会记录具体错误并跳过上报，不记为目标 IP 不可达；真实超时或远端不可达仍会上报失败。探针需要能访问站点 HTTPS 地址；ICMP 超时可能是目标或网络屏蔽了 ICMP，不代表代理连接一定不可用。服务端使用 SHA-256 哈希验证 Bearer 密钥，并加密保存可恢复的部署密钥；只有已登录管理员可读取部署配置，列表及探针接口不返回密钥；上报只接受当前可用且未列入黑名单的 IP。数据库升级需执行 `npm run db:init`，再重启 `ip-list-worker`。
 
 ## 自动增量检测
 
@@ -83,7 +83,7 @@ Mihomo gRPC 探测使用 `ip-list/1.0` User-Agent：2026-11-17 实测内核默�
 
 「连通性测试」和「CF 优选」仍可手动选择「增量检测」或「全量检测」。修改检测域名、节点配置或需要复测失败地址时，请选择全量检测。自动检测记录与 CF 进度页会标明增量范围。正在进行的检测不会因为删除或停用网段而立即停止，可在检测页面手动停止。
 
-升级后执行 `npm run db:init` 创建 `network_auto_scans` 队列表，再重启 Go API。API：`POST /scans` 和 `POST /cf-targets/{id}/scans` 支持 `incremental: true`；省略或设为 `false` 保持原有全量行为。手动节点增量请求的 `interval_minutes` 必须为 0。
+升级后执行 `npm run db:init` 创建 `network_auto_scans` 队列表，再重启 `ip-list-worker`。API：`POST /scans` 和 `POST /cf-targets/{id}/scans` 支持 `incremental: true`；省略或设为 `false` 保持原有全量行为。手动节点增量请求的 `interval_minutes` 必须为 0。
 
 ## 自动巡检
 
@@ -111,44 +111,47 @@ Mihomo gRPC 探测使用 `ip-list/1.0` User-Agent：2026-11-17 实测内核默�
 
 ## 本地启动
 
-需要 Node.js 22+、Go 1.26+、Docker Compose；也可以直接使用已有 PostgreSQL 17+ 和 Redis 7+。
+需要 Node.js 22+、Go 1.26+、Rust 1.90+（MSVC toolchain）、Docker Compose；也可以直接使用已有 PostgreSQL 17+ 和 Redis 7+。
 
 ```sh
 cp .env.example .env
-# 编辑 .env：设置 ADMIN_PASSWORD，至少 12 个字符，不超过 72 字节
+# 编辑 .env：设置 ADMIN_PASSWORD（至少 12 个字符），并生成 CONTROL_INTERNAL_TOKEN
+# openssl rand -hex 32
 docker compose up -d --wait
 npm ci
 npm run db:init
 ```
 
-分别在两个终端启动后端、前端：
+常驻进程只有两个：Rust 控制面（静态页面、登录会话、全部 `/api`）和 Go worker（mihomo 扫描/维护、环回内部接口）。开发时分别在三个终端启动：
 
 ```sh
-npm run api:dev
+npm run worker:dev   # 127.0.0.1:8082；启动前先 npm run db:init
+npm run control:build && CONTROL_ADDR=127.0.0.1:8088 WEB_DIR=out WORKER_URL=http://127.0.0.1:8082 ./backend/rust/target/release/control
+npm run dev          # Next.js 3000，/api 重写到 Rust 8088
 ```
 
-```sh
-npm run dev
-```
+也可以直接 `npm run build && npm start`：`start` 通过 `scripts/run-control.mjs` 启动 Rust 控制面并托管 `out/`，不再需要 Node 进程。访问 http://localhost:3000，使用 `.env` 的 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录。
 
-访问 http://localhost:3000，使用 `.env` 的 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录。默认用户名为 `admin`，没有默认密码。重复执行初始化不会覆盖已有管理员密码。
-
-Go 使用 godotenv 加载根目录 `.env`；Next.js 自动读取该文件。初始化后可从 `.env` 移除 `ADMIN_PASSWORD`，除非需要再次执行初始化。
+Go worker 与 Rust 控制面都会读取根目录 `.env`；Next.js 自动读取该文件。生产环境由 systemd `EnvironmentFile` 注入，已有变量优先，不会被 `.env` 覆盖。初始化后可从 `.env` 移除 `ADMIN_PASSWORD`，除非需要再次执行初始化。`CONTROL_INTERNAL_TOKEN` 必须由 Rust 与 Go worker 共享，不能暴露给浏览器。
 
 ## 结构和所用库
 
-- `src/app`：Next.js 页面和服务端 API 代理。
-- `src/components/ui`：shadcn/ui 原生组件，交互基于 Radix UI。
-- `backend`：Go HTTP API，使用标准库路由。
-- `backend/schema.sql`：管理员、节点、网段、可用 IP、延迟探针与结果等表。节点名称、手动节点地址端口、同一节点的 CIDR 均有唯一约束；探针最近 2 小时保留原始采样，较早历史按 15 分钟汇总并保留 24 小时。DNS 延迟与连续失败判断始终使用原始采样，汇总保留真实采样数、成功数、成功延迟总和及最低/最高延迟；图表据此加权统计，包含汇总数据时不提供无法精确还原的 P95 和相邻抖动。后台每分钟分批压缩与清理，包括停用探针的数据；每批汇总与删除在同一事务中完成，迟到上报追加到相应汇总。
-- pgx：PostgreSQL 连接池和参数化查询。
-- go-redis：Redis 连接；SCS + goredisstore：24 小时登录会话，登录时轮换令牌，退出时删除会话。
-- ulule/limiter：Redis 登录限流，同一用户名每 15 分钟最多尝试 10 次，成功后重置。
-- validator：通用字段校验；Go `net/netip`：CIDR 解析和网络边界校验。
-- bcrypt：密码哈希。
-- mihomo：使用现成的链接转换、代理传输和 URLTest；HTTPUpgrade 做兼容映射，不自行实现协议。
+更完整的进程拓扑、A/B/C 边界和验证命令见 [Rust 混编改造说明](docs/architecture-rust.md)。
 
-API 默认为 `127.0.0.1:8081`，浏览器通过 Next.js 服务端操作访问，Cookie 为 HttpOnly / SameSite=Lax。修改 `APP_ORIGIN` 时需要与前端访问来源一致。生产环境设置 `APP_ENV=production`、正确的 `APP_ORIGIN`，并通过 HTTPS 访问前端；后端保持仅内网可访问。Docker Compose 默认数据库密码仅用于本机开发。
+- `src/app`：Next.js 静态导出页面；浏览器直接访问 `/api`，由 Rust 控制面提供。
+- `src/components/ui`：shadcn/ui 原生组件，交互基于 Radix UI。
+- `backend/cmd/worker`：Go 数据面 worker，独占 mihomo 扫描、证书复查、健康复查、测速、DNS 同步与维护协程；额外提供环回内部接口。
+- `backend/internal/ipguard`：Go 业务实现、`engine_jobs` 队列与 schema；`ipguard-worker -init` 负责数据库初始化。
+- `backend/rust/control`：Rust 控制面，负责静态页面、bcrypt 登录、Redis 会话、原生 CRUD/聚合/DNS/扫描/探针接口以及内部断言。
+- `backend/rust/latency-probe`：Rust 延迟探针（ICMP/TCP、物理网卡绑定、TLS pin）。
+- `src/app/api` 已移除；所有 `/api` 路径由 Rust 控制面实现，只有测速/网段复检转发到 Go worker。
+- deadpool-postgres：Rust 控制面复用 PostgreSQL 连接池（`CONTROL_DB_POOL_SIZE`，默认 8），避免每个请求新建连接。
+- pgx：Go worker 的 PostgreSQL 连接池和参数化查询。
+- go-redis：Redis 连接；Rust 使用 Redis 保存 `ipguard:session:*` 会话，24 小时有效。
+- bcrypt：Rust 控制面校验密码；Go 初始化仍负责创建管理员。
+- mihomo：Go worker 使用现成的链接转换、代理传输和 URLTest；HTTPUpgrade 做兼容映射，不自行实现协议。
+
+Rust 控制面默认 `127.0.0.1:8088`（生产 drop-in 设为 3000），Go worker 默认 `127.0.0.1:8082`。Go 只信任带 `X-Internal-Auth` 的内部请求，浏览器 Cookie 由 Rust 管理。修改 `APP_ORIGIN` 时需要与前端访问来源一致。生产环境设置 `APP_ENV=production`、正确的 `APP_ORIGIN`，并通过 HTTPS 访问前端；Go worker 保持仅内网可访问。
 
 ## API
 
@@ -187,6 +190,10 @@ npm run typecheck
 npm run build
 npm test
 go -C backend vet ./...
+npm run control:build
+node scripts/rust-build.mjs clippy -p control --release -- -D warnings
+node scripts/rust-build.mjs test -p control --release
+npm run probe:rust
 # 对比逐 IP 解析与任务复用配置的 CPU / 内存开销，不包含网络延迟
 go -C backend test -run '^$' -bench BenchmarkProbeSetup -benchmem
 ```
@@ -198,7 +205,7 @@ TEST_DATABASE_URL=postgresql://ipfilter:ipfilter_local@localhost:5432/ipguard_te
 TEST_REDIS_URL=redis://localhost:6379/15 npm test
 ```
 
-浏览器端到端测试（先启动 Go API，使用当前 `.env` 的管理员账号）：
+浏览器端到端测试（先启动 Rust 控制面与 Go worker，使用当前 `.env` 的管理员账号；`API_URL` 默认指向 `http://127.0.0.1:3000/api`）：
 
 ```sh
 npx playwright install chromium
@@ -209,17 +216,20 @@ npm run test:e2e
 
 ## 生产构建
 
-已配置 GitHub Actions：推送 `main` 后自动在 GitHub 构建完整 Linux x64 发布包并部署，服务器无需再次编译。发布包包含 Next.js standalone、Node.js 22、Go API 和各平台探针下载程序。配置、数据库备份及恢复方式见 [CI/CD 部署说明](docs/cicd.md)。
+已配置 GitHub Actions：推送 `main` 后自动在 GitHub 构建完整 Linux x64 发布包并部署，服务器无需再次编译。发布包包含 Next.js 静态导出（`out/`）、Rust 控制面、Go worker 和各平台探针下载程序，不再包含 Node 运行时或 Go 控制面。配置、数据库备份及恢复方式见 [CI/CD 部署说明](docs/cicd.md)。
 
-手动从源码构建：
+手动从源码构建（在 Linux x64 上交叉/本机构建 Rust 后）：
 
 ```sh
-npm run api:build
+npm run worker:build
 npm run build
-# 使用进程管理器分别运行，提供正确的环境变量
-./bin/ipguard
-npm start
+cargo build --manifest-path backend/rust/Cargo.toml -p control --release
+# 使用进程管理器分别运行 worker、control 两个进程
+./bin/ipguard-worker
+./backend/rust/target/release/control
 ```
+
+`ip-list-worker` 与 `ip-list-web`（Rust 控制面）两个 systemd 单元都必须读取同一个 `/etc/ip-list.env`，并共享 `CONTROL_INTERNAL_TOKEN`。`ip-list-web` 的 `ExecStart` 指向 `bin/control`，`WEB_DIR=/opt/ip-list-current`。如果旧环境文件还有 `API_URL=http://127.0.0.1:8081`，改为 `http://127.0.0.1:3000/api` 或删除。
 
 ## 参考项目
 
@@ -239,7 +249,7 @@ npm start
 
 检测使用 Go 标准库直接连接候选 IP，保留网址原始 Host、TLS SNI 和证书校验，不使用环境 HTTP 代理。HTTP 2xx / 3xx 计为可用，不跟随跳转；403、5xx、证书错误或超时均不计为可用。仅检测可用性，不额外判断 Cloudflare 响应头，不测量延迟或带宽。
 
-每轮结束后，同一批结果写入三处：共用 IP 池（`cf_ip_pool`）、该域名的独立结果（`cf_results`）与轮次统计（`cf_target_rounds`），并更新 `cf_targets.last_checked_at`。因此域名详情既能列出「该域名返回的 IP」，也能按轮次给出可用率；旧数据没有轮次记录时，可用率回退为按域名结果计算。PostgreSQL 保留每个地址/IP 的最新检测结果；复测失败会移除可用记录，未检测或停止时尚未完成的 IP 保留旧结果。Redis 保存 24 小时的任务进度，服务中断需重新开始检测。升级后运行 `npm run db:init` 创建 `cf_targets`、`cf_results`、`cf_target_rounds` 表并回填 `last_checked_at`，再重启 Go API。
+每轮结束后，同一批结果写入三处：共用 IP 池（`cf_ip_pool`）、该域名的独立结果（`cf_results`）与轮次统计（`cf_target_rounds`），并更新 `cf_targets.last_checked_at`。因此域名详情既能列出「该域名返回的 IP」，也能按轮次给出可用率；旧数据没有轮次记录时，可用率回退为按域名结果计算。PostgreSQL 保留每个地址/IP 的最新检测结果；复测失败会移除可用记录，未检测或停止时尚未完成的 IP 保留旧结果。Redis 保存 24 小时的任务进度，服务中断需重新开始检测。升级后运行 `npm run db:init` 创建 `cf_targets`、`cf_results`、`cf_target_rounds` 表并回填 `last_checked_at`，再重启 `ip-list-worker`。
 
 网段的 ASN 和服务商留空时会在保存时自动获取（RIPEstat 路由 ASN 与所属机构，Redis 缓存 24 小时），也可手动填写。查询失败不影响保存，并提示重试；修改 CIDR 会清除旧归属并重新查询。私有网段不查询，多 ASN 会完整展示；查询结果无法覆盖整个网段时不自动填充。服务启动时及每 30 分钟自动补全缺失的 ASN / 服务商，保留手动填写内容。升级需运行 `npm run db:init` 扩大 ASN 字段容量。归属信息会展示在代理可用 IP 和 CF 地址详情中；重叠网段优先采用有信息的最具体网段。可用 IP 列表可生成所有已启用协议节点的分享链接，保留认证、SNI 和传输参数，仅替换连接 IP。
 
@@ -247,9 +257,9 @@ npm start
 
 升级运行后端 `-init` 会将旧网段迁移为独立配置，移除节点关联和访问策略；相同 CIDR 合并，保留备注和补充信息，任一副本启用则保留启用状态。若原任务选择了合并删除的网段，需重新选择。
 
-本机启用 Clash 等 TUN 代理时，代理节点扫描可能经过已有代理，不能据此保证本地直连可用。可设置 `PROBE_INTERFACE=en0`（替换为实际物理网卡名）并重启 Go API，使用 mihomo 的网卡绑定功能指定检测出口；再重新扫描以更新旧结果。该配置不改变 CF 检测出口。
+本机启用 Clash 等 TUN 代理时，代理节点扫描可能经过已有代理，不能据此保证本地直连可用。可设置 `PROBE_INTERFACE=en0`（替换为实际物理网卡名）并重启 `ip-list-worker`，使用 mihomo 的网卡绑定功能指定检测出口；再重新扫描以更新旧结果。该配置不改变 CF 检测出口。
 
-代理检测可设置 `PROBE_KERNEL=xray`，并通过 `XRAY_BIN` 指定已安装的 Xray 可执行文件（默认 `/usr/local/bin/xray`）。重启 Go API 后，正常扫描任务中的 HTTPUpgrade、XHTTP、gRPC、WS 和 TCP 请求将由 Xray 执行，停用 mihomo 检测路径；CF 检测保持原有直连方式。每个 IP 使用独立的 Xray 进程和私有 Unix socket，进程在检测结束、超时或取消时回收；超时包含进程启动时间，只有实际代理 HTTP 请求成功才记录可用。此方式会增加并发扫描的进程与内存开销，所有节点任务合计最多并行检测 64 个 IP，排队时间不占用单个 IP 的超时。设置 `PROBE_KERNEL=mihomo` 后重启可回退。现阶段保留 mihomo 的分享链接转换器以兼容已有配置。
+代理检测可设置 `PROBE_KERNEL=xray`，并通过 `XRAY_BIN` 指定已安装的 Xray 可执行文件（默认 `/usr/local/bin/xray`）。重启 `ip-list-worker` 后，正常扫描任务中的 HTTPUpgrade、XHTTP、gRPC、WS 和 TCP 请求将由 Xray 执行，停用 mihomo 检测路径；CF 检测保持原有直连方式。每个 IP 使用独立的 Xray 进程和私有 Unix socket，进程在检测结束、超时或取消时回收；超时包含进程启动时间，只有实际代理 HTTP 请求成功才记录可用。此方式会增加并发扫描的进程与内存开销，所有节点任务合计最多并行检测 64 个 IP，排队时间不占用单个 IP 的超时。设置 `PROBE_KERNEL=mihomo` 后重启可回退。现阶段保留 mihomo 的分享链接转换器以兼容已有配置。
 
 ## 入口证书校验
 

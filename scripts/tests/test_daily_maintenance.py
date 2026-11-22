@@ -42,10 +42,8 @@ INSERT INTO latency_probe_rollups VALUES(now()),(now()-interval '25 hours');
 CREATE TABLE node_ip_pool(id int,payload text);
 INSERT INTO node_ip_pool SELECT i,repeat('x',1024) FROM generate_series(1,80000) i;
 DELETE FROM node_ip_pool WHERE id%5<>0;
-CREATE TABLE ip_results(id int);
 CREATE TABLE cf_ip_pool(id int);
 CREATE TABLE cf_results(id int);
-INSERT INTO ip_results VALUES(7);
 """)
         before = int(sql("SELECT pg_relation_size('node_ip_pool');"))
         with tempfile.TemporaryDirectory() as backups:
@@ -60,7 +58,6 @@ INSERT INTO ip_results VALUES(7);
             self.assertEqual(sql('SELECT count(*) FROM dns_sync_runs;'), '20')
             self.assertEqual(sql('SELECT count(*) FROM latency_probe_results;'), '1')
             self.assertEqual(sql('SELECT count(*) FROM latency_probe_rollups;'), '1')
-            self.assertEqual(sql('SELECT id FROM ip_results;'), '7')
             # A second run keeps the same data and does not make another backup.
             result = subprocess.run(['bash', str(SCRIPTS / 'daily-maintenance.sh')],
                                     env=env, text=True, capture_output=True, timeout=120)

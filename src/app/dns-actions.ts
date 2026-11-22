@@ -1,16 +1,13 @@
-"use server";
+"use client";
 
 import { api, ApiError } from "@/lib/api";
-import { requireUser } from "@/lib/auth";
 import type { DNSConfig, DNSStatus } from "@/lib/dns";
 
 export async function getDNSStatus(): Promise<DNSStatus> {
-  await requireUser();
   return (await api<DNSStatus>("/dns?summary=1")).data;
 }
 
 export async function saveDNSConfig(config: DNSConfig) {
-  await requireUser();
   try {
     await api("/dns", { method: "PUT", body: JSON.stringify(config) });
     return { ok: true as const };
@@ -20,7 +17,6 @@ export async function saveDNSConfig(config: DNSConfig) {
 }
 
 export async function requestDNSRun(mode: "preview" | "sync") {
-  await requireUser();
   try {
     await api(`/dns/${mode}`, { method: "POST" });
     return { ok: true as const };

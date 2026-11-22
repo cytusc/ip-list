@@ -8,3 +8,11 @@ playwright-report/
 .DS_Store
 bin/
 __pycache__/
+
+# Rust build artifacts
+backend/rust/target/
+
+
+# Next.js static export
+out/
+

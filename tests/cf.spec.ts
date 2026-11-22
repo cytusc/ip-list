@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test("CF 统一检测、域名详情与移动端", async ({ page, request }) => {
-  const apiURL = process.env.API_URL || "http://127.0.0.1:8081";
+  const apiURL = process.env.API_URL || "http://127.0.0.1:3000/api";
   const headers = { Origin: process.env.APP_ORIGIN || "http://localhost:3000" };
   const stamp = Date.now();
   const name = `CF 测试 ${stamp}`;

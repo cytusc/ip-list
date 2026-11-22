@@ -40,6 +40,7 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
+      - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - name: Check frontend
         run: |
@@ -77,9 +78,13 @@ jobs:
         run: go -C backend test -run 'TestDNSRefusesCompleteDeletionWithLiveControl|TestDNSPreservesEachRecordWithoutReplacement|TestAvailableIPSpeedSurvivesOutageAndRetries' -count=1
       - name: Build application and probe downloads
         run: |
-          npm run api:build
+          npm run worker:build
           npm run probe:build
           npm run build
+          cargo clippy --manifest-path backend/rust/Cargo.toml -p control --release -- -D warnings
+          cargo test --manifest-path backend/rust/Cargo.toml -p control --release
+          cargo build --manifest-path backend/rust/Cargo.toml -p control --release
+          cp backend/rust/target/release/control bin/control
       - name: Package Linux x64 release
         env:
           RELEASE_SHA: ${{ github.sha }}

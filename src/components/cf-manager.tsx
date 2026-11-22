@@ -98,7 +98,7 @@ export function CFTargetList({
   initial: PageResult<CFTarget>;
   networks: Network[];
 }) {
-  const {data,setPage,loading,error}=usePagedList("cf-targets",initial);
+  const {data,setPage,refresh,loading,error}=usePagedList("cf-targets",initial);
   const items=data.items;
   const { job } = useCFScan();
   const running = job?.status === "running";
@@ -125,7 +125,7 @@ export function CFTargetList({
             </Link>
           </Button>
           <CFScanConfig items={items} networks={networks} job={job} />
-          <AddDomain />
+          <AddDomain onCreated={refresh} />
         </div>
       </div>
 
@@ -155,7 +155,7 @@ function CFTargetTable({ items }: { items: CFTarget[] }) {
         {items.map((item) => (
           <Link
             key={item.id}
-            href={`/cf/${item.id}`}
+            href={`/cf/detail?id=${encodeURIComponent(item.id)}`}
             className="block px-4 py-3 transition-colors active:bg-muted/50"
           >
             <div className="flex items-start justify-between gap-3">
@@ -215,7 +215,7 @@ function CFTargetTable({ items }: { items: CFTarget[] }) {
               <TableRow key={item.id} className="group relative">
                 <TableCell className="pl-5">
                   <Link
-                    href={`/cf/${item.id}`}
+                    href={`/cf/detail?id=${encodeURIComponent(item.id)}`}
                     className="font-medium after:absolute after:inset-0 after:content-[''] group-hover:text-primary"
                   >
                     {item.name}
@@ -310,8 +310,7 @@ function ScanBanner({ job }: { job: ScanJob }) {
   );
 }
 
-function AddDomain() {
-  const router = useRouter();
+function AddDomain({ onCreated }: { onCreated?: () => void }) {
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
   const [error, setError] = useState("");
@@ -347,7 +346,7 @@ function AddDomain() {
                   return;
                 }
                 setOpen(false);
-                router.refresh();
+                if (onCreated) onCreated();
                 toast.success("已添加域名");
               } catch {
                 setError("添加失败，请重试");

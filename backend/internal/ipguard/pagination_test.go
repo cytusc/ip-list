@@ -1,0 +1,433 @@
+package ipguard
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func paginationApp(t *testing.T) *app {
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires TEST_DATABASE_URL")
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(cfg.ConnConfig.Database, "_test") {
+		t.Fatal("requires test database")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.NewWithConfig(ctx, cfg.Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("pagination_%d", time.Now().UnixNano())
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+name); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = name
+	db, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close(); admin.Exec(ctx, "DROP SCHEMA "+name+" CASCADE"); admin.Close() })
+	if _, err = db.Exec(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	return &app{db: db}
+}
+
+func pageRequest(t *testing.T, handler http.HandlerFunc, path string, want int) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest("GET", path, nil)
+	r = r.WithContext(context.WithValue(r.Context(), userContextKey{}, user{ID: "00000000-0000-4000-8000-000000000001"}))
+	w := httptest.NewRecorder()
+	handler(w, r)
+	if w.Code != want {
+		t.Fatalf("%s: status %d: %s", path, w.Code, w.Body.String())
+	}
+	return w
+}
+
+func TestConfigurationPagination(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	for _, kind := range []string{"nodes", "networks"} {
+		t.Run(kind, func(t *testing.T) {
+			var sql string
+			if kind == "nodes" {
+				sql = `INSERT INTO nodes(name,address,port,enabled,created_at) SELECT 'page-'||i,'host-'||i,443,i%2=0,'2026-01-01'::timestamptz FROM generate_series(1,107) i`
+			} else {
+				sql = `INSERT INTO networks(name,cidr,enabled,created_at) SELECT 'page-'||i,('198.18.'||i||'.0/24')::cidr,i%2=0,'2026-01-01'::timestamptz FROM generate_series(1,107) i`
+			}
+			if _, err := a.db.Exec(ctx, sql); err != nil {
+				t.Fatal(err)
+			}
+			handler := func(w http.ResponseWriter, r *http.Request) { a.list(w, r, kind) }
+			seen := map[string]bool{}
+			for page, want := range []int{50, 50, 7} {
+				w := pageRequest(t, handler, fmt.Sprintf("/%s?page=%d", kind, page+1), 200)
+				var rows []struct {
+					ID string `json:"id"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != want || w.Header().Get("X-Total-Count") != "107" || w.Header().Get("X-Enabled-Count") != "53" {
+					t.Fatalf("wrong page: %d %v", len(rows), w.Header())
+				}
+				for _, row := range rows {
+					if seen[row.ID] {
+						t.Fatal("duplicate across pages")
+					}
+					seen[row.ID] = true
+				}
+			}
+			w := pageRequest(t, handler, "/"+kind+"?page=999&search=page-107", 200)
+			if w.Header().Get("X-Total-Count") != "1" || w.Header().Get("X-Page") != "1" {
+				t.Fatal(w.Header())
+			}
+			var rows []struct {
+				ID string `json:"id"`
+			}
+			json.Unmarshal(w.Body.Bytes(), &rows)
+			w = pageRequest(t, handler, "/"+kind+"?ids="+rows[0].ID, 200)
+			if w.Header().Get("X-Total-Count") != "1" {
+				t.Fatal("selected record missing")
+			}
+			w = pageRequest(t, handler, "/"+kind+"?status=disabled", 200)
+			if w.Header().Get("X-Total-Count") != "54" {
+				t.Fatal(w.Header())
+			}
+			for _, page := range []string{"0", "-1", "invalid", "9999999999999999999999"} {
+				pageRequest(t, handler, "/"+kind+"?page="+page, 422)
+			}
+		})
+	}
+}
+
+func TestIPListPagination(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	statements := []string{
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('pagination','host',443,'vless://sample@host:443?type=grpc&security=tls'),('pagination-ws','host',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) SELECT p,('198.18.0.'||i)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb FROM generate_series(1,45) i CROSS JOIN unnest(ARRAY['grpc']) p`,
+		`INSERT INTO networks(name,cidr,asn,provider) VALUES('pagination','198.18.0.0/24','AS13335','Example')`,
+		`INSERT INTO dns_ip_locations(ip,country,checked_at,policy_version) SELECT ('198.18.0.'||i)::inet,'JP',now(),3 FROM generate_series(1,45) i`,
+		`INSERT INTO ip_blacklist(ip) VALUES('198.18.0.1')`,
+		`INSERT INTO cf_ip_pool(ip,available,delay_ms,http_status,checked_at) SELECT ('198.18.0.'||i)::inet,true,20,200,now() FROM generate_series(1,45) i`,
+	}
+	for _, sql := range statements {
+		if _, err := a.db.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	verifyPoolFixture(t, a.db)
+	for _, entry := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{{"available", a.availableIPs}, {"cf-pool", a.cfIPPool}} {
+		t.Run(entry.name, func(t *testing.T) {
+			seen := map[string]bool{}
+			for page, want := range []int{20, 20, 4} {
+				w := pageRequest(t, entry.handler, fmt.Sprintf("/list?page=%d", page+1), 200)
+				var rows []availableIP
+				if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != want || w.Header().Get("X-Total-Count") != "44" {
+					t.Fatalf("wrong page %d %v %s", len(rows), w.Header(), w.Body.String())
+				}
+				for _, row := range rows {
+					if row.IP == "198.18.0.1" || seen[row.IP] {
+						t.Fatal("blacklist or duplicate")
+					}
+					seen[row.IP] = true
+					if entry.name == "available" && len(row.Checks) != 2 {
+						t.Fatal("protocol checks split across pages")
+					}
+				}
+			}
+			w := pageRequest(t, entry.handler, "/list?search=198.18.0.45&page=900", 200)
+			if w.Header().Get("X-Total-Count") != "1" || w.Header().Get("X-Page") != "1" {
+				t.Fatal(w.Header())
+			}
+		})
+	}
+	for _, query := range []string{"region=JP&provider=provider:Example&protocol=vless/ws", "region=US", "provider=missing"} {
+		w := pageRequest(t, a.availableIPs, "/available-ips?"+query, 200)
+		want := "0"
+		if strings.HasPrefix(query, "region=JP") {
+			want = "44"
+		}
+		if w.Header().Get("X-Total-Count") != want {
+			t.Fatalf("filter %s: %v", query, w.Header())
+		}
+	}
+}
+
+func TestOtherListPagination(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	for _, sql := range []string{
+		`INSERT INTO latency_probes(name,token_hash) SELECT 'probe-'||i,decode(md5(i::text),'hex') FROM generate_series(1,55) i`,
+		`INSERT INTO cf_targets(name,url) SELECT 'target-'||i,'https://example.com/'||i FROM generate_series(1,55) i`,
+		`INSERT INTO ip_blacklist(ip) SELECT ('198.18.0.'||i)::inet FROM generate_series(1,55) i`,
+		`INSERT INTO node_scan_rounds(job_id,round,protocol,started_at,status) SELECT 'job-'||i,1,CASE WHEN i%2=0 THEN 'vless/ws' ELSE 'vless/grpc' END,now(),'completed' FROM generate_series(1,55) i`,
+	} {
+		if _, err := a.db.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, handler := range []http.HandlerFunc{a.listLatencyProbes, a.listCFTargets, a.listBlacklist, a.listScanRecords} {
+		w := pageRequest(t, handler, "/list?page=2", 200)
+		var raw any
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		var rows []any
+		if list, ok := raw.([]any); ok {
+			rows = list
+		} else {
+			rows = raw.(map[string]any)["items"].([]any)
+		}
+		if len(rows) != 5 || w.Header().Get("X-Total-Count") != "55" {
+			t.Fatalf("wrong page %d %v", len(rows), w.Header())
+		}
+	}
+	w := pageRequest(t, a.listLatencyProbes, "/latency-probes?search=probe-55", 200)
+	if w.Header().Get("X-Total-Count") != "1" {
+		t.Fatal("probe search failed")
+	}
+	w = pageRequest(t, a.listScanRecords, "/scan-records?protocol=vless/ws", 200)
+	if w.Header().Get("X-Total-Count") != "27" {
+		t.Fatal("protocol filter failed")
+	}
+}
+
+func TestScanDetailPagination(t *testing.T) {
+	a := paginationApp(t)
+	var id string
+	err := a.db.QueryRow(context.Background(), `INSERT INTO node_scan_rounds(job_id,round,protocol,started_at,status,results) SELECT 'detail',1,'vless/ws',now(),'completed',jsonb_agg(jsonb_build_object('ip','198.18.0.'||i,'status',CASE WHEN i%2=0 THEN 'success' ELSE 'failed' END,'delay_ms',i)) FROM generate_series(1,125) i RETURNING id::text`).Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("id", id); a.getScanRecord(w, r) }
+	for page, want := range []int{50, 50, 25} {
+		w := pageRequest(t, handler, fmt.Sprintf("/scan-records/%s?paged=1&page=%d", id, page+1), 200)
+		var item scanRecord
+		if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil {
+			t.Fatal(err)
+		}
+		if len(item.Results) != want || w.Header().Get("X-Total-Count") != "125" {
+			t.Fatalf("%d %v", len(item.Results), w.Header())
+		}
+	}
+	w := pageRequest(t, handler, "/detail?paged=1&filter=success&page=2", 200)
+	var item scanRecord
+	json.Unmarshal(w.Body.Bytes(), &item)
+	if len(item.Results) != 12 || w.Header().Get("X-Total-Count") != "62" {
+		t.Fatalf("wrong filtered page: %s", w.Body.String())
+	}
+	for _, row := range item.Results {
+		if row.Status != "success" {
+			t.Fatal("wrong status")
+		}
+	}
+	pageRequest(t, handler, "/detail?paged=1&page=0", 422)
+	pageRequest(t, handler, "/detail?paged=1&filter=bad", 422)
+}
+
+func TestDNSListPagination(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	_, err := a.db.Exec(ctx, `UPDATE dns_settings SET report=(SELECT jsonb_build_object('domain','example.com','records',jsonb_agg(jsonb_build_object('name','region-'||i)),'candidates',jsonb_agg(jsonb_build_object('ip','198.18.0.'||i))) FROM generate_series(1,125) i) WHERE id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.db.Exec(ctx, `INSERT INTO dns_sync_runs(started_at,report) SELECT now(),report FROM dns_settings CROSS JOIN generate_series(1,55) i`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"records", "candidates", "history"} {
+		handler := func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("kind", kind); a.listDNSItems(w, r) }
+		w := pageRequest(t, handler, "/dns/list?page=2", 200)
+		var rows []json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		want := 50
+		total := "125"
+		if kind == "history" {
+			want = 5
+			total = "55"
+		}
+		if len(rows) != want || w.Header().Get("X-Total-Count") != total {
+			t.Fatalf("%s: %d %v", kind, len(rows), w.Header())
+		}
+		if kind == "history" && strings.Contains(w.Body.String(), "candidates") {
+			t.Fatal("history includes complete reports")
+		}
+	}
+	w := pageRequest(t, a.getDNS, "/dns?summary=1", 200)
+	var status struct {
+		Report  map[string]any `json:"report"`
+		History []any          `json:"history"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Report["candidate_count"] != float64(125) || status.Report["records"] != nil || status.Report["candidates"] != nil || len(status.History) != 0 {
+		t.Fatal("summary contains full lists")
+	}
+}
+
+func TestCFDetailPagination(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	var id string
+	if err := a.db.QueryRow(ctx, `INSERT INTO cf_targets(name,url) VALUES('detail','https://detail.example') RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(ctx, `INSERT INTO cf_results(target_id,ip,available,delay_ms,http_status,checked_at) SELECT $1,('198.18.0.'||i)::inet,true,20,200,now() FROM generate_series(1,45) i`, id); err != nil {
+		t.Fatal(err)
+	}
+	handler := func(w http.ResponseWriter, r *http.Request) { r.SetPathValue("id", id); a.getCFTarget(w, r) }
+	for page, want := range []int{20, 20, 5} {
+		w := pageRequest(t, handler, fmt.Sprintf("/cf-targets/%s?page=%d", id, page+1), 200)
+		var detail struct {
+			Items []any `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+		if len(detail.Items) != want || w.Header().Get("X-Total-Count") != "45" {
+			t.Fatalf("%d %v", len(detail.Items), w.Header())
+		}
+	}
+}
+
+func TestNetworkAvailableCountOrdering(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	statements := []string{
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('grpc','sample',443,'vless://sample@host:443?type=grpc&security=tls'),('ws','sample',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO networks(name,cidr,created_at) SELECT 'rank-'||i,('198.19.'||i||'.0/24')::cidr,'2026-01-01'::timestamptz FROM generate_series(0,55) i`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+   SELECT 'grpc',('198.19.'||i||'.'||j)::inet,true,20,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb
+   FROM generate_series(1,55) i CROSS JOIN LATERAL generate_series(1,i) j`,
+		`INSERT INTO ip_blacklist(ip) VALUES('198.19.55.1')`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate) VALUES
+   ('grpc','198.19.55.250',true,20,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"invalid"}'),
+   ('grpc','198.19.55.251',true,20,now(),'outdated','{"status":"passed"}'),
+   ('grpc','198.19.55.252',false,0,now(),md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}')`,
+	}
+	for _, query := range statements {
+		if _, err := a.db.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	verifyPoolFixture(t, a.db)
+	handler := func(w http.ResponseWriter, r *http.Request) { a.list(w, r, "networks") }
+	type entry struct {
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Count int    `json:"available_count"`
+	}
+	seen := map[string]bool{}
+	previous := 100
+	for page, size := range []int{50, 6} {
+		w := pageRequest(t, handler, fmt.Sprintf("/networks?page=%d", page+1), 200)
+		var rows []entry
+		if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != size {
+			t.Fatalf("page size=%d, want %d", len(rows), size)
+		}
+		for _, row := range rows {
+			var want int
+			if _, err := fmt.Sscanf(row.Name, "rank-%d", &want); err != nil {
+				t.Fatal(err)
+			}
+			if want == 55 {
+				want--
+			}
+			if row.Count != want || row.Count > previous || seen[row.ID] {
+				t.Fatalf("incorrect count/order or duplicate: %+v, previous=%d", row, previous)
+			}
+			previous, seen[row.ID] = row.Count, true
+		}
+	}
+	// Filters preserve the same count/order, rather than sorting only one page.
+	w := pageRequest(t, handler, "/networks?search=rank-55", 200)
+	var rows []entry
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil || len(rows) != 1 || rows[0].Count != 54 {
+		t.Fatalf("filtered rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestAvailableIPSorting(t *testing.T) {
+	a := paginationApp(t)
+	ctx := context.Background()
+	for _, query := range []string{
+		`INSERT INTO nodes(name,address,port,share_uri) VALUES('sort','host',443,'vless://sample@host:443?type=grpc&security=tls'),('sort-ws','host',443,'vless://sample@host:443?type=ws')`,
+		`INSERT INTO node_ip_pool(protocol,ip,available,delay_ms,checked_at,config_hash,certificate)
+ SELECT 'grpc',('198.18.0.'||i)::inet,true,20,now()-i*interval '1 minute',md5('vless://sample@host:443?type=grpc&security=tls'),'{"status":"passed"}'::jsonb FROM generate_series(1,26) i`,
+		`INSERT INTO latency_probes(name,token_hash,last_seen) VALUES('sort','sort',now()),('disabled','disabled',now()); UPDATE latency_probes SET enabled=false WHERE name='disabled'`,
+		`INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
+ SELECT p.id,('198.18.0.'||i)::inet,i*10,i<>25,now()-CASE WHEN i=24 THEN interval '1 day' ELSE interval '1 second' END
+ FROM latency_probes p CROSS JOIN generate_series(1,25) i`,
+		`INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at)
+ SELECT id,'198.18.0.1',999,true,now()-interval '10 seconds' FROM latency_probes WHERE name='sort'`,
+		`INSERT INTO latency_probe_results(probe_id,ip,mode,tcp_port,delay_ms,success,checked_at)
+ SELECT id,'198.18.0.23','tcp',80,1,true,now() FROM latency_probes WHERE name='sort'`,
+	} {
+		if _, err := a.db.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	verifyPoolFixture(t, a.db)
+	for _, tc := range []struct{ sort, direction string }{{"probe_delay", "asc"}, {"probe_delay", "desc"}, {"checked_at", "asc"}, {"checked_at", "desc"}, {"invalid", "desc"}} {
+		t.Run(tc.sort+"_"+tc.direction, func(t *testing.T) {
+			var got []string
+			for page := 1; page <= 2; page++ {
+				w := pageRequest(t, a.availableIPs, fmt.Sprintf("/available-ips?sort=%s&direction=%s&page=%d", tc.sort, tc.direction, page), 200)
+				var items []availableIP
+				if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+					t.Fatal(err)
+				}
+				for _, item := range items {
+					if len(item.Checks) != 2 {
+						t.Fatalf("protocol checks split: %+v", item)
+					}
+					got = append(got, item.IP)
+				}
+			}
+			var want []string
+			for i := 1; i <= 26; i++ {
+				n := i
+				if tc.sort == "checked_at" && tc.direction == "asc" {
+					n = 27 - i
+				} else if tc.sort == "probe_delay" && tc.direction == "desc" && i <= 23 {
+					n = 24 - i
+				}
+				want = append(want, fmt.Sprintf("198.18.0.%d", n))
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("got %v; want %v", got, want)
+			}
+		})
+	}
+}

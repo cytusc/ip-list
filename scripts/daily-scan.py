@@ -81,7 +81,7 @@ def main():
     args = parser.parse_args()
     if args.cf_limit < 0:
         parser.error('--cf-limit must be nonnegative')
-    base = os.environ.get('API_URL', 'http://127.0.0.1:8081')
+    base = os.environ.get('API_URL', 'http://127.0.0.1:3000/api')
     cookie = ''
 
     def api(path, data=None):

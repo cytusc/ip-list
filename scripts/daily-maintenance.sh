@@ -17,7 +17,7 @@ DELETE FROM latency_probe_results WHERE checked_at < date_bin('15 minutes',now()
 DELETE FROM latency_probe_rollups WHERE bucket_start < date_bin('15 minutes',now()-interval '24 hours','2000-01-01'::timestamptz);
 COMMIT;
 VACUUM (ANALYZE) node_scan_rounds, dns_sync_runs, latency_probe_results, latency_probe_rollups,
- node_ip_pool, ip_results, cf_ip_pool, cf_results;
+ node_ip_pool, cf_ip_pool, cf_results;
 CREATE EXTENSION IF NOT EXISTS pgstattuple;
 SQL
 
@@ -25,7 +25,7 @@ SQL
 tables=$("${psql_cmd[@]}" -qAt <<'SQL'
 SELECT c.relname FROM pg_class c
 CROSS JOIN LATERAL pgstattuple_approx(c.oid::regclass) s
-WHERE c.oid IN ('node_ip_pool'::regclass,'ip_results'::regclass,'cf_ip_pool'::regclass,'cf_results'::regclass)
+WHERE c.oid IN ('node_ip_pool'::regclass,'cf_ip_pool'::regclass,'cf_results'::regclass)
  AND pg_relation_size(c.oid)>=64*1024*1024 AND s.approx_free_percent>=50
 ORDER BY c.relname;
 SQL
@@ -40,7 +40,7 @@ if [[ -n "$tables" ]]; then
   echo "Database backup: $backup"
   while IFS= read -r table; do
     case "$table" in
-      node_ip_pool|ip_results|cf_ip_pool|cf_results)
+      node_ip_pool|cf_ip_pool|cf_results)
         echo "Reclaiming disk space: $table"
         "${psql_cmd[@]}" -c "VACUUM (FULL, ANALYZE) $table;" ;;
       *) echo "Unexpected table: $table" >&2; exit 1 ;;

@@ -285,7 +285,7 @@ export function LatencyProbeManager({ initial, tlsPin }: { initial: PageResult<L
             <td className="px-4 py-3"><div className="flex items-center gap-2">
               <Button size="sm" onClick={() => copyCommand(item)}><Copy />一键部署</Button>
               <ProbeCard item={item} open={deploy?.id === item.id} onOpenChange={(open) => open ? startTransition(() => openEditor(item)) : setDeploy(null)} deploymentSettings={deploy?.id === item.id ? deploymentSettings : null} busy={pending} onSave={(config) => startTransition(() => save(item, config))} onDelete={() => startTransition(() => remove(item))} />
-              <Link className="text-primary hover:underline" href={`/latency-probes/${item.id}`}>延迟历史</Link>
+              <Link className="text-primary hover:underline" href={`/latency-probes/detail?id=${encodeURIComponent(item.id)}`}>延迟历史</Link>
             </div></td>
           </tr>)}</tbody>
         </table></div> : <div className="rounded-xl border border-dashed bg-white p-8 text-center text-sm text-muted-foreground">还没有探针。创建后可获取一键部署命令。</div>}
@@ -383,7 +383,7 @@ function ProbeCard({
         <Button size="sm" type="button" variant="ghost" className="text-destructive" disabled={busy} onClick={onDelete}>
           <Trash2 />删除
         </Button>
-        <Link className="ml-auto inline-flex items-center gap-1 text-sm text-primary hover:underline" href={`/latency-probes/${item.id}`}>
+        <Link className="ml-auto inline-flex items-center gap-1 text-sm text-primary hover:underline" href={`/latency-probes/detail?id=${encodeURIComponent(item.id)}`}>
           查看延迟历史
         </Link>
       </div>

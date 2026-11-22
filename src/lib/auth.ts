@@ -1,10 +1,9 @@
-import "server-only";
-import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
+"use client";
+
 import { api, ApiError } from "@/lib/api";
 import type { User } from "@/lib/types";
+
 export async function getUser(): Promise<User | null> {
-  if (!(await cookies()).get("ipfilter_session")?.value) return null;
   try {
     return (await api<User>("/auth/me")).data;
   } catch (error) {
@@ -12,8 +11,9 @@ export async function getUser(): Promise<User | null> {
     throw error;
   }
 }
-export async function requireUser() {
+
+export async function requireUser(): Promise<User | null> {
   const user = await getUser();
-  if (!user) redirect("/login");
+  if (!user) window.location.replace("/login/");
   return user;
 }

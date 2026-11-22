@@ -1,7 +1,11 @@
-import { pagedQuery } from "@/lib/paged-query";
+"use client";
+
+import { emptyPage } from "@/lib/paged-query";
 import { CFTargetList } from "@/components/cf-manager";
 import type { CFTarget } from "@/lib/types";
 
-export default async function Page() {
-  return <CFTargetList initial={await pagedQuery<CFTarget>("/cf-targets")} networks={[]} />;
+const initial = emptyPage<CFTarget>();
+
+export default function Page() {
+  return <CFTargetList initial={initial} networks={[]} />;
 }

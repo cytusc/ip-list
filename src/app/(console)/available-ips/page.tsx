@@ -1,7 +1,11 @@
-import { pagedQuery } from "@/lib/paged-query";
+"use client";
+
+import { emptyPage } from "@/lib/paged-query";
 import type { AvailableIP } from "@/lib/types";
 import { AvailableIPList } from "@/components/available-ip-list";
 
-export default async function AvailableIPsPage() {
-  return <AvailableIPList initialItems={await pagedQuery<AvailableIP>("/available-ips", undefined, 32000)} />;
+const initial = emptyPage<AvailableIP>();
+
+export default function AvailableIPsPage() {
+  return <AvailableIPList initialItems={initial} />;
 }

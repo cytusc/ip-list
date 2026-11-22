@@ -1,11 +1,19 @@
-import { redirect } from "next/navigation";
+"use client";
+
+import { useEffect } from "react";
 import { ShieldCheck, Network, Server, ArrowUpRight } from "lucide-react";
 import { getUser } from "@/lib/auth";
 import { LoginForm } from "@/components/login-form";
 
-export const dynamic = "force-dynamic";
-export default async function LoginPage() {
-  if (await getUser()) redirect("/nodes");
+export default function LoginPage() {
+  useEffect(() => {
+    getUser()
+      .then((user) => {
+        if (user) window.location.replace("/nodes/");
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <main className="grid min-h-dvh lg:grid-cols-2">
       <section className="relative hidden overflow-hidden bg-[#101e38] p-14 text-white lg:flex lg:flex-col lg:justify-between">

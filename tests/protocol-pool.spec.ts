@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test("协议池空网段隔离与恢复", async ({ page, request }) => {
-  const apiURL = process.env.API_URL || "http://127.0.0.1:8081";
+  const apiURL = process.env.API_URL || "http://127.0.0.1:3000/api";
   const headers = { Origin: process.env.APP_ORIGIN || "http://localhost:3000" };
   const name = `协议池-${Date.now()}`;
   const ids: string[] = [];

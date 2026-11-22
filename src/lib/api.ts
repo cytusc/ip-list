@@ -1,5 +1,4 @@
-import "server-only";
-import { cookies } from "next/headers";
+"use client";
 
 export class ApiError extends Error {
   constructor(
@@ -10,6 +9,11 @@ export class ApiError extends Error {
     super(message);
   }
 }
+
+// Same-origin only: the Rust gateway serves the static UI and exposes the
+// control API below /api, so the browser carries the session cookie directly.
+const API_BASE = "/api";
+
 export async function api<T>(
   path: string,
   options: RequestInit & { timeoutMs?: number } = {},
@@ -17,24 +21,23 @@ export async function api<T>(
   const { timeoutMs = 12000, ...init } = options;
   let response: Response;
   try {
-    response = await fetch(
-      `${process.env.API_URL || "http://127.0.0.1:8081"}${path}`,
-      {
-        ...init,
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: (await cookies()).toString(),
-          Origin: process.env.APP_ORIGIN || "http://localhost:3000",
-          ...init.headers,
-        },
-        cache: "no-store",
-        signal: init.signal ? AbortSignal.any([init.signal,AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
+    response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: window.location.origin,
+        ...init.headers,
       },
-    );
+      cache: "no-store",
+      signal: init.signal
+        ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
+    });
   } catch {
-    throw new ApiError(503, "无法连接后端服务，请检查 Go API 是否已启动后重试");
+    throw new ApiError(503, "无法连接服务端，请稍后重试");
   }
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   if (!response.ok)
     throw new ApiError(
       response.status,
@@ -42,20 +45,4 @@ export async function api<T>(
       data.fields,
     );
   return { data: data as T, response };
-}
-// Cookie 由 Go 的 SCS 会话库创建，此处只负责传递到前端域名。
-export async function forwardSessionCookie(response: Response) {
-  const header = response.headers
-    .getSetCookie()
-    .find((value) => value.startsWith("ipfilter_session="));
-  if (!header) return;
-  const value = header.split(";", 1)[0].slice("ipfilter_session=".length);
-  const maxAge = Number(header.match(/Max-Age=(-?\d+)/i)?.[1] || "86400");
-  (await cookies()).set("ipfilter_session", value, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: Math.max(0, maxAge),
-  });
 }

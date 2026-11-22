@@ -64,7 +64,7 @@ export function ConfigManager({
   const label = isNode ? "节点" : "网段";
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
-  const {data,setData,setPage,loading,error}=usePagedList(kind,initial,{search,status});
+  const {data,setData,setPage,refresh,loading,error}=usePagedList(kind,initial,{search,status});
   const items=data.items;
   const [editor, setEditor] = useState<{ item: Node | Network | null } | null>(
     null,
@@ -412,6 +412,7 @@ export function ConfigManager({
           kind={kind}
           item={editor.item}
           onClose={() => setEditor(null)}
+          onSaved={refresh}
         />
       )}
       <AlertDialog
