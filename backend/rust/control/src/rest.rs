@@ -38,7 +38,16 @@ async fn database(state: &AppState) -> Result<deadpool_postgres::Client, Respons
 }
 
 fn db_failure(err: tokio_postgres::Error) -> Response {
-    crate::log_repeated("database error", &err.to_string());
+    let detail = match err.as_db_error() {
+        Some(db) => format!(
+            "{}: {}{}",
+            db.code().code(),
+            db.message(),
+            db.detail().map(|value| format!(" ({value})")).unwrap_or_default()
+        ),
+        None => err.to_string(),
+    };
+    crate::log_repeated("database error", &detail);
     if err.code() == Some(&SqlState::UNIQUE_VIOLATION) {
         return error(
             StatusCode::CONFLICT,
@@ -1754,7 +1763,7 @@ async fn available_ip_data(
     if !ips.is_empty() {
         let probe_sql = format!(
             "WITH all_targets AS MATERIALIZED (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available),\
-             targets AS (SELECT ip::inet FROM unnest($1::text[]) AS selected(ip)),\
+             targets AS (SELECT ip::inet FROM unnest(string_to_array($1,',')) AS selected(ip)),\
              probes AS MATERIALIZED (SELECT p.*,{PROBE_WINDOW} AS sample_window FROM latency_probes p WHERE p.enabled)\
              SELECT COALESCE(json_object_agg(ip,probe_list),'{{}}'::json)::text FROM (\
                SELECT host(x.ip) AS ip,json_agg(x.probe ORDER BY x.probe_id) AS probe_list FROM (\
@@ -1772,8 +1781,9 @@ async fn available_ip_data(
                ) x GROUP BY host(x.ip)\
              ) grouped"
         );
+        let ips_csv = ips.join(",");
         let probe_text: String = client
-            .query_one(&probe_sql, &[&ips])
+            .query_one(&probe_sql, &[&ips_csv])
             .await
             .map(|row| row.get(0))
             .map_err(db_failure)?;
