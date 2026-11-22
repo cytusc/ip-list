@@ -82,6 +82,8 @@ func (a *app) maintainProbeSamples(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	lastVacuum := time.Time{}
+	lastLog := time.Time{}
+	var pendingLog int64
 	for {
 		work, cancel := context.WithTimeout(ctx, 45*time.Second)
 		var total int64
@@ -109,8 +111,13 @@ func (a *app) maintainProbeSamples(ctx context.Context) {
 			}
 		}
 		cancel()
-		if total > 0 {
-			log.Printf("已压缩/清理 %d 条探针采样/汇总记录", total)
+		pendingLog += total
+		// Compaction runs every minute. Keep one useful summary instead of a
+		// success line per pass, which is mostly repeated fixed-cost noise.
+		if pendingLog > 0 && (lastLog.IsZero() || time.Since(lastLog) >= 30*time.Minute) {
+			log.Printf("已压缩/清理 %d 条探针采样/汇总记录", pendingLog)
+			pendingLog = 0
+			lastLog = time.Now()
 		}
 		if drained && time.Since(lastVacuum) >= 6*time.Hour && ctx.Err() == nil {
 			maintenance, stop := context.WithTimeout(ctx, 2*time.Minute)

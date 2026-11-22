@@ -9,6 +9,13 @@
 - `latency_probe_results_probe_ip_time_idx` 被 `(probe_id,ip,mode,tcp_port,checked_at)` 的测量索引覆盖，删除以减少最高写入量表的索引维护成本。
 - `node_scan_rounds`、`cf_target_rounds`、`ip_health_recovery`、`node_ip_pool`、`cf_results` 仍被列表、详情、决策或统计读取，保留。
 
+## 入库与日志优化（2026-11-22）
+
+- 探针结果上报改为类型化批量解析，不再为每条结果构建一个 `serde_json::Value` 对象；延迟归零和 `checked_at` 兜底放到集合式 SQL 中完成。
+- 可用 IP 测速结果按 10 条一批入库，失败状态也改成单条批量 SQL；原先每个 IP 一次数据库往返。
+- 完整扫描结束时，网段恢复和空网段禁用分别合并为一条批量语句，避免每个 CIDR 一次事务往返。
+- Rust 控制面的重复数据库/代理错误按 60 秒窗口合并；探针采样压缩日志改为每 30 分钟输出累计数量，减少固定节奏的冗余成功日志。
+
 ## 宕机恢复及慢查询复查（2026-11-20）
 
 恢复阶段先保障 DNS、心跳和接口：清理、探针压缩、归属补全和历史证书复检

@@ -7,10 +7,12 @@
 
 #![allow(clippy::result_large_err)] // axum handlers return Response directly by design.
 
+use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 mod rest;
 
@@ -32,6 +34,43 @@ use tower_http::services::ServeDir;
 
 const COOKIE: &str = "ipfilter_session";
 const SESSION_TTL: u64 = 24 * 60 * 60;
+
+/// Collapse repeated operational errors so a transient database or proxy
+/// outage cannot fill the journal with thousands of identical lines. The
+/// suppressed count is emitted with the next line for the same error.
+fn log_repeated(kind: &str, detail: &str) {
+    const WINDOW: Duration = Duration::from_secs(60);
+    const MAX_KEYS: usize = 64;
+
+    static STATE: OnceLock<Mutex<HashMap<String, (Instant, u32)>>> = OnceLock::new();
+    let now = Instant::now();
+    let state = STATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut state = match state.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if state.len() >= MAX_KEYS {
+        state.retain(|_, (last, _)| now.saturating_duration_since(*last) < WINDOW);
+    }
+    let key = format!("{kind}\0{detail}");
+    if let Some((last, suppressed)) = state.get_mut(&key) {
+        if now.saturating_duration_since(*last) < WINDOW {
+            *suppressed = suppressed.saturating_add(1);
+            return;
+        }
+        let count = *suppressed;
+        *last = now;
+        *suppressed = 0;
+        if count == 0 {
+            eprintln!("{kind}: {detail}");
+        } else {
+            eprintln!("{kind}: {detail} ({count} 条重复日志已合并)");
+        }
+        return;
+    }
+    eprintln!("{kind}: {detail}");
+    state.insert(key, (now, 0));
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -257,7 +296,7 @@ async fn login(State(state): State<AppState>, body: Bytes) -> Response {
     let client = match pool.get().await {
         Ok(client) => client,
         Err(err) => {
-            eprintln!("login pool error: {err}");
+            crate::log_repeated("login pool error", &err.to_string());
             return error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试");
         }
     };
@@ -267,7 +306,7 @@ async fn login(State(state): State<AppState>, body: Bytes) -> Response {
     {
         Ok(statement) => statement,
         Err(err) => {
-            eprintln!("login prepare error: {err}");
+            crate::log_repeated("login prepare error", &err.to_string());
             return error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试");
         }
     };
@@ -281,7 +320,7 @@ async fn login(State(state): State<AppState>, body: Bytes) -> Response {
             "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxGJeCsXOBqjXvEoQMikpkKJz.a".to_string(),
         ),
         Err(err) => {
-            eprintln!("login database error: {err}");
+            crate::log_repeated("login database error", &err.to_string());
             return error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试");
         }
     };
@@ -446,7 +485,7 @@ async fn add_blacklist(State(state): State<AppState>, headers: HeaderMap, body: 
         {
             Ok(rows) => added += rows as i64,
             Err(err) => {
-                eprintln!("blacklist insert error: {err}");
+                crate::log_repeated("blacklist insert error", &err.to_string());
                 return error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试");
             }
         }
@@ -482,7 +521,7 @@ async fn delete_blacklist(State(state): State<AppState>, headers: HeaderMap, bod
         .execute("DELETE FROM ip_blacklist WHERE ip=$1::text::inet", &[&ip.to_string()])
         .await
     {
-        eprintln!("blacklist delete error: {err}");
+        crate::log_repeated("blacklist delete error", &err.to_string());
         return error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试");
     }
     Json(json!({"ok": true})).into_response()
@@ -494,7 +533,7 @@ async fn db_client(state: &AppState) -> Result<deadpool_postgres::Client, Respon
         .as_ref()
         .ok_or_else(|| error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试"))?;
     pool.get().await.map_err(|err| {
-        eprintln!("database pool error: {err}");
+        crate::log_repeated("database pool error", &err.to_string());
         error(StatusCode::SERVICE_UNAVAILABLE, "数据库暂时不可用，请稍后重试")
     })
 }
@@ -569,7 +608,7 @@ async fn lists(
     {
         Ok(value) => value,
         Err(err) => {
-            eprintln!("lists proxy error: {err}");
+            crate::log_repeated("lists proxy error", &err.to_string());
             return error(StatusCode::SERVICE_UNAVAILABLE, "列表加载失败，请重试");
         }
     };
@@ -719,7 +758,7 @@ async fn proxy_simple(
             }
         }
         Err(err) => {
-            eprintln!("proxy error {path}: {err}");
+            crate::log_repeated("proxy error", &format!("{path}: {err}"));
             error(StatusCode::SERVICE_UNAVAILABLE, "上游服务暂时不可用")
         }
     }

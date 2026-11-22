@@ -2,6 +2,7 @@ package ipguard
 
 import (
 	"context"
+	"encoding/json"
 	"math/big"
 	"net/http"
 	"net/netip"
@@ -21,6 +22,8 @@ func (a *app) disableEmptyNetworks(ctx context.Context, tx pgx.Tx, job scanJob) 
 			results[ip] = result.Status == "success"
 		}
 	}
+	restore := make([]string, 0, len(job.CIDRs))
+	empty := make([]string, 0, len(job.CIDRs))
 	for _, cidr := range job.CIDRs {
 		prefix, err := netip.ParsePrefix(cidr)
 		if err != nil {
@@ -36,21 +39,42 @@ func (a *app) disableEmptyNetworks(ctx context.Context, tx pgx.Tx, job scanJob) 
 		expected := new(big.Int).Lsh(big.NewInt(1), uint(prefix.Addr().BitLen()-prefix.Bits()))
 		if success {
 			// Successful new evidence restores this pool, without clearing a newer disable.
-			_, err = tx.Exec(ctx, `DELETE FROM protocol_networks WHERE protocol=$1 AND network_id=ANY($2::uuid[])
- AND cidr=$3::cidr AND checked_at<=$4`, job.Protocol, job.Input.NetworkIDs, cidr, job.FinishedAt)
-			if err != nil {
-				return err
-			}
+			restore = append(restore, cidr)
 			continue
 		}
 		if expected.Cmp(big.NewInt(int64(count))) != 0 {
 			continue
 		}
+		empty = append(empty, cidr)
+	}
+	// A full round can cover dozens of ranges. Resolve each category in one
+	// statement rather than opening one transaction round-trip per CIDR.
+	if len(restore) > 0 {
+		data, err := json.Marshal(restore)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM protocol_networks p
+ WHERE p.protocol=$1 AND p.network_id=ANY($2::uuid[]) AND p.checked_at<=$4
+ AND p.cidr IN (SELECT r.cidr::cidr FROM jsonb_to_recordset($3::jsonb) AS r(cidr text))`,
+			job.Protocol, job.Input.NetworkIDs, string(data), job.FinishedAt)
+		if err != nil {
+			return err
+		}
+	}
+	if len(empty) > 0 {
+		data, err := json.Marshal(empty)
+		if err != nil {
+			return err
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
-   SELECT $1::varchar(32),id,cidr,$3::timestamptz FROM networks WHERE id=ANY($2::uuid[]) AND cidr=$4::cidr
-   AND NOT EXISTS(SELECT 1 FROM node_ip_evidence s WHERE s.protocol=$1::varchar(32) AND s.available AND s.ip <<= $4::cidr)
-   ON CONFLICT(protocol,network_id) DO UPDATE SET cidr=excluded.cidr,checked_at=excluded.checked_at
-   WHERE protocol_networks.checked_at<=excluded.checked_at`, job.Protocol, job.Input.NetworkIDs, job.FinishedAt, cidr)
+ SELECT $1::varchar(32),n.id,n.cidr,$4::timestamptz
+ FROM jsonb_to_recordset($3::jsonb) AS r(cidr text)
+ JOIN networks n ON n.cidr=r.cidr::cidr AND n.id=ANY($2::uuid[])
+ WHERE NOT EXISTS(SELECT 1 FROM node_ip_evidence s WHERE s.protocol=$1::varchar(32) AND s.available AND s.ip <<= n.cidr)
+ ON CONFLICT(protocol,network_id) DO UPDATE SET cidr=excluded.cidr,checked_at=excluded.checked_at
+ WHERE protocol_networks.checked_at<=excluded.checked_at`,
+			job.Protocol, job.Input.NetworkIDs, string(data), job.FinishedAt)
 		if err != nil {
 			return err
 		}

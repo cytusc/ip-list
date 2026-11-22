@@ -3,6 +3,7 @@ package ipguard
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -18,10 +19,17 @@ import (
 const availableIPAutomaticSpeedTestBytes = 100_000_000
 const availableIPSpeedTestChunkBytes = 100_000_000
 const availableIPSpeedTestURL = "https://hkg.download.datapacket.com/100mb.bin"
+const availableIPSpeedSaveBatch = 10
 
 type availableIPSpeedResult struct {
 	Duration  int64   `json:"duration_ms"`
 	SpeedMiBs float64 `json:"speed_mib_s"`
+}
+
+type availableIPSpeedSample struct {
+	IP      netip.Addr
+	Result  availableIPSpeedResult
+	Success bool
 }
 
 type availableIPSpeedTest struct {
@@ -194,6 +202,19 @@ func (a *app) runAvailableIPSpeedTests(ctx context.Context) {
 		a.saveAvailableIPSpeedFailures(ctx, ips)
 		return
 	}
+	pending := make([]availableIPSpeedSample, 0, availableIPSpeedSaveBatch)
+	failedCount := 0
+	saveErrors := 0
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		if saveErr := a.saveAvailableIPSpeedResults(ctx, pending); saveErr != nil {
+			saveErrors++
+		}
+		pending = pending[:0]
+	}
+	defer flush()
 	for i, ip := range ips {
 		testCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		result, testErr := downloadSpeedIP(testCtx, template, ip, availableIPAutomaticSpeedTestBytes)
@@ -201,11 +222,12 @@ func (a *app) runAvailableIPSpeedTests(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if saveErr := a.saveAvailableIPSpeedResult(ctx, ip, result, testErr == nil); saveErr != nil && ctx.Err() == nil {
-			log.Printf("保存 IP 测速结果失败 ip=%s: %v", ip, saveErr)
+		if testErr != nil {
+			failedCount++
 		}
-		if testErr != nil && ctx.Err() == nil {
-			log.Printf("IP 下载测速失败 ip=%s: %v", ip, testErr)
+		pending = append(pending, availableIPSpeedSample{IP: ip, Result: result, Success: testErr == nil})
+		if len(pending) >= availableIPSpeedSaveBatch {
+			flush()
 		}
 		if i < len(ips)-1 {
 			timer := time.NewTimer(3 * time.Second)
@@ -217,25 +239,61 @@ func (a *app) runAvailableIPSpeedTests(ctx context.Context) {
 			}
 		}
 	}
+	flush()
+	if failedCount > 0 || saveErrors > 0 {
+		log.Printf("IP 测速完成 tested=%d failed=%d save_errors=%d", len(ips), failedCount, saveErrors)
+	}
 }
 
 func (a *app) saveAvailableIPSpeedFailures(ctx context.Context, ips []netip.Addr) {
+	if len(ips) == 0 {
+		return
+	}
+	samples := make([]availableIPSpeedSample, 0, len(ips))
 	for _, ip := range ips {
-		if err := a.saveAvailableIPSpeedResult(ctx, ip, availableIPSpeedResult{}, false); err != nil && ctx.Err() == nil {
-			log.Printf("保存 IP 测速失败状态失败 ip=%s: %v", ip, err)
-		}
+		samples = append(samples, availableIPSpeedSample{IP: ip})
+	}
+	if err := a.saveAvailableIPSpeedResults(ctx, samples); err != nil && ctx.Err() == nil {
+		log.Printf("批量保存 IP 测速失败状态失败 count=%d: %v", len(samples), err)
 	}
 }
 
 func (a *app) saveAvailableIPSpeedResult(ctx context.Context, ip netip.Addr, result availableIPSpeedResult, success bool) error {
-	_, err := a.db.Exec(ctx, `INSERT INTO available_ip_speed_tests(ip,duration_ms,speed_mib_s,checked_at,success,last_success_at)
- SELECT $1::inet,$2,$3,now(),$4,CASE WHEN $4 THEN now() END WHERE EXISTS(
- SELECT 1 FROM shared_node_ip_pool p WHERE p.ip=$1::inet AND p.available)
- AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=$1::inet)
+	return a.saveAvailableIPSpeedResults(ctx, []availableIPSpeedSample{{IP: ip, Result: result, Success: success}})
+}
+
+// Keep speed-test persistence set-based: one round can contain hundreds of
+// addresses, and one statement per address made the test loop mostly database
+// round-trips. The same query remains safe for a single manual test.
+func (a *app) saveAvailableIPSpeedResults(ctx context.Context, samples []availableIPSpeedSample) error {
+	if len(samples) == 0 {
+		return nil
+	}
+	rows := make([]struct {
+		IP        string  `json:"ip"`
+		Duration  int64   `json:"duration_ms"`
+		SpeedMiBs float64 `json:"speed_mib_s"`
+		Success   bool    `json:"success"`
+	}, len(samples))
+	for i, sample := range samples {
+		rows[i].IP = sample.IP.String()
+		rows[i].Duration = sample.Result.Duration
+		rows[i].SpeedMiBs = sample.Result.SpeedMiBs
+		rows[i].Success = sample.Success
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Exec(ctx, `INSERT INTO available_ip_speed_tests(ip,duration_ms,speed_mib_s,checked_at,success,last_success_at)
+ SELECT r.ip::inet,r.duration_ms,r.speed_mib_s,now(),r.success,CASE WHEN r.success THEN now() END
+ FROM jsonb_to_recordset($1::jsonb) AS r(ip text,duration_ms bigint,speed_mib_s double precision,success boolean)
+ WHERE EXISTS(SELECT 1 FROM shared_node_ip_pool p WHERE p.ip=r.ip::inet AND p.available)
+ AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=r.ip::inet)
  ON CONFLICT(ip) DO UPDATE SET
  duration_ms=CASE WHEN excluded.success THEN excluded.duration_ms ELSE available_ip_speed_tests.duration_ms END,
  speed_mib_s=CASE WHEN excluded.success THEN excluded.speed_mib_s ELSE available_ip_speed_tests.speed_mib_s END,
  last_success_at=CASE WHEN excluded.success THEN excluded.last_success_at ELSE available_ip_speed_tests.last_success_at END,
- checked_at=excluded.checked_at,success=excluded.success`, ip.String(), result.Duration, result.SpeedMiBs, success)
+ checked_at=excluded.checked_at,success=excluded.success`, string(data))
 	return err
 }

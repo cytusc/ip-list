@@ -38,7 +38,7 @@ async fn database(state: &AppState) -> Result<deadpool_postgres::Client, Respons
 }
 
 fn db_failure(err: tokio_postgres::Error) -> Response {
-    eprintln!("database error: {err}");
+    crate::log_repeated("database error", &err.to_string());
     if err.code() == Some(&SqlState::UNIQUE_VIOLATION) {
         return error(
             StatusCode::CONFLICT,
@@ -1519,23 +1519,46 @@ async fn agent_targets(State(state): State<AppState>, headers: HeaderMap) -> Res
     .into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct AgentResultInput {
+    ip: Option<String>,
+    delay_ms: Option<f64>,
+    success: Option<bool>,
+    checked_at: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct AgentResultsBatch {
+    #[serde(default)]
+    results: Vec<AgentResultInput>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    tcp_port: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+struct AgentResultRow<'a> {
+    ip: &'a str,
+    delay_ms: f64,
+    success: bool,
+    checked_at: String,
+}
+
 async fn agent_results(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let (client, id) = match authorize_probe(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let input: Value = match serde_json::from_slice(&body) {
+    let input: AgentResultsBatch = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(_) => return error(StatusCode::BAD_REQUEST, "上报数据格式错误"),
     };
-    let Some(results) = input.get("results").and_then(Value::as_array) else {
-        return error(StatusCode::UNPROCESSABLE_ENTITY, "每批需包含 1–10000 条检测结果");
-    };
-    if results.is_empty() || results.len() > 10000 {
+    if input.results.is_empty() || input.results.len() > 10000 {
         return error(StatusCode::UNPROCESSABLE_ENTITY, "每批需包含 1–10000 条检测结果");
     }
-    let mode = input.get("mode").and_then(Value::as_str).unwrap_or("icmp");
-    let port = input.get("tcp_port").and_then(Value::as_i64).unwrap_or(0);
+    let mode = input.mode.as_deref().unwrap_or("icmp");
+    let port = input.tcp_port.unwrap_or(0);
     if (mode != "icmp" && mode != "tcp") || (mode == "icmp" && port != 0) || (mode == "tcp" && !(1..=65535).contains(&port)) {
         return error(StatusCode::UNPROCESSABLE_ENTITY, "检测模式或端口无效");
     }
@@ -1552,35 +1575,42 @@ async fn agent_results(State(state): State<AppState>, headers: HeaderMap, body: 
     if probe_mode != mode || probe_port as i64 != port {
         return error(StatusCode::CONFLICT, "检测配置已变更，请读取最新任务后重新检测");
     }
-    let clean: Vec<Value> = results
-        .iter()
-        .filter_map(|item| {
-            let ip = item.get("ip").and_then(Value::as_str)?.parse::<std::net::IpAddr>().ok()?;
-            let delay = item.get("delay_ms").and_then(Value::as_f64)?;
-            let success = item.get("success").and_then(Value::as_bool)?;
-            let checked_at = item
-                .get("checked_at")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-            Some(json!({
-                "ip": ip.to_string(),
-                "delay_ms": if success && delay == 0.0 { 0.01 } else { delay },
-                "success": success,
-                "checked_at": checked_at,
-            }))
-        })
-        .collect();
-    if clean.len() != results.len() {
-        return error(StatusCode::UNPROCESSABLE_ENTITY, "检测结果包含无效 IP 或延迟");
+    // Parse into a typed shape once. Keep the submitted IP text when it
+    // validates, so a large batch avoids one extra canonical-string allocation
+    // and JSON object per row. Delay normalization stays in the set-based SQL.
+    let mut clean = Vec::with_capacity(input.results.len());
+    for item in &input.results {
+        let Some(ip) = item.ip.as_deref() else {
+            return error(StatusCode::UNPROCESSABLE_ENTITY, "检测结果包含无效 IP 或延迟");
+        };
+        if ip.parse::<std::net::IpAddr>().is_err() {
+            return error(StatusCode::UNPROCESSABLE_ENTITY, "检测结果包含无效 IP 或延迟");
+        }
+        let Some(delay_ms) = item.delay_ms else {
+            return error(StatusCode::UNPROCESSABLE_ENTITY, "检测结果包含无效 IP 或延迟");
+        };
+        let Some(success) = item.success else {
+            return error(StatusCode::UNPROCESSABLE_ENTITY, "检测结果包含无效 IP 或延迟");
+        };
+        let checked_at = item
+            .checked_at
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        clean.push(AgentResultRow {
+            ip,
+            delay_ms,
+            success,
+            checked_at,
+        });
     }
     let body_text = match serde_json::to_string(&clean) {
         Ok(value) => value,
         Err(_) => return error(StatusCode::BAD_REQUEST, "上报数据格式错误"),
     };
     let sql = format!(
-        "WITH target_ips AS MATERIALIZED (SELECT ip FROM ({PROBE_TARGET_POOL}) pool), received AS (SELECT r.ip::inet AS ip,r.delay_ms,r.success,r.checked_at FROM jsonb_to_recordset($2::text::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at timestamptz)), inserted AS (INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port) SELECT $1::text::uuid,received.ip,received.delay_ms,received.success,received.checked_at,$3,$4 FROM received JOIN target_ips pool ON pool.ip=received.ip AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=received.ip) RETURNING 1), seen AS (UPDATE latency_probes SET last_seen=now() WHERE id=$1::text::uuid RETURNING id) SELECT count(*) FROM inserted"
+        "WITH target_ips AS MATERIALIZED (SELECT ip FROM ({PROBE_TARGET_POOL}) pool), received AS (SELECT r.ip::inet AS ip,CASE WHEN r.success AND r.delay_ms=0 THEN 0.01 ELSE r.delay_ms END AS delay_ms,r.success AS success,CASE WHEN r.checked_at IS NULL OR r.checked_at='' THEN now() ELSE r.checked_at::timestamptz END AS checked_at FROM jsonb_to_recordset($2::text::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at text)), inserted AS (INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port) SELECT $1::text::uuid,received.ip,received.delay_ms,received.success,received.checked_at,$3,$4 FROM received JOIN target_ips pool ON pool.ip=received.ip AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=received.ip) RETURNING 1), seen AS (UPDATE latency_probes SET last_seen=now() WHERE id=$1::text::uuid RETURNING id) SELECT count(*) FROM inserted"
     );
     match client
         .query_one(&sql, &[&id, &body_text, &mode, &(port as i32)])
