@@ -1721,7 +1721,53 @@ async fn available_ip_data(
          'unknown'::text AS node_dns_status,'unknown'::text AS url_dns_status \
          FROM filtered c ORDER BY c.ip LIMIT $5 OFFSET $6) t"
     );
-    let items = json_rows(client, &data_sql, &[&search, &protocol, &region, &provider, &size, &page_offset(page, size)]).await?;
+    let mut items = json_rows(client, &data_sql, &[&search, &protocol, &region, &provider, &size, &page_offset(page, size)]).await?;
+    let ips: Vec<String> = items
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("ip").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !ips.is_empty() {
+        let probe_sql = format!(
+            "WITH all_targets AS MATERIALIZED (SELECT DISTINCT ip FROM shared_node_ip_pool WHERE available),\
+             targets AS (SELECT ip::inet FROM unnest($1::text[]) AS selected(ip)),\
+             probes AS MATERIALIZED (SELECT p.*,{PROBE_WINDOW} AS sample_window FROM latency_probes p WHERE p.enabled)\
+             SELECT COALESCE(json_object_agg(ip,probe_list),'{{}}'::json)::text FROM (\
+               SELECT host(x.ip) AS ip,json_agg(x.probe ORDER BY x.probe_id) AS probe_list FROM (\
+                 SELECT t.ip,p.id::text AS probe_id,json_build_object(\
+                   'probe_id',p.id::text,'name',p.name,'mode',p.mode,'tcp_port',p.tcp_port,\
+                   'delay_ms',l.delay_ms,'success',l.success,'checked_at',l.checked_at,\
+                   'online',{PROBE_ONLINE},\
+                   'fresh',COALESCE(l.checked_at>now()-make_interval(secs=>p.sample_window*2),false),\
+                   'samples',COALESCE(recent.samples,'[]'::jsonb),\
+                   'sample_window_seconds',p.sample_window,'window_end',now()\
+                 ) AS probe\
+                 FROM probes p CROSS JOIN targets t\
+                 LEFT JOIN LATERAL (SELECT delay_ms,success,checked_at FROM latency_probe_results WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END AND checked_at>now()-interval '30 days' ORDER BY checked_at DESC,id DESC LIMIT 1) l ON true\
+                 LEFT JOIN LATERAL (SELECT jsonb_agg(sample ORDER BY sample.checked_at,sample.id) AS samples FROM (SELECT id,host(ip) AS ip,delay_ms,success,checked_at FROM latency_probe_results WHERE probe_id=p.id AND ip=t.ip AND mode=p.mode AND tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END AND checked_at>=date_trunc('minute',now())-interval '17 minutes' ORDER BY checked_at DESC,id DESC LIMIT 256) sample) recent ON true\
+               ) x GROUP BY host(x.ip)\
+             ) grouped"
+        );
+        let probe_text: String = client
+            .query_one(&probe_sql, &[&ips])
+            .await
+            .map(|row| row.get(0))
+            .map_err(db_failure)?;
+        let probe_map: Value = serde_json::from_str(&probe_text)
+            .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "数据库返回内容无法解析"))?;
+        if let Value::Array(rows) = &mut items {
+            for row in rows {
+                if let Value::Object(map) = row {
+                    let ip = map.get("ip").and_then(Value::as_str).unwrap_or("").to_string();
+                    let delays = probe_map.get(ip.as_str()).cloned().unwrap_or_else(|| json!([]));
+                    map.insert("probe_delays".into(), delays);
+                }
+            }
+        }
+    }
     let meta_sql = format!(
         "{base} SELECT json_build_object('allTotal',(SELECT count(*) FROM candidates),\
          'countries',(SELECT COALESCE(json_agg(country ORDER BY country),'[]') FROM (SELECT DISTINCT country FROM candidates WHERE country<>'') c),\
