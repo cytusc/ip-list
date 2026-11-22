@@ -63,7 +63,7 @@ jobs:
           export PATH="/usr/lib/postgresql/17/bin:$PATH"
           python3 -m unittest discover -s scripts/tests -p 'test_daily_maintenance.py'
           python3 -m unittest discover -s scripts/tests -p 'test_daily_scan.py'
-          go -C backend test -run '^TestAutomaticFullScanBackoff$' -count=1
+          go -C backend test ./internal/ipguard -run '^TestAutomaticFullScanBackoff$' -count=1
       - name: Check backend
         run: |
           go -C backend test ./...
@@ -71,11 +71,11 @@ jobs:
       - name: Check probe data retention
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable
-        run: go -C backend test -run 'TestProbeCompaction|TestConnectivityDataRetention|TestMaintenancePoolIsolation|TestScanNetworkProgress' -count=1
+        run: go -C backend test ./internal/ipguard -run 'TestProbeCompaction|TestConnectivityDataRetention|TestMaintenancePoolIsolation|TestScanNetworkProgress' -count=1
       - name: Check DNS outage tolerance and speed result retention
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ipguard_test?sslmode=disable
-        run: go -C backend test -run 'TestDNSRefusesCompleteDeletionWithLiveControl|TestDNSPreservesEachRecordWithoutReplacement|TestAvailableIPSpeedSurvivesOutageAndRetries' -count=1
+        run: go -C backend test ./internal/ipguard -run 'TestDNSRefusesCompleteDeletionWithLiveControl|TestDNSPreservesEachRecordWithoutReplacement|TestAvailableIPSpeedSurvivesOutageAndRetries' -count=1
       - name: Build application and probe downloads
         run: |
           npm run worker:build
