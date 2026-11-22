@@ -471,7 +471,7 @@ async fn save_config(
         if let Some(id) = &id {
             match client
                 .query_opt(
-                    "UPDATE networks SET name=$1,cidr=$2::cidr,enabled=$3,description=$4,asn=$5,provider=$6,updated_at=now() WHERE id=$7::text::uuid RETURNING id::text",
+                    "UPDATE networks SET name=$1,cidr=$2::text::cidr,enabled=$3,description=$4,asn=$5,provider=$6,updated_at=now() WHERE id=$7::text::uuid RETURNING id::text",
                     &[
                         &input.name.trim(),
                         &input.cidr.trim(),
@@ -491,7 +491,7 @@ async fn save_config(
         } else {
             client
                 .query_one(
-                    "INSERT INTO networks(name,cidr,enabled,description,asn,provider,registry_country,registry_holder) VALUES($1,$2::cidr,$3,$4,$5,$6,'','') RETURNING id::text",
+                    "INSERT INTO networks(name,cidr,enabled,description,asn,provider,registry_country,registry_holder) VALUES($1,$2::text::cidr,$3,$4,$5,$6,'','') RETURNING id::text",
                     &[
                         &input.name.trim(),
                         &input.cidr.trim(),
@@ -1435,7 +1435,7 @@ async fn probe_history(
         Err(err) => return db_failure(err),
         _ => {}
     }
-    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT r.id,host(r.ip) AS ip,r.delay_ms,r.success,r.checked_at FROM latency_probe_results r JOIN latency_probes p ON r.probe_id=p.id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END WHERE r.probe_id=$1::text::uuid AND r.ip=$2::inet AND r.checked_at>=now()-make_interval(hours=>$3) ORDER BY r.checked_at,r.id LIMIT 1000) t";
+    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT r.id,host(r.ip) AS ip,r.delay_ms,r.success,r.checked_at FROM latency_probe_results r JOIN latency_probes p ON r.probe_id=p.id AND r.mode=p.mode AND r.tcp_port=CASE WHEN p.mode='tcp' THEN p.tcp_port ELSE 0 END WHERE r.probe_id=$1::text::uuid AND r.ip=$2::text::inet AND r.checked_at>=now()-make_interval(hours=>$3) ORDER BY r.checked_at,r.id LIMIT 1000) t";
     match json_rows(&client, sql, &[&id, &ip.to_string(), &hours]).await {
         Ok(items) => Json(items).into_response(),
         Err(response) => response,
@@ -1580,7 +1580,7 @@ async fn agent_results(State(state): State<AppState>, headers: HeaderMap, body: 
         Err(_) => return error(StatusCode::BAD_REQUEST, "上报数据格式错误"),
     };
     let sql = format!(
-        "WITH target_ips AS MATERIALIZED (SELECT ip FROM ({PROBE_TARGET_POOL}) pool), received AS (SELECT r.ip::inet AS ip,r.delay_ms,r.success,r.checked_at FROM jsonb_to_recordset($2::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at timestamptz)), inserted AS (INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port) SELECT $1::text::uuid,received.ip,received.delay_ms,received.success,received.checked_at,$3,$4 FROM received JOIN target_ips pool ON pool.ip=received.ip AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=received.ip) RETURNING 1), seen AS (UPDATE latency_probes SET last_seen=now() WHERE id=$1::text::uuid RETURNING id) SELECT count(*) FROM inserted"
+        "WITH target_ips AS MATERIALIZED (SELECT ip FROM ({PROBE_TARGET_POOL}) pool), received AS (SELECT r.ip::inet AS ip,r.delay_ms,r.success,r.checked_at FROM jsonb_to_recordset($2::text::jsonb) AS r(ip text,delay_ms double precision,success boolean,checked_at timestamptz)), inserted AS (INSERT INTO latency_probe_results(probe_id,ip,delay_ms,success,checked_at,mode,tcp_port) SELECT $1::text::uuid,received.ip,received.delay_ms,received.success,received.checked_at,$3,$4 FROM received JOIN target_ips pool ON pool.ip=received.ip AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=received.ip) RETURNING 1), seen AS (UPDATE latency_probes SET last_seen=now() WHERE id=$1::text::uuid RETURNING id) SELECT count(*) FROM inserted"
     );
     match client
         .query_one(&sql, &[&id, &body_text, &mode, &(port as i32)])
@@ -1742,7 +1742,7 @@ async fn ip_location(
     };
     let row = client
         .query_opt(
-            "SELECT COALESCE(o.country,l.country,''),COALESCE(o.region,''),COALESCE(o.city,''),COALESCE(l.location,'{}'::jsonb)::text FROM (SELECT $1::inet AS ip) q LEFT JOIN ip_location_overrides o ON o.ip=q.ip LEFT JOIN dns_ip_locations l ON l.ip=q.ip",
+            "SELECT COALESCE(o.country,l.country,''),COALESCE(o.region,''),COALESCE(o.city,''),COALESCE(l.location,'{}'::jsonb)::text FROM (SELECT $1::text::inet AS ip) q LEFT JOIN ip_location_overrides o ON o.ip=q.ip LEFT JOIN dns_ip_locations l ON l.ip=q.ip",
             &[&ip.to_string()],
         )
         .await;
@@ -1795,7 +1795,7 @@ async fn save_ip_location(
     };
     match client
         .execute(
-            "INSERT INTO ip_location_overrides(ip,country,region,city) VALUES($1::inet,$2,$3,$4) ON CONFLICT(ip) DO UPDATE SET country=excluded.country,region=excluded.region,city=excluded.city,updated_at=now()",
+            "INSERT INTO ip_location_overrides(ip,country,region,city) VALUES($1::text::inet,$2,$3,$4) ON CONFLICT(ip) DO UPDATE SET country=excluded.country,region=excluded.region,city=excluded.city,updated_at=now()",
             &[&ip.to_string(), &country, &region, &city],
         )
         .await
@@ -1821,7 +1821,7 @@ async fn delete_ip_location(
         Ok(value) => value,
         Err(response) => return response,
     };
-    match client.execute("DELETE FROM ip_location_overrides WHERE ip=$1::inet", &[&ip.to_string()]).await {
+    match client.execute("DELETE FROM ip_location_overrides WHERE ip=$1::text::inet", &[&ip.to_string()]).await {
         Ok(_) => Json(json!({"status": "unavailable", "country": "", "region": "", "city": ""})).into_response(),
         Err(err) => db_failure(err),
     }
@@ -1947,7 +1947,7 @@ async fn save_dns(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     };
     match client
         .execute(
-            "UPDATE dns_settings SET config=$1::jsonb,requested='',next_run_at=now()+make_interval(secs=>$2) WHERE id",
+            "UPDATE dns_settings SET config=$1::text::jsonb,requested='',next_run_at=now()+make_interval(secs=>$2) WHERE id",
             &[&raw, &interval],
         )
         .await
@@ -2225,7 +2225,7 @@ async fn start_scan(State(state): State<AppState>, headers: HeaderMap, body: Byt
     if interval > 0 {
         let _ = client
             .execute(
-                "INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES($1,$2,$3::jsonb) ON CONFLICT(protocol) DO UPDATE SET job_id=excluded.job_id,job=excluded.job,enabled=true,updated_at=now()",
+                "INSERT INTO node_scan_schedules(protocol,job_id,job) VALUES($1,$2,$3::text::jsonb) ON CONFLICT(protocol) DO UPDATE SET job_id=excluded.job_id,job=excluded.job,enabled=true,updated_at=now()",
                 &[&protocol, &id, &data],
             )
             .await;
@@ -2640,7 +2640,7 @@ async fn available_ip_links(
     };
     let available: bool = match client
         .query_one(
-            "SELECT EXISTS(SELECT 1 FROM shared_node_ip_pool WHERE available AND ip=$1::inet) OR EXISTS(SELECT 1 FROM cf_ip_pool WHERE available AND ip=$1::inet)",
+            "SELECT EXISTS(SELECT 1 FROM shared_node_ip_pool WHERE available AND ip=$1::text::inet) OR EXISTS(SELECT 1 FROM cf_ip_pool WHERE available AND ip=$1::text::inet)",
             &[&ip.to_string()],
         )
         .await

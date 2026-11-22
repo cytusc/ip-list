@@ -439,7 +439,7 @@ async fn add_blacklist(State(state): State<AppState>, headers: HeaderMap, body: 
     for ip in &unique {
         match client
             .execute(
-                "INSERT INTO ip_blacklist(ip) VALUES($1::inet) ON CONFLICT(ip) DO NOTHING",
+                "INSERT INTO ip_blacklist(ip) VALUES($1::text::inet) ON CONFLICT(ip) DO NOTHING",
                 &[ip],
             )
             .await
@@ -479,7 +479,7 @@ async fn delete_blacklist(State(state): State<AppState>, headers: HeaderMap, bod
         Err(response) => return response,
     };
     if let Err(err) = client
-        .execute("DELETE FROM ip_blacklist WHERE ip=$1::inet", &[&ip.to_string()])
+        .execute("DELETE FROM ip_blacklist WHERE ip=$1::text::inet", &[&ip.to_string()])
         .await
     {
         eprintln!("blacklist delete error: {err}");
