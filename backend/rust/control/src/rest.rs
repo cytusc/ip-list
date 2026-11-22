@@ -1801,7 +1801,7 @@ async fn available_ip_data(
     let dns_csv = if dns_filter_active {
         let rows = client
             .query(
-                &format!("{base} SELECT host(c.ip) FROM filtered"),
+                &format!("{base} SELECT host(ip) FROM filtered"),
                 &[&search, &protocol, &region, &provider],
             )
             .await
