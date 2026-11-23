@@ -228,7 +228,7 @@ async fn network_configs(client: &tokio_postgres::Client, uri: &str) -> Result<C
          GROUP BY n.id\
          ) SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT n.*,\
          COALESCE((SELECT json_agg(p.protocol ORDER BY p.protocol) FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'[]'::json) AS disabled_protocols,\
-         COALESCE(pc.available_count,0) AS available_count\
+         COALESCE(pc.available_count,0) AS available_count \
          FROM networks n LEFT JOIN pool_counts pc ON pc.id=n.id WHERE {predicate} \
          ORDER BY available_count DESC,n.created_at DESC,n.id DESC LIMIT $4 OFFSET $5) t"
     );
