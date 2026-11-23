@@ -2425,7 +2425,6 @@ async fn dns_items_response(client: &tokio_postgres::Client, kind: &str, uri: &s
 use redis::AsyncCommands;
 
 const SCAN_TTL_SECONDS: u64 = 24 * 60 * 60;
-const SCAN_NETWORK_PROGRESS_KEY: &str = "ipfilter:scan:network-progress";
 
 async fn redis_connection(state: &AppState) -> Result<redis::aio::MultiplexedConnection, Response> {
     let Some(redis) = state.redis.clone() else {
@@ -2785,15 +2784,11 @@ async fn scan_network_progress(
     state: &AppState,
     client: &tokio_postgres::Client,
 ) -> Result<Value, Response> {
-    if let Ok(mut connection) = redis_connection(state).await {
-        let cached: Option<String> = connection
-            .get(SCAN_NETWORK_PROGRESS_KEY)
-            .await
-            .ok()
-            .flatten();
-        if let Some(text) = cached {
-            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                return Ok(value);
+    {
+        let cache = state.network_progress.lock().await;
+        if let Some((at, value)) = cache.as_ref() {
+            if at.elapsed() < Duration::from_secs(10) {
+                return Ok(value.clone());
             }
         }
     }
@@ -2817,12 +2812,7 @@ async fn scan_network_progress(
         "completed": completed,
         "pending": total - completed,
     });
-    if let Ok(mut connection) = redis_connection(state).await {
-        let text = value.to_string();
-        let _: Result<(), redis::RedisError> = connection
-            .set_ex(SCAN_NETWORK_PROGRESS_KEY, text, 10)
-            .await;
-    }
+    *state.network_progress.lock().await = Some((Instant::now(), value.clone()));
     Ok(value)
 }
 

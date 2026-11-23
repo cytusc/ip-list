@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod rest;
@@ -82,6 +82,7 @@ struct AppState {
     probe_scripts: PathBuf,
     database: Option<Pool>,
     redis: Option<redis::Client>,
+    network_progress: Arc<tokio::sync::Mutex<Option<(Instant, Value)>>>,
     secure_cookie: bool,
     client: reqwest::Client,
 }
@@ -126,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         database,
         redis,
+        network_progress: Arc::new(tokio::sync::Mutex::new(None)),
         secure_cookie: env::var("APP_ENV").map(|v| v == "production").unwrap_or(false),
         client: reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
