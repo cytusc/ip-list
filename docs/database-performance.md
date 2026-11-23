@@ -87,6 +87,7 @@ PostgreSQL 自身的锁等待日志可能含 SQL，按数据库日志现有权�
 | `scan_network_progress` 单网段计数（s407） | 日志 561 ms，计划 525 ms；189 次 index-only range scan 产生 189,804 次 heap fetch | 约 190 ms，`Heap Fetches: 0` | 先 `VACUUM (ANALYZE)` 清掉 40,960 个死元组；再加 `(ip) WHERE protocol='grpc'` 的窄 partial index（约 10 MB） |
 | `networks` 的 `available_count` | 每个网段一个 correlated 子查询，计划 168 ms，日志 213–272 ms | 约 39 ms；生产接口约 10–32 ms | 先物化 `pool_counts`，再 `LEFT JOIN` 到网络列表；189 个网段旧/新结果 0 mismatch |
 | stale `node_ip_pool` 清理 | 日志 1.4–4.5 s，最近一次 1.86 s | 拆成两条语句后生产 `EXPLAIN (ANALYZE)` 约 0.73 s（449 ms + 279 ms） | 旧协议副本单独删除；`grpc` 行改为一次哈希 anti-join，避免 48 万行逐行 `NOT EXISTS` 索引探测 |
+| `checkedScanIPsSince` 的 checked IP 查询 | 日志约 2.9 s；参数化 `<<= ANY` 在 generic plan 下扫描了约 48 万条索引项 | 单 `/16` 生产计划约 184–217 ms，`Heap Fetches: 0` | 新增 `(ip) INCLUDE(config_hash,checked_at) WHERE protocol='grpc' AND (NOT available OR certificate status passed)` 的局部覆盖索引；单网段自动任务改用显式 `network/broadcast` 边界，避免 generic plan 全索引扫描 |
 
 `node_ip_pool` 增加 `fillfactor=90`、`autovacuum_vacuum_scale_factor=0.02`、
 `autovacuum_vacuum_threshold=1000`、`autovacuum_analyze_scale_factor=0.05`；
@@ -97,8 +98,11 @@ PostgreSQL 自身的锁等待日志可能含 SQL，按数据库日志现有权�
 调用 `<<= cidr` 替代原来的地址范围条件实测反而约 2.63 秒，未采用；
 单次扫描池再 JOIN 全部网段实测约 11.18 秒，也未采用。
 新增的 10 MB partial index 会增加 `node_ip_pool` 写入维护成本，尚未做写入压测。
-`checkedScanIPsSince` 的 `SELECT host(p.ip)`（日志约 2.9 秒）、凌晨 CF 自动扫描 CTE（约 13.5 秒）
+`node_ip_pool_checked_idx` 约 31 MB，覆盖约 48 万条 `grpc` 行；它把该查询的 heap fetch 降为 0，
+但同样会增加扫描结果更新时的索引维护成本，后续需要结合写入延迟观察是否长期保留。
+凌晨 CF 自动扫描 CTE（约 13.5 秒）
 以及一次性的 `shared_node_ip_pool` 57 秒查询仍待继续定位，后者未复现。
+`checkedScanIPsSince` 已通过覆盖索引和单网段显式边界解决冷读时的全索引扫描。
 
 ## 已处理的瓶颈
 

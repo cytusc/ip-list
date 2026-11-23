@@ -21,11 +21,23 @@ func (a *app) checkedScanIPsSince(ctx context.Context, cidrs []string, protocol 
 		// Count current-config failures too, or the automatic queue repeatedly
 		// scans isolated addresses and never advances to the next network.
 		// Historical unchecked successes still need certificate revalidation.
-		query = `SELECT host(p.ip) FROM node_ip_pool p
+		if len(cidrs) == 1 {
+			// Use explicit bounds for the common one-network automatic job. A
+			// prepared generic plan cannot derive a btree range from <<= ANY,
+			// and would otherwise scan the entire partial index.
+			query = `SELECT host(p.ip) FROM node_ip_pool p
+ WHERE p.ip >= network($1::cidr)::inet AND p.ip <= host(broadcast($1::cidr))::inet
+ AND p.protocol=$2
+ AND (NOT p.available OR p.certificate->>'status' IN ('passed','not_required'))
+ AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash)`
+			args = []any{cidrs[0], protocol}
+		} else {
+			query = `SELECT host(p.ip) FROM node_ip_pool p
  WHERE p.ip <<= ANY($1::cidr[]) AND p.protocol=$2
  AND (NOT p.available OR p.certificate->>'status' IN ('passed','not_required'))
  AND EXISTS(SELECT 1 FROM nodes n WHERE n.enabled AND n.share_uri<>'' AND md5(n.share_uri)=p.config_hash)`
-		args = append(args, protocol)
+			args = []any{cidrs, protocol}
+		}
 	}
 	if since != nil {
 		args = append(args, *since)

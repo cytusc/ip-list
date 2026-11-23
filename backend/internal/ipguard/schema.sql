@@ -59,6 +59,11 @@ CREATE INDEX IF NOT EXISTS node_ip_pool_ip_range_idx ON node_ip_pool USING gist(
 -- narrow partial index avoids repeated heap fetches better than the wider
 -- (protocol,ip) primary-key index.
 CREATE INDEX IF NOT EXISTS node_ip_pool_grpc_ip_idx ON node_ip_pool(ip) WHERE protocol='grpc';
+-- checkedScanIPsSince returns every checked address in one network. This
+-- partial covering index keeps the range scan and the active-config join
+-- index-only instead of fetching thousands of pool heap rows.
+CREATE INDEX IF NOT EXISTS node_ip_pool_checked_idx ON node_ip_pool(ip) INCLUDE(config_hash, checked_at)
+  WHERE protocol='grpc' AND (NOT available OR certificate->>'status' IN ('passed','not_required'));
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_invalid_idx ON node_ip_pool(ip,(certificate->>'server_name')) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_page_idx ON node_ip_pool(checked_at DESC,ip,protocol) INCLUDE(config_hash) WHERE certificate->>'status'='invalid';
 -- This table is updated continuously by scans. Keep free space for HOT updates
