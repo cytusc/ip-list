@@ -10,16 +10,22 @@ import (
 // Legacy protocol copies and samples for replaced/disabled nodes cannot be used.
 func (a *app) pruneConnectivityData(ctx context.Context) (int64, error) {
 	var removed int64
+	// Drop legacy protocol copies first. Keeping this as its own statement lets
+	// PostgreSQL use the protocol-leading primary key statistics instead of
+	// forcing a hash subplan into an OR with the much larger active-config set.
+	tag, err := a.db.Exec(ctx, `DELETE FROM node_ip_pool p WHERE p.protocol <> $1`, connectivityProtocol)
+	if err != nil {
+		return 0, err
+	}
+	removed += tag.RowsAffected()
 	// Resolve the active configuration set once. The previous correlated
-	// NOT EXISTS performed an index probe for every one of the 482k pool rows;
-	// this hash anti-join removes stale rows in a single table scan while the
-	// protocol predicate still drops legacy protocol copies.
-	tag, err := a.db.Exec(ctx, `DELETE FROM node_ip_pool p
- WHERE p.protocol <> $1
- OR p.config_hash IS NULL
- OR p.config_hash NOT IN (
+	// NOT EXISTS performed an index probe for every one of the 482k grpc rows;
+	// this hash anti-join removes stale rows in a single table scan.
+	tag, err = a.db.Exec(ctx, `DELETE FROM node_ip_pool p
+ WHERE p.protocol=$1
+ AND (p.config_hash IS NULL OR p.config_hash NOT IN (
   SELECT md5(share_uri) FROM nodes WHERE enabled AND share_uri<>''
- )`, connectivityProtocol)
+ ))`, connectivityProtocol)
 	if err != nil {
 		return 0, err
 	}
