@@ -49,7 +49,7 @@ func (a *app) disableEmptyNetworks(ctx context.Context, tx pgx.Tx, job scanJob) 
 	// A full round can cover dozens of ranges. Resolve each category in one
 	// statement rather than opening one transaction round-trip per CIDR.
 	if len(restore) > 0 {
-		_, err = tx.Exec(ctx, `DELETE FROM protocol_networks p
+		_, err := tx.Exec(ctx, `DELETE FROM protocol_networks p
  WHERE p.protocol=$1 AND p.network_id=ANY($2::uuid[]) AND p.checked_at<=$4
  AND p.cidr IN (SELECT r.cidr::cidr FROM unnest($3::text[]) AS r(cidr))`,
 			job.Protocol, job.Input.NetworkIDs, restore, job.FinishedAt)
@@ -58,7 +58,7 @@ func (a *app) disableEmptyNetworks(ctx context.Context, tx pgx.Tx, job scanJob) 
 		}
 	}
 	if len(empty) > 0 {
-		_, err = tx.Exec(ctx, `INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
+		_, err := tx.Exec(ctx, `INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
  SELECT $1::varchar(32),n.id,n.cidr,$4::timestamptz
  FROM unnest($3::text[]) AS r(cidr)
  JOIN networks n ON n.cidr=r.cidr::cidr AND n.id=ANY($2::uuid[])
