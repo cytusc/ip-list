@@ -12,12 +12,14 @@ func (a *app) pruneConnectivityData(ctx context.Context) (int64, error) {
 	var removed int64
 	// Resolve the active configuration set once. The previous correlated
 	// NOT EXISTS performed an index probe for every one of the 482k pool rows;
-	// this hash anti-join removes the stale rows in a single table scan.
+	// this hash anti-join removes stale rows in a single table scan while the
+	// protocol predicate still drops legacy protocol copies.
 	tag, err := a.db.Exec(ctx, `DELETE FROM node_ip_pool p
- WHERE p.protocol=$1
- AND (p.config_hash IS NULL OR p.config_hash NOT IN (
+ WHERE p.protocol <> $1
+ OR p.config_hash IS NULL
+ OR p.config_hash NOT IN (
   SELECT md5(share_uri) FROM nodes WHERE enabled AND share_uri<>''
- ))`, connectivityProtocol)
+ )`, connectivityProtocol)
 	if err != nil {
 		return 0, err
 	}
