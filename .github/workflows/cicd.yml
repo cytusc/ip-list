@@ -16,6 +16,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      # The production host is x86_64; v2 keeps the binary portable while
+      # allowing the compiler to emit the broader SSE/POPCNT instruction set.
+      RUSTFLAGS: "-C target-cpu=x86-64-v2"
     services:
       postgres:
         image: postgres:17

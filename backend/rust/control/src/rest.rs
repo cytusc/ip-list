@@ -2722,7 +2722,7 @@ pub async fn scan_records_list(state: &AppState, headers: &HeaderMap, uri: &str)
         Err(response) => return response,
     };
     let page = normalized_page(page, total, 20);
-    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT id::text,job_id,round,protocol,node_name,scope,url,cidrs,input,started_at,finished_at,total,completed,success,status,error,results,updated_at,false AS live FROM node_scan_rounds WHERE ($1='' OR position(lower($1) in lower(node_name||' '||url||' '||protocol))>0) AND ($2='' OR protocol=$2) ORDER BY started_at DESC,id DESC LIMIT $3 OFFSET $4) t";
+    let sql = "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT id::text,job_id,round,protocol,node_name,scope,url,cidrs,input,started_at,finished_at,total,completed,success,CASE WHEN status='running' AND updated_at < now()-interval '60 seconds' THEN 'interrupted' ELSE status END AS status,error,NULL::jsonb AS results,updated_at,false AS live FROM node_scan_rounds WHERE ($1='' OR position(lower($1) in lower(node_name||' '||url||' '||protocol))>0) AND ($2='' OR protocol=$2) ORDER BY started_at DESC,id DESC LIMIT $3 OFFSET $4) t";
     let items = match json_rows(&client, sql, &[&search, &protocol, &20i64, &page_offset(page, 20)]).await {
         Ok(value) => value,
         Err(response) => return response,

@@ -32,6 +32,16 @@ INSECURE = os.environ.get("PARITY_INSECURE") == "1"
 cookie_jar = http.cookiejar.CookieJar()
 
 
+class _AnyHostCookiePolicy(http.cookiejar.DefaultCookiePolicy):
+    """Allow the production Secure session cookie over the local HTTP port."""
+
+    def return_ok_secure(self, cookie, request):  # noqa: N802 - stdlib API
+        return True
+
+
+cookie_jar.set_policy(_AnyHostCookiePolicy())
+
+
 def opener() -> urllib.request.OpenerDirector:
     handlers: list[Any] = [urllib.request.HTTPCookieProcessor(cookie_jar)]
     if BASE.startswith("https://") and INSECURE:
