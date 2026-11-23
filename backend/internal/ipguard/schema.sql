@@ -55,8 +55,21 @@ ALTER TABLE node_ip_pool ADD COLUMN IF NOT EXISTS certificate jsonb NOT NULL DEF
 CREATE INDEX IF NOT EXISTS node_ip_pool_available_idx ON node_ip_pool(ip) WHERE available;
 -- B-tree equality indexes cannot accelerate subnet membership via <<= ANY.
 CREATE INDEX IF NOT EXISTS node_ip_pool_ip_range_idx ON node_ip_pool USING gist(ip inet_ops);
+-- Per-network progress counts scan this 482k-row table by protocol+IP range. The
+-- narrow partial index avoids repeated heap fetches better than the wider
+-- (protocol,ip) primary-key index.
+CREATE INDEX IF NOT EXISTS node_ip_pool_grpc_ip_idx ON node_ip_pool(ip) WHERE protocol='grpc';
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_invalid_idx ON node_ip_pool(ip,(certificate->>'server_name')) WHERE certificate->>'status'='invalid';
 CREATE INDEX IF NOT EXISTS node_ip_pool_certificate_page_idx ON node_ip_pool(checked_at DESC,ip,protocol) INCLUDE(config_hash) WHERE certificate->>'status'='invalid';
+-- This table is updated continuously by scans. Keep free space for HOT updates
+-- and vacuum earlier than the global 20% dead-tuple threshold so index-only
+-- range counts do not repeatedly hit the heap.
+ALTER TABLE node_ip_pool SET (
+  fillfactor=90,
+  autovacuum_vacuum_scale_factor=0.02,
+  autovacuum_vacuum_threshold=1000,
+  autovacuum_analyze_scale_factor=0.05
+);
 CREATE TABLE IF NOT EXISTS available_ip_speed_tests (
  ip inet PRIMARY KEY,
  duration_ms bigint NOT NULL DEFAULT 0,

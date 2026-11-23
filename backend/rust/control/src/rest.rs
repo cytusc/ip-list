@@ -204,10 +204,10 @@ async fn network_configs(client: &tokio_postgres::Client, uri: &str) -> Result<C
     let search = query_value(uri, "search");
     let status = query_value(uri, "status");
     let ids = ids_param(uri);
-    let where_sql = " FROM networks n WHERE ($1='' OR position(lower($1) in lower(n.name||' '||n.cidr::text||' '||n.description||' '||n.asn||' '||n.provider||' '||n.registry_country||' '||n.registry_holder||' '||COALESCE((SELECT string_agg(p.protocol,' ') FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'')))>0) \
+    let predicate = "($1='' OR position(lower($1) in lower(n.name||' '||n.cidr::text||' '||n.description||' '||n.asn||' '||n.provider||' '||n.registry_country||' '||n.registry_holder||' '||COALESCE((SELECT string_agg(p.protocol,' ') FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'')))>0) \
          AND ($2='' OR $2='all' OR ($2='enabled' AND n.enabled) OR ($2='disabled' AND NOT n.enabled) OR ($2='pool-disabled' AND EXISTS(SELECT 1 FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr))) \
          AND ($3='' OR n.id::text=ANY(string_to_array($3,',')))";
-    let count_sql = format!("SELECT count(*){where_sql}");
+    let count_sql = format!("SELECT count(*) FROM networks n WHERE {predicate}");
     let p = load_page(
         client,
         uri,
@@ -216,11 +216,21 @@ async fn network_configs(client: &tokio_postgres::Client, uri: &str) -> Result<C
         DEFAULT_PAGE_SIZE,
     )
     .await?;
+    // Compute all per-network available counts in one pass. The old correlated
+    // count re-expanded current_node_ip_pool for every network (189 GiST scans
+    // on production); this joins the small available set once and then groups
+    // the already-matched network ids.
     let data_sql = format!(
-        "SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT n.*,\
+        "WITH pool_counts AS MATERIALIZED (\
+         SELECT n.id, count(*) AS available_count FROM current_node_ip_pool p \
+         JOIN networks n ON p.ip <<= n.cidr \
+         WHERE p.protocol='grpc' AND p.available AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip) \
+         GROUP BY n.id\
+         ) SELECT COALESCE(json_agg(t),'[]'::json)::text FROM (SELECT n.*,\
          COALESCE((SELECT json_agg(p.protocol ORDER BY p.protocol) FROM protocol_networks p WHERE p.network_id=n.id AND p.cidr=n.cidr),'[]'::json) AS disabled_protocols,\
-         (SELECT count(*) FROM current_node_ip_pool p WHERE p.protocol='grpc' AND p.available AND p.ip <<= n.cidr AND NOT EXISTS(SELECT 1 FROM ip_blacklist b WHERE b.ip=p.ip)) AS available_count\
-         {where_sql} ORDER BY available_count DESC,n.created_at DESC,n.id DESC LIMIT $4 OFFSET $5) t"
+         COALESCE(pc.available_count,0) AS available_count\
+         FROM networks n LEFT JOIN pool_counts pc ON pc.id=n.id WHERE {predicate} \
+         ORDER BY available_count DESC,n.created_at DESC,n.id DESC LIMIT $4 OFFSET $5) t"
     );
     let items = json_rows(
         client,
@@ -2787,7 +2797,10 @@ async fn scan_network_progress(
     {
         let cache = state.network_progress.lock().await;
         if let Some((at, value)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(10) {
+            // Progress changes only after a scan worker completes a range. A
+            // 30-second snapshot is enough for the 2-second list poll and cuts
+            // the 189-network count query from six to two executions/minute.
+            if at.elapsed() < Duration::from_secs(30) {
                 return Ok(value.clone());
             }
         }
