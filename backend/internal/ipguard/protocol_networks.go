@@ -2,7 +2,6 @@ package ipguard
 
 import (
 	"context"
-	"encoding/json"
 	"math/big"
 	"net/http"
 	"net/netip"
@@ -50,31 +49,23 @@ func (a *app) disableEmptyNetworks(ctx context.Context, tx pgx.Tx, job scanJob) 
 	// A full round can cover dozens of ranges. Resolve each category in one
 	// statement rather than opening one transaction round-trip per CIDR.
 	if len(restore) > 0 {
-		data, err := json.Marshal(restore)
-		if err != nil {
-			return err
-		}
 		_, err = tx.Exec(ctx, `DELETE FROM protocol_networks p
  WHERE p.protocol=$1 AND p.network_id=ANY($2::uuid[]) AND p.checked_at<=$4
- AND p.cidr IN (SELECT r.cidr::cidr FROM jsonb_to_recordset($3::jsonb) AS r(cidr text))`,
-			job.Protocol, job.Input.NetworkIDs, string(data), job.FinishedAt)
+ AND p.cidr IN (SELECT r.cidr::cidr FROM unnest($3::text[]) AS r(cidr))`,
+			job.Protocol, job.Input.NetworkIDs, restore, job.FinishedAt)
 		if err != nil {
 			return err
 		}
 	}
 	if len(empty) > 0 {
-		data, err := json.Marshal(empty)
-		if err != nil {
-			return err
-		}
 		_, err = tx.Exec(ctx, `INSERT INTO protocol_networks(protocol,network_id,cidr,checked_at)
  SELECT $1::varchar(32),n.id,n.cidr,$4::timestamptz
- FROM jsonb_to_recordset($3::jsonb) AS r(cidr text)
+ FROM unnest($3::text[]) AS r(cidr)
  JOIN networks n ON n.cidr=r.cidr::cidr AND n.id=ANY($2::uuid[])
  WHERE NOT EXISTS(SELECT 1 FROM node_ip_evidence s WHERE s.protocol=$1::varchar(32) AND s.available AND s.ip <<= n.cidr)
  ON CONFLICT(protocol,network_id) DO UPDATE SET cidr=excluded.cidr,checked_at=excluded.checked_at
  WHERE protocol_networks.checked_at<=excluded.checked_at`,
-			job.Protocol, job.Input.NetworkIDs, string(data), job.FinishedAt)
+			job.Protocol, job.Input.NetworkIDs, empty, job.FinishedAt)
 		if err != nil {
 			return err
 		}
