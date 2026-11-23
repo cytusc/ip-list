@@ -76,6 +76,30 @@ PostgreSQL 自身的锁等待日志可能含 SQL，按数据库日志现有权�
 生产 PostgreSQL 17，主机 2 核、约 2 GiB 内存。以下是实际数据上的
 `EXPLAIN (ANALYZE, BUFFERS)` 单次观测，并非持续压测或延迟承诺。
 
+## PostgreSQL 17 慢查询专项（2026-11-23）
+
+生产主机 2 vCPU、约 1,974 MB 内存；`node_ip_pool` 约 482,809 行，全部为 `grpc`。
+本轮没有重启 PostgreSQL，也没有提高 `shared_buffers`、`work_mem` 或 `max_connections`。
+`random_page_cost` 保持 4：`lsblk` 显示磁盘 `ROTA=1`、QEMU HARDDISK，不能按 SSD 盲目降到 1.1。
+
+| 查询 | 优化前 | 优化后 | 处理 |
+| --- | --- | --- | --- |
+| `scan_network_progress` 单网段计数（s407） | 日志 561 ms，计划 525 ms；189 次 index-only range scan 产生 189,804 次 heap fetch | 约 190 ms，`Heap Fetches: 0` | 先 `VACUUM (ANALYZE)` 清掉 40,960 个死元组；再加 `(ip) WHERE protocol='grpc'` 的窄 partial index（约 10 MB） |
+| `networks` 的 `available_count` | 每个网段一个 correlated 子查询，计划 168 ms，日志 213–272 ms | 约 39 ms；生产接口约 10–32 ms | 先物化 `pool_counts`，再 `LEFT JOIN` 到网络列表；189 个网段旧/新结果 0 mismatch |
+| stale `node_ip_pool` 清理 | 日志 1.4–4.5 s，最近一次 1.86 s | 拆成两条语句后生产 `EXPLAIN (ANALYZE)` 约 0.73 s（449 ms + 279 ms） | 旧协议副本单独删除；`grpc` 行改为一次哈希 anti-join，避免 48 万行逐行 `NOT EXISTS` 索引探测 |
+
+`node_ip_pool` 增加 `fillfactor=90`、`autovacuum_vacuum_scale_factor=0.02`、
+`autovacuum_vacuum_threshold=1000`、`autovacuum_analyze_scale_factor=0.05`；
+原来 `last_autovacuum` 停在 2026-11-22 10:15，高更新表按默认阈值难以及时回收。
+`scan_network_progress` 的进程内缓存从 10 秒延长到 30 秒，降低 189 个网段的重复计数频率，
+代价是进度展示最多约 30 秒滞后。
+
+调用 `<<= cidr` 替代原来的地址范围条件实测反而约 2.63 秒，未采用；
+单次扫描池再 JOIN 全部网段实测约 11.18 秒，也未采用。
+新增的 10 MB partial index 会增加 `node_ip_pool` 写入维护成本，尚未做写入压测。
+`checkedScanIPsSince` 的 `SELECT host(p.ip)`（日志约 2.9 秒）、凌晨 CF 自动扫描 CTE（约 13.5 秒）
+以及一次性的 `shared_node_ip_pool` 57 秒查询仍待继续定位，后者未复现。
+
 ## 已处理的瓶颈
 
 | 查询 | 优化前 | 优化后 | 原因及处理 |
